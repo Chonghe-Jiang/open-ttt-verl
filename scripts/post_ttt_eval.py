@@ -76,6 +76,7 @@ def main():
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--shard-id", type=int, default=0)
     ap.add_argument("--num-shards", type=int, default=1)
+    ap.add_argument("--skip-if-exists", action="store_true")
     args = ap.parse_args()
 
     tasks_json = Path(args.tasks_json)
@@ -88,6 +89,10 @@ def main():
     all_jobs = [(t, i) for t in all_tasks for i in range(args.num_rollouts)]
     jobs = [(t, i) for idx, (t, i) in enumerate(all_jobs)
             if idx % args.num_shards == args.shard_id]
+    if args.skip_if_exists:
+        kept = [(t, i) for (t, i) in jobs if not (output_dir / f"{t}.r{i}.eval.json").exists()]
+        print(f"[post-ttt] skip-if-exists: {len(jobs)-len(kept)} already done, {len(kept)} to run", flush=True)
+        jobs = kept
     print(f"[post-ttt] shard {args.shard_id}/{args.num_shards}: "
           f"{len(jobs)} of {len(all_jobs)} on {len(all_tasks)} tasks", flush=True)
 
