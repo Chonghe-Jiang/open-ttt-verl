@@ -119,3 +119,31 @@ Full history: `reports/REPORT_TTT_FAITHFUL.md`.
 
 Frontier-CS: https://github.com/FrontierCS/Frontier-CS
 Official TTT-Discover code: https://github.com/test-time-training/discover
+
+## External dependencies
+
+This repo does **not** vendor the third-party Frontier-CS evaluator or the
+TTT-Discover paper code — both are large and owned by other teams.
+
+After cloning, run `scripts/setup_dependencies.sh` to fetch them at the
+exact commits we used:
+
+```bash
+bash scripts/setup_dependencies.sh
+# clones into ./src/frontier-cs (commit 307d5209) and ./src/ttt-discover (bf20511)
+```
+
+| Dependency | Repo | Pinned commit | Why |
+|---|---|---|---|
+| frontier-cs | https://github.com/FrontierCS/Frontier-CS | 307d5209 | the official evaluator + dataset (research/ split) |
+| ttt-discover | https://github.com/test-time-training/discover | bf20511 | reference impl of TTT-Discover (Tinker-based; we re-impl on HF/vLLM) |
+
+We re-implemented TTT-Discover from the paper on HF transformers + PEFT +
+vLLM REST so we do not need Tinker. See `scripts/ttt_iterative_4tasks.py`.
+
+## LoRA checkpoints
+
+The trained LoRA adapter weights (`adapter_model.safetensors`, ~118 MB each)
+are too large for git. Only `adapter_config.json` + per-step README is
+checked in. The actual weights live on the p5en cluster at
+`/fsx/xuanj/ttt-discover/results/ttt_iter_lora/4tasks_yuchen_seed1/step_NNN/`.
