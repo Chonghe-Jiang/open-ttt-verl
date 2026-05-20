@@ -1,0 +1,24 @@
+[project]
+name = "ann-bench"
+version = "0.1.0"
+description = "ANN benchmark scripts and toy HNSW implementations"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "ann-bench authors" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "matplotlib>=3.8",
+  "faiss-cpu>=1.7.4",
+]
+
+[tool.setuptools]
+py-modules = ["gpt5_hnsw", "gpt5_hnsw_paper", "gpt5_hnsw_paper_fast"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+

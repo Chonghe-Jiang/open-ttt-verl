@@ -1,0 +1,22 @@
+{
+  "baseline": {
+    "name": "faiss_high_recall",
+    "recall_at_1": 0.9914,
+    "avg_query_time_ms": 3.85
+  },
+  "scoring": {
+    "mode": "latency_gated_recall",
+    "latency_threshold_ms": 7.7,
+    "recall_lower_threshold": 0.9409,
+    "max_score": 100.0,
+    "min_score": 0.0
+  },
+  "pareto": {
+    "recall_margin": -0.05,
+    "latency_margin_ms": 3.85
+  },
+  "targets": {
+    "aspirational_recall": 0.9990,
+    "aspirational_avg_query_time_ms": 7.7
+  }
+}

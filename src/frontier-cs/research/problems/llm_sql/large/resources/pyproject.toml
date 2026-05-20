@@ -1,0 +1,15 @@
+[project]
+name = "llm-sql-problem"
+version = "0.1.0"
+description = "Resources for LLM_SQL problem"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+  "pandas>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+

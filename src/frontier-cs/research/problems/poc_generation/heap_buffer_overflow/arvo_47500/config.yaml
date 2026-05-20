@@ -1,0 +1,8 @@
+tag: security
+variant_id: poc_generation_heap_buffer_overflow_arvo_47500
+runtime:
+  docker:
+    image: python:3.11-slim-trixie
+    dind: true
+dependencies:
+  uv_project: ../../common

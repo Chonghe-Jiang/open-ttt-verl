@@ -1,0 +1,15 @@
+{
+  "problem_name": "gemm_optimization",
+  "description": "Triton kernel optimization problem for high-performance GEMM",
+  "requirements": {
+    "cuda_backend": true,
+    "gpu_required": true,
+    "triton_version": ">=2.1.0",
+    "torch_version": ">=2.0.0"
+  },
+  "evaluation": {
+    "timeout_seconds": 300,
+    "memory_limit_mb": 8192,
+    "gpu_memory_limit_mb": 4096
+  }
+}

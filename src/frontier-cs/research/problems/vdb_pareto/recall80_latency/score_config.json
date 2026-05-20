@@ -1,0 +1,21 @@
+{
+  "baseline": {
+    "name": "faiss_recall80_latency",
+    "recall_at_1": 0.9914,
+    "avg_query_time_ms": 3.85
+  },
+  "scoring": {
+    "mode": "recall_gated_latency_linear",
+    "recall_gate": 0.80,
+    "latency_min_ms": 0.0,
+    "latency_max_ms": 0.6,
+    "max_score": 100.0,
+    "min_score": 0.0
+  },
+  "pareto": {
+    "recall_margin": 0.0,
+    "latency_margin_ms": 0.0
+  }
+}
+
+

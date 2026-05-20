@@ -1,0 +1,10 @@
+tag: security
+{
+  "dependencies": {
+    "uv_project": "resources"
+  },
+  "datasets": [
+    "arvo:47101"
+  ],
+  "tag": "security"
+}

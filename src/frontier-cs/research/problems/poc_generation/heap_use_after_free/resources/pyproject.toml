@@ -1,0 +1,8 @@
+[project]
+name = "poc-generation"
+version = "0.1.0"
+description = "PoC Generation"
+requires-python = ">=3.11"
+dependencies = [
+  "requests"
+]

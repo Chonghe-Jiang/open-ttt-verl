@@ -1,0 +1,17 @@
+[project]
+name = "gemm-optimization"
+version = "0.1.0"
+description = "GEMM optimization problem resources"
+requires-python = ">=3.8"
+dependencies = []
+# Docker image already has torch, triton, numpy, tqdm
+
+[tool.setuptools]
+py-modules = ["benchmark"]
+
+[tool.setuptools.packages.find]
+exclude = ["__pycache__"]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
