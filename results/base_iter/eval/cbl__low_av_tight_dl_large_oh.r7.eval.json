@@ -1,0 +1,15 @@
+{
+  "task": "cbl__low_av_tight_dl_large_oh",
+  "rollout": 7,
+  "score_100": 40.0,
+  "score_clipped_100": 40.0,
+  "reward_01": 0.4,
+  "status": "ok",
+  "rc": 0,
+  "elapsed_s": 3436.4630057811737,
+  "num_turns_used": 3,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "solution_path": "",
+  "best_code_chars": 1967
+}

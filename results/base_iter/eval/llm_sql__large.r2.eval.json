@@ -1,0 +1,15 @@
+{
+  "task": "llm_sql__large",
+  "rollout": 2,
+  "score_100": 13.048125328233006,
+  "score_clipped_100": 13.048125328233006,
+  "reward_01": 0.13048125328233007,
+  "status": "ok",
+  "rc": 0,
+  "elapsed_s": 3418.121641397476,
+  "num_turns_used": 3,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "solution_path": "",
+  "best_code_chars": 8173
+}

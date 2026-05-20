@@ -1,0 +1,17 @@
+{
+  "task": "llm_sql__large",
+  "rollout": 3,
+  "final_score": 0.0,
+  "best_code": "",
+  "turns": [
+    {
+      "turn": 0,
+      "error": "gen failed: HTTPConnectionPool(host='p5en-odcr-queue-dy-p5en48xlarge-1', port=8000): Read timed out. (read timeout=1800)",
+      "text": "",
+      "code": "",
+      "score": 0.0,
+      "feedback": ""
+    }
+  ],
+  "wall_s": 1800.0688059329987
+}

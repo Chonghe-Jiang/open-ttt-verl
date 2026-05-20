@@ -1,0 +1,15 @@
+{
+  "task": "cbl__mixed_av_loose_dl_large_oh",
+  "rollout": 5,
+  "score_100": 38.0,
+  "score_clipped_100": 38.0,
+  "reward_01": 0.38,
+  "status": "ok",
+  "rc": 0,
+  "elapsed_s": 2875.636887550354,
+  "num_turns_used": 3,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "solution_path": "",
+  "best_code_chars": 3467
+}
