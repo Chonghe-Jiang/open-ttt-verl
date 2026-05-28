@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -37,6 +38,14 @@ VLLM_LORA_NAME = "123"
 VLLM_LORA_PATH = "simon_lora_path"
 
 VLLM_ASCEND_REQUIRED_ENV_VARS = {"VLLM_ALL2ALL_BACKEND": "flashinfer_all2allv", "VLLM_ASCEND_ENABLE_NZ": "0"}
+
+
+def get_zmq_handle_for_device_uuid(device_uuid: str) -> str:
+    suffix = os.getenv("VERL_VLLM_ZMQ_SUFFIX")
+    if suffix and len(suffix) > 24:
+        suffix = f"{suffix[:8]}-{hashlib.sha1(suffix.encode()).hexdigest()[:12]}"
+    suffix_part = f"-{suffix}" if suffix else ""
+    return f"ipc:///tmp/rl-colocate-zmq-{device_uuid}{suffix_part}.sock"
 
 
 def set_death_signal():
@@ -233,7 +242,7 @@ class vLLMColocateWorkerExtension:
         """Get ZMQ handle for communication."""
         if not hasattr(self, "device_uuid") or not self.device_uuid:
             self.device_uuid = get_device_uuid(self.device.index)
-        return f"ipc:///tmp/rl-colocate-zmq-{self.device_uuid}.sock"
+        return get_zmq_handle_for_device_uuid(self.device_uuid)
 
 
 class SuppressSignalInThread:

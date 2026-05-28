@@ -1,0 +1,90 @@
+import threading
+
+from verl_ttt_discover.archive import PUCTArchive
+from verl_ttt_discover.state import DiscoveryState
+
+
+def test_acquire_group_binds_same_uid_to_one_state(tmp_path):
+    states = [
+        DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5, 0.5], id="state-a"),
+        DiscoveryState(timestep=-1, value=0.5, raw_score=2.0, code="", construction=[0.4, 0.6], id="state-b"),
+    ]
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=states, rollout_n=3)
+
+    first = archive.acquire_group("7:uid-0")
+    second = archive.acquire_group("7:uid-0")
+
+    assert first.id == second.id
+    assert archive.snapshot()["groups"]["7:uid-0"]["state_id"] == first.id
+
+
+def test_concurrent_acquire_group_is_atomic(tmp_path):
+    states = [
+        DiscoveryState(timestep=-1, value=float(i), raw_score=float(10 - i), code="", construction=[0.5], id=f"s{i}")
+        for i in range(5)
+    ]
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=states, rollout_n=8)
+    barrier = threading.Barrier(8)
+    picked_ids = []
+
+    def acquire_once():
+        barrier.wait()
+        picked_ids.append(archive.acquire_group("3:uid-0").id)
+
+    threads = [threading.Thread(target=acquire_once) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(set(picked_ids)) == 1
+
+
+def test_submit_child_finalizes_group_once_and_updates_puct(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="parent")
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent], rollout_n=3, topk_children=2)
+    archive.acquire_group("1:uid-0")
+
+    assert not archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=1.2, raw_score=0.8, code="a", construction=[0.6], id="child-a"),
+    )
+    assert not archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=0.8, raw_score=1.2, code="b", construction=[0.4], id="child-b"),
+    )
+    assert archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=2.0, raw_score=0.5, code="c", construction=[0.7], id="child-c"),
+    )
+    assert not archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=3.0, raw_score=0.3, code="late", construction=[0.8], id="child-late"),
+    )
+
+    snapshot = archive.snapshot()
+    assert snapshot["puct_T"] == 1
+    assert snapshot["puct_n"]["parent"] == 1
+    assert snapshot["puct_m"]["parent"] == 2.0
+    assert snapshot["groups"]["1:uid-0"]["finalized"] is True
+    assert snapshot["best_state_id"] == "child-c"
+    assert [state["id"] for state in snapshot["states"] if state["id"].startswith("child")] == ["child-c", "child-a"]
+
+
+def test_multiple_archive_instances_do_not_drop_submit_counts(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="parent")
+    path = tmp_path / "archive.json"
+    PUCTArchive(path, initial_states=[parent], rollout_n=2)
+
+    first_process_view = PUCTArchive(path, rollout_n=2)
+    second_process_view = PUCTArchive(path, rollout_n=2)
+
+    assert first_process_view.acquire_group("1:uid-0").id == "parent"
+    assert second_process_view.acquire_group("1:uid-0").id == "parent"
+    assert not first_process_view.submit_child("1:uid-0", None)
+    assert second_process_view.submit_child("1:uid-0", None)
+
+    snapshot = PUCTArchive(path, rollout_n=2).snapshot()
+    assert snapshot["groups"]["1:uid-0"]["submitted"] == 2
+    assert snapshot["groups"]["1:uid-0"]["finalized"] is True
+    assert snapshot["puct_T"] == 1

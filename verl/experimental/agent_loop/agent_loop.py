@@ -972,8 +972,15 @@ class AgentLoopManager:
             for replica_rank in range(num_replicas)
         ]
 
-        if self.worker_group and self.rollout_config.name != "trtllm":
+        checkpoint_backend = self.rollout_config.get("checkpoint_engine", {}).get("backend", "naive")
+        use_colocated_checkpoint_workers = self.worker_group and checkpoint_backend != "naive"
+
+        if self.worker_group and self.rollout_config.name != "trtllm" and not use_colocated_checkpoint_workers:
             await asyncio.gather(*[server.init_hybrid(self.worker_group) for server in self.rollout_replicas])
+        elif use_colocated_checkpoint_workers:
+            await asyncio.gather(
+                *[server.init_colocated(self.rollout_resource_pool) for server in self.rollout_replicas]
+            )
         # TODO: unify trtllm to init_hybrid
         elif self.worker_group and self.rollout_config.name == "trtllm":
             await asyncio.gather(

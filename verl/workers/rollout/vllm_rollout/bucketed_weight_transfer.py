@@ -33,6 +33,19 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 
+def _ipc_path_from_zmq_handle(zmq_handle: str) -> str | None:
+    if not zmq_handle.startswith("ipc://"):
+        return None
+    return zmq_handle.removeprefix("ipc://")
+
+
+def _unlink_stale_ipc_socket(zmq_handle: str) -> None:
+    ipc_path = _ipc_path_from_zmq_handle(zmq_handle)
+    if ipc_path is None or not os.path.exists(ipc_path):
+        return
+    os.unlink(ipc_path)
+
+
 class TensorMetadata(TypedDict):
     name: str
     shape: torch.Size
@@ -156,6 +169,7 @@ class BucketedWeightSender:
     def _init_socket(self):
         """Initialize ZMQ REQ socket and bind."""
         self.socket = self.zmq_context.socket(zmq.REQ)
+        _unlink_stale_ipc_socket(self.zmq_handle)
         self.socket.bind(self.zmq_handle)
 
     def _init_buffer(self):

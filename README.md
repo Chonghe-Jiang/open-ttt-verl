@@ -1,3 +1,177 @@
+<!-- Open-TTT-verl quickstart. The upstream verl README starts below. -->
+
+# Open-TTT-verl: TTT-Discover on verl
+
+This repository is a fork of [verl](https://github.com/verl-project/verl) with a
+TTT-Discover/Erdos reproduction layered on top of verl's PPO, FSDP, vLLM,
+multi-turn agent loop, Ray runtime, and LoRA weight-sync machinery.
+
+The implementation keeps the TTT-specific logic in `verl_ttt_discover/` and
+uses small, targeted changes in verl core for agent-loop metadata, rollout
+weight transfer, and LoRA/update behavior needed by TTT.
+
+## What This Runs
+
+TTT-Discover is treated as an online RL/search workload:
+
+1. A static slot parquet gives verl a fixed number of training groups.
+2. `archive.json` stores the dynamic Discovery state, PUCT counters, group
+   bindings, submitted children, and current best Erdos state.
+3. verl generates rollouts through the TTT agent loop.
+4. verl computes old logprobs/ref logprobs, rollout-importance correction,
+   REINFORCE-style policy loss, LoRA actor updates, and actor-to-vLLM weight
+   updates.
+
+The parquet file is not updated during training. The dynamic state is
+`archive.json`; verl `uid` remains the grouping key for rollout/advantage logic.
+
+## Repository Layout
+
+- `verl_ttt_discover/`: TTT-Discover recipe, Erdos task, archive, data writer,
+  agent loop, and verl extension registration.
+- `verl_ttt_discover/config/`: smoke, 16k probe, and GPT-OSS BF16 configs.
+- `scripts/ttt_discover/`: NCCL preflight and launch helpers.
+- `tests/ttt_discover/`: focused tests for the TTT recipe and verl integration
+  patches.
+- `doc/discover.pdf`: local copy of the TTT-Discover paper used during this
+  implementation.
+
+## Environment
+
+Start from a CUDA-capable Python environment that can install verl and vLLM.
+The exact stack used during local validation was Python 3.13, PyTorch with CUDA,
+vLLM, Ray, FlashAttention packages, PEFT, datasets, pandas, pyarrow, and
+sentencepiece/tiktoken tokenizers. On a fresh machine, first install the normal
+verl dependencies from this repo:
+
+```bash
+pip install -e .
+pip install -r requirements.txt
+pip install -r requirements-test.txt
+```
+
+For GPT-OSS BF16, keep HuggingFace cache on a large filesystem:
+
+```bash
+export HF_HOME=/path/to/large/cache/huggingface
+```
+
+The GPT-OSS BF16 model cache is about 39 GB.
+
+## NCCL Preflight
+
+Before launching multi-GPU training, verify the selected GPUs can communicate:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+NCCL_DEBUG=INFO \
+NCCL_DEBUG_SUBSYS=INIT,ENV,GRAPH \
+NCCL_P2P_DISABLE=0 \
+NCCL_SHM_DISABLE=0 \
+NCCL_IB_DISABLE=1 \
+torchrun --standalone --nproc_per_node=2 \
+  scripts/ttt_discover/nccl_allreduce_check.py
+```
+
+Expected output includes `allreduce_sum=3.0` from both ranks and nonzero
+bandwidth.
+
+## Minimal GPT-OSS BF16 Smoke
+
+This is the public, portable smoke run for `unsloth/gpt-oss-20b-BF16` on two
+GPUs:
+
+```bash
+GPUS=0,1 \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh
+```
+
+If the model is already downloaded, point directly at the local snapshot:
+
+```bash
+GPUS=0,1 \
+MODEL_PATH=/path/to/models--unsloth--gpt-oss-20b-BF16/snapshots/<sha> \
+scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh
+```
+
+The default config is
+`verl_ttt_discover/config/erdos_2gpu_smoke_gptoss20b_bf16_flash.yaml`.
+It is intentionally small:
+
+- `groups_per_batch=2`, the minimum valid train batch for 2-GPU FSDP.
+- `group_size=1`, one rollout per Erdos state.
+- `max_model_len=2048`, `max_response_length=128`.
+- `save_freq=-1`, so the smoke does not write a large 20B checkpoint.
+- `load_format=auto` and `layered_summon=True`, so vLLM loads the BF16 base
+  model and verl syncs LoRA weights.
+
+On the validated Blackwell workstation, actor/ref use
+`attn_implementation=eager` because the current GPT-OSS transformers
+FlashAttention path failed with `S aux is currently only supported for Hopper
+GPUs`, and GPT-OSS did not support SDPA in that transformers version.
+
+## H100/H200 Notes
+
+H100/H200 are Hopper GPUs, so first try actor/ref FlashAttention:
+
+```bash
+GPUS=0,1 \
+HF_HOME=/path/to/large/cache/huggingface \
+ATTN_IMPL=flash_attention_2 \
+scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh \
+  actor_rollout_ref.rollout.enforce_eager=False
+```
+
+For larger experiments, start from:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+HF_HOME=/path/to/large/cache/huggingface \
+python -m verl_ttt_discover.main_erdos \
+  --config verl_ttt_discover/config/erdos_2gpu_scale_gptoss20b_flash.yaml
+```
+
+Scale gradually: first increase `max_model_len`, then `group_size`, then
+`groups_per_batch`. In colocated verl runs, actor + ref + vLLM rollout + LoRA
+sync buffers share the same GPU pool, so peak memory can exceed the raw model
+size by a large margin.
+
+## Qwen Smoke
+
+For a smaller model smoke:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+HF_HOME=/path/to/large/cache/huggingface \
+python -m verl_ttt_discover.main_erdos \
+  --config verl_ttt_discover/config/erdos_2gpu_smoke_flash.yaml
+```
+
+The config uses `Qwen/Qwen3-8B` by default. Pass a local model path through a
+final Hydra override if needed:
+
+```bash
+python -m verl_ttt_discover.main_erdos \
+  --config verl_ttt_discover/config/erdos_2gpu_smoke_flash.yaml \
+  actor_rollout_ref.model.path=/path/to/local/qwen3-8b
+```
+
+## Tests
+
+Run the focused TTT suite before pushing changes:
+
+```bash
+pytest -q tests/ttt_discover
+```
+
+Local validation for this repo currently passes this suite with 35 tests.
+
+## Upstream verl
+
+The original verl README starts below. Keep the upstream documentation for
+installation details, architecture background, and citations.
+
 <div align="center">
  👋 Hi, everyone!
     verl is a RL training library initiated by <b>ByteDance Seed team</b> and maintained by the verl community.
