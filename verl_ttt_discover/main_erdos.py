@@ -39,7 +39,7 @@ def _prepare_run(config: dict) -> dict[str, Path]:
     archive_path = output_dir / "archive.json"
     if not archive_path.exists():
         initial_states = [
-            create_random_initial_state(seed=int(run_cfg.get("seed", 0)) + i)
+            create_random_initial_state()
             for i in range(int(run_cfg.get("num_initial_states", ttt_cfg["groups_per_batch"])))
         ]
         PUCTArchive(
@@ -48,6 +48,8 @@ def _prepare_run(config: dict) -> dict[str, Path]:
             rollout_n=int(ttt_cfg["group_size"]),
             puct_c=float(ttt_cfg.get("puct_c", 1.0)),
             topk_children=int(ttt_cfg.get("topk_children", 2)),
+            max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
+            max_construction_len=ttt_cfg.get("max_construction_len", 1000),
         )
 
     slot_parquet = output_dir / "ttt_slots.parquet"

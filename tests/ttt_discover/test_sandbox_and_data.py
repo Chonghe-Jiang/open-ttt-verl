@@ -3,7 +3,7 @@ import numpy as np
 from verl_ttt_discover.agent_loop import make_group_uid
 from verl_ttt_discover.data import build_slot_records
 from verl_ttt_discover.erdos_env import verify_c5_solution
-from verl_ttt_discover.sandbox import evaluate_python_code
+from verl_ttt_discover.sandbox import evaluate_python_code, extract_python_code
 from verl_ttt_discover.state import DiscoveryState
 
 
@@ -45,3 +45,37 @@ def test_evaluate_python_code_reports_invalid_program(tmp_path):
     result = evaluate_python_code("def run():\n    raise RuntimeError('bad')\n", state=state, timeout_s=5, work_dir=tmp_path)
 
     assert "bad" in result.error
+
+
+def test_evaluate_python_code_allows_top_level_helpers(tmp_path):
+    state = DiscoveryState(timestep=-1, value=-0.5, raw_score=0.5, code="", construction=[0.5, 0.5])
+    code = """
+import numpy as np
+
+def helper():
+    return np.asarray(initial_h_values, dtype=float)
+
+def run(seed=42, budget_s=10, **kwargs):
+    h = helper()
+    return h, evaluate_erdos_solution((h, 0.5, len(h))), len(h)
+"""
+
+    result = evaluate_python_code(code, state=state, timeout_s=5, work_dir=tmp_path)
+
+    assert result.error is None
+    assert result.output[1] == 0.5
+
+
+def test_extract_python_code_uses_last_python_block():
+    response = """```python
+def helper():
+    pass
+```
+
+Final answer:
+```python
+def run(seed=42, budget_s=10, **kwargs):
+    return [0.5, 0.5], 0.5, 2
+```"""
+
+    assert extract_python_code(response).startswith("def run")

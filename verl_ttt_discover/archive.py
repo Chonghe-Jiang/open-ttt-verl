@@ -26,12 +26,14 @@ class PUCTArchive:
         puct_c: float = 1.0,
         topk_children: int = 2,
         max_buffer_size: int = 1000,
+        max_construction_len: int | None = 1000,
     ) -> None:
         self.path = Path(path)
         self.rollout_n = int(rollout_n)
         self.puct_c = float(puct_c)
         self.topk_children = int(topk_children)
         self.max_buffer_size = int(max_buffer_size)
+        self.max_construction_len = max_construction_len
         self._lock = threading.RLock()
 
         self._states: list[DiscoveryState] = []
@@ -40,6 +42,7 @@ class PUCTArchive:
         self._puct_m: dict[str, float] = {}
         self._puct_T = 0
         self._best_state_id: str | None = None
+        self._last_sampled_stats: list[dict[str, Any]] = []
 
         if self.path.exists():
             self._load()
@@ -62,13 +65,16 @@ class PUCTArchive:
                 if group is not None:
                     return self._state_by_id(group["state_id"])
 
-                state = self._sample_state()
+                blocked_ids = self._blocked_ids_for_group(group_uid)
+                state, puct_stats = self._sample_state(blocked_ids=blocked_ids)
                 self._groups[group_uid] = {
                     "state_id": state.id,
                     "children": [],
                     "submitted": 0,
                     "finalized": False,
+                    "puct_stats": puct_stats,
                 }
+                self._last_sampled_stats = [puct_stats]
                 self._save()
                 return state
 
@@ -90,9 +96,11 @@ class PUCTArchive:
                     group["children"].append(child.to_dict())
 
                 finalized = group["submitted"] >= self.rollout_n
+                snapshot_step = None
                 if finalized:
                     self._finalize_group(group_uid)
-                self._save()
+                    snapshot_step = _step_from_group_uid(group_uid)
+                self._save(snapshot_step=snapshot_step)
                 return finalized
 
     def _finalize_group(self, group_uid: str) -> None:
@@ -117,7 +125,7 @@ class PUCTArchive:
         group["finalized"] = True
         self._refresh_best()
 
-    def _sample_state(self) -> DiscoveryState:
+    def _sample_state(self, *, blocked_ids: set[str] | None = None) -> tuple[DiscoveryState, dict[str, Any]]:
         if not self._states:
             raise ValueError("PUCTArchive has no states to sample")
         values = np.array([float(state.value) for state in self._states], dtype=np.float64)
@@ -132,16 +140,43 @@ class PUCTArchive:
             visits = self._puct_n.get(state.id, 0)
             q_value = self._puct_m.get(state.id, float(state.value)) if visits > 0 else float(state.value)
             bonus = self.puct_c * scale * float(priors[idx]) * sqrt_T / (1.0 + visits)
-            scored.append((q_value + bonus, float(state.value), state))
+            score = q_value + bonus
+            scored.append((score, float(state.value), state, visits, q_value, float(priors[idx]), bonus))
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return scored[0][2]
+        picked = None
+        for entry in scored:
+            if not blocked_ids or entry[2].id not in blocked_ids:
+                picked = entry
+                break
+        if picked is None:
+            picked = scored[0]
+        score, value, state, visits, q_value, prior, bonus = picked
+        return state, {
+            "state_id": state.id,
+            "timestep": state.timestep,
+            "value": value,
+            "construction_len": len(state.construction) if state.construction else 0,
+            "n": visits,
+            "Q": q_value,
+            "P": prior,
+            "bonus": bonus,
+            "score": score,
+            "blocked_candidates": len(blocked_ids or ()),
+        }
 
     def _add_states(self, states: list[DiscoveryState]) -> None:
-        existing = {state.id for state in self._states}
+        existing_ids = {state.id for state in self._states}
+        existing_keys = {key for state in self._states if (key := self._state_key(state)) is not None}
         for state in states:
-            if state.id not in existing:
-                self._states.append(state)
-                existing.add(state.id)
+            key = self._state_key(state)
+            if state.id in existing_ids or (key is not None and key in existing_keys):
+                continue
+            if self.max_construction_len is not None and state.construction and len(state.construction) > self.max_construction_len:
+                continue
+            self._states.append(state)
+            existing_ids.add(state.id)
+            if key is not None:
+                existing_keys.add(key)
 
         self._states.sort(key=lambda state: float(state.value), reverse=True)
         self._states = self._states[: self.max_buffer_size]
@@ -155,6 +190,53 @@ class PUCTArchive:
     def _set_parent(self, child: DiscoveryState, parent: DiscoveryState) -> None:
         child.parent_values = [float(parent.value)] + list(parent.parent_values)
         child.parents = [{"id": parent.id, "timestep": parent.timestep}] + list(parent.parents)
+
+    def _state_key(self, state: DiscoveryState) -> tuple[Any, ...] | str | None:
+        if state.construction:
+            return _freeze_jsonable(state.construction)
+        if state.code:
+            return state.code
+        return None
+
+    def _children_map(self) -> dict[str, set[str]]:
+        children: dict[str, set[str]] = {}
+        for state in self._states:
+            for parent in state.parents:
+                parent_id = parent.get("id")
+                if parent_id:
+                    children.setdefault(str(parent_id), set()).add(state.id)
+        return children
+
+    def _lineage_ids(self, state: DiscoveryState, children_map: dict[str, set[str]]) -> set[str]:
+        lineage = {state.id}
+        for parent in state.parents:
+            parent_id = parent.get("id")
+            if parent_id:
+                lineage.add(str(parent_id))
+        queue = [state.id]
+        visited = {state.id}
+        while queue:
+            state_id = queue.pop(0)
+            for child_id in children_map.get(state_id, set()):
+                if child_id not in visited:
+                    visited.add(child_id)
+                    lineage.add(child_id)
+                    queue.append(child_id)
+        return lineage
+
+    def _blocked_ids_for_group(self, group_uid: str) -> set[str]:
+        step_prefix = group_uid.split(":", 1)[0]
+        children_map = self._children_map()
+        blocked: set[str] = set()
+        for existing_uid, group in self._groups.items():
+            if group.get("finalized") or existing_uid == group_uid or not existing_uid.startswith(f"{step_prefix}:"):
+                continue
+            try:
+                state = self._state_by_id(group["state_id"])
+            except KeyError:
+                continue
+            blocked.update(self._lineage_ids(state, children_map))
+        return blocked
 
     def _refresh_best(self) -> None:
         if not self._states:
@@ -175,6 +257,9 @@ class PUCTArchive:
             "puct_c": self.puct_c,
             "topk_children": self.topk_children,
             "max_buffer_size": self.max_buffer_size,
+            "max_construction_len": self.max_construction_len,
+            "sample_stats": self.sample_stats(),
+            "last_sampled_stats": self._last_sampled_stats,
         }
 
     def _load(self) -> None:
@@ -185,6 +270,8 @@ class PUCTArchive:
         self._puct_m = {str(k): float(v) for k, v in store.get("puct_m", {}).items()}
         self._puct_T = int(store.get("puct_T", 0))
         self._best_state_id = store.get("best_state_id")
+        self.max_construction_len = store.get("max_construction_len", self.max_construction_len)
+        self._last_sampled_stats = list(store.get("last_sampled_stats", []))
 
     def _reload_from_disk(self) -> None:
         if self.path.exists():
@@ -201,15 +288,74 @@ class PUCTArchive:
             finally:
                 flock(lock_file.fileno(), LOCK_UN)
 
-    def _save(self) -> None:
+    def _save(self, *, snapshot_step: int | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         store = self._to_store()
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp_path.write_text(json.dumps(store, indent=2, sort_keys=True))
         os.replace(tmp_path, self.path)
+        self._write_puct_stats(store)
+        if snapshot_step is not None:
+            self._write_snapshot(store, snapshot_step)
         if self._best_state_id is not None:
             best_path = self.path.with_name("best_state.json")
             best_state = self._state_by_id(self._best_state_id)
             best_tmp = best_path.with_suffix(".json.tmp")
             best_tmp.write_text(json.dumps(best_state.to_dict(), indent=2, sort_keys=True))
             os.replace(best_tmp, best_path)
+
+    def _write_puct_stats(self, store: dict[str, Any]) -> None:
+        stats_path = self.path.with_name("puct_stats.json")
+        tmp_path = stats_path.with_suffix(".json.tmp")
+        payload = {
+            "puct_T": self._puct_T,
+            "best_state_id": self._best_state_id,
+            "sample_stats": store["sample_stats"],
+            "last_sampled_stats": self._last_sampled_stats,
+        }
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        os.replace(tmp_path, stats_path)
+
+    def _write_snapshot(self, store: dict[str, Any], step: int) -> None:
+        snapshots_dir = self.path.with_name("archive_snapshots")
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshots_dir / f"step_{step:06d}.json"
+        tmp_path = snapshot_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(store, indent=2, sort_keys=True))
+        os.replace(tmp_path, snapshot_path)
+
+    def sample_stats(self) -> dict[str, Any]:
+        return {
+            "puct/buffer_size": len(self._states),
+            "puct/T": self._puct_T,
+            **_stats([state.value for state in self._states], "puct/buffer_value"),
+            **_stats([state.timestep for state in self._states], "puct/buffer_timestep"),
+            **_stats([len(state.construction) if state.construction else 0 for state in self._states], "puct/buffer_construction_len"),
+        }
+
+
+def _freeze_jsonable(value: Any) -> tuple[Any, ...] | Any:
+    if isinstance(value, list):
+        return tuple(_freeze_jsonable(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze_jsonable(item)) for key, item in value.items()))
+    return value
+
+
+def _stats(values: list[Any], prefix: str) -> dict[str, float]:
+    arr = np.array([float(value) for value in values if value is not None], dtype=np.float64)
+    if arr.size == 0:
+        return {}
+    return {
+        f"{prefix}/mean": float(np.mean(arr)),
+        f"{prefix}/std": float(np.std(arr)),
+        f"{prefix}/min": float(np.min(arr)),
+        f"{prefix}/max": float(np.max(arr)),
+    }
+
+
+def _step_from_group_uid(group_uid: str) -> int | None:
+    try:
+        return int(str(group_uid).split(":", 1)[0])
+    except (TypeError, ValueError):
+        return None

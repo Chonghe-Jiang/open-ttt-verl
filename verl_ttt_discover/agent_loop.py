@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import fcntl
+import json
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -10,6 +13,25 @@ from verl_ttt_discover.sandbox import evaluate_python_code, extract_python_code
 
 def make_group_uid(*, global_step: int | str, uid: str) -> str:
     return f"{global_step}:{uid}"
+
+
+def _clip_text(text: str | None, limit: int = 1200) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit * 2:
+        return text
+    return text[:limit] + "\n...[truncated]...\n" + text[-limit:]
+
+
+def _append_rollout_debug(*, archive_path: str, row: dict[str, Any]) -> None:
+    debug_path = Path(archive_path).parent / "rollout_debug.jsonl"
+    lock_path = debug_path.with_suffix(debug_path.suffix + ".lock")
+    debug_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        with debug_path.open("a") as debug_file:
+            debug_file.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 try:
@@ -112,6 +134,26 @@ class TTTDiscoverAgentLoop(AgentLoopBase):
         else:
             reward_extra_info.update({"error": "No python code block found"})
             archive.submit_child(group_uid, None)
+
+        _append_rollout_debug(
+            archive_path=extra_info["archive_path"],
+            row={
+                "group_uid": group_uid,
+                "state_id": state.id,
+                "global_step": global_step,
+                "valid": reward_extra_info["valid"],
+                "reward_score": reward_score,
+                "raw_score": reward_extra_info["raw_score"],
+                "message": reward_extra_info["message"],
+                "error": reward_extra_info["error"],
+                "has_python_block": "```python" in response_text,
+                "has_extracted_code": code is not None,
+                "response_chars": len(response_text),
+                "code_chars": len(code or ""),
+                "response_excerpt": _clip_text(response_text),
+                "code_excerpt": _clip_text(code or ""),
+            },
+        )
 
         response_mask = [1] * len(response_ids)
         output = AgentLoopOutput(

@@ -25,9 +25,9 @@ class SandboxResult:
 
 
 def extract_python_code(response: str) -> str | None:
-    match = re.search(r"```python\s+([\s\S]*?)\s*```", response)
-    if match:
-        return match.group(1).strip()
+    matches = list(re.finditer(r"```python\s+([\s\S]*?)\s*```", response))
+    if matches:
+        return matches[-1].group(1).strip()
     stripped = response.strip()
     return stripped if stripped.startswith("def run") else None
 
@@ -61,9 +61,8 @@ def _worker(code: str, construction: list[Any] | None, result_queue: mp.Queue) -
             "verify_c5_solution": verify_c5_solution,
             "initial_h_values": np.asarray(construction, dtype=np.float64) if construction is not None else None,
         }
-        locals_dict: dict[str, Any] = {}
-        exec(code, globals_dict, locals_dict)
-        run_fn = locals_dict.get("run") or globals_dict.get("run")
+        exec(code, globals_dict)
+        run_fn = globals_dict.get("run")
         if run_fn is None:
             raise ValueError("Program must define run(seed=42, budget_s=..., **kwargs)")
         output = run_fn()

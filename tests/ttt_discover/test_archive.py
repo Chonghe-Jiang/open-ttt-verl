@@ -88,3 +88,53 @@ def test_multiple_archive_instances_do_not_drop_submit_counts(tmp_path):
     assert snapshot["groups"]["1:uid-0"]["submitted"] == 2
     assert snapshot["groups"]["1:uid-0"]["finalized"] is True
     assert snapshot["puct_T"] == 1
+
+
+def test_duplicate_construction_is_not_added_to_archive(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="parent")
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent], rollout_n=1)
+    archive.acquire_group("1:uid-0")
+
+    assert archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=2.0, raw_score=0.5, code="duplicate", construction=[0.5], id="duplicate"),
+    )
+
+    snapshot = archive.snapshot()
+    assert [state["id"] for state in snapshot["states"]] == ["parent"]
+    assert snapshot["puct_m"]["parent"] == 2.0
+
+
+def test_lineage_blocking_avoids_same_step_family(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=3.0, raw_score=0.3, code="", construction=[0.3], id="parent")
+    child = DiscoveryState(
+        timestep=0,
+        value=2.0,
+        raw_score=0.5,
+        code="child",
+        construction=[0.2],
+        id="child",
+        parents=[{"id": "parent", "timestep": -1}],
+    )
+    other = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.1], id="other")
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent, child, other], rollout_n=2)
+
+    assert archive.acquire_group("4:uid-0").id == "parent"
+    assert archive.acquire_group("4:uid-1").id == "other"
+
+
+def test_archive_writes_step_snapshot_and_puct_stats(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="parent")
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent], rollout_n=1)
+    archive.acquire_group("12:uid-0")
+
+    assert archive.submit_child(
+        "12:uid-0",
+        DiscoveryState(timestep=12, value=1.2, raw_score=0.8, code="child", construction=[0.6], id="child"),
+    )
+
+    assert (tmp_path / "archive_snapshots" / "step_000012.json").exists()
+    assert (tmp_path / "puct_stats.json").exists()
+    snapshot = archive.snapshot()
+    assert "sample_stats" in snapshot
+    assert snapshot["last_sampled_stats"][0]["state_id"] == "parent"

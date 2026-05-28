@@ -4,6 +4,7 @@ import pytest
 from verl_ttt_discover.erdos_env import (
     ErdosEvaluationError,
     build_erdos_prompt,
+    create_random_initial_state,
     evaluate_erdos_solution,
     score_erdos_result,
     verify_c5_solution,
@@ -55,5 +56,21 @@ def test_build_erdos_prompt_includes_bound_and_initial_construction():
 
     assert "Erdos minimum overlap" in prompt
     assert "initial_h_values" in prompt
+    assert "Current record: C5 <= 0.38092" in prompt
+    assert "Smaller sequences with less than 1k samples are preferred" in prompt
+    assert "Make all helper functions top level, no closures or lambdas" in prompt
     assert "0.381000" in prompt
     assert "def run(): pass" in prompt
+
+
+def test_create_random_initial_state_matches_official_shape_and_bounds():
+    state = create_random_initial_state(seed=0)
+
+    assert state.timestep == -1
+    assert state.code == ""
+    assert state.construction is not None
+    assert 40 <= len(state.construction) < 100
+    values = np.asarray(state.construction)
+    assert np.all(np.isfinite(values))
+    assert np.sum(values) == pytest.approx(len(values) / 2.0)
+    assert state.value == pytest.approx(-state.raw_score)
