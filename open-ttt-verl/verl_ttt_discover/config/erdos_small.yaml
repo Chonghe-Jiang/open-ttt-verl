@@ -1,0 +1,35 @@
+run:
+  output_dir: outputs/ttt_erdos/small
+  project_name: ttt_discover
+  experiment_name: erdos_small
+  model_path: /path/to/local/model
+  seed: 0
+  num_initial_states: 8
+  num_steps: 10
+  total_epochs: 1
+  max_prompt_length: 32768
+  max_response_length: 8192
+  learning_rate: 4.0e-5
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0.1
+  rollout_engine: sglang
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.7
+  n_gpus_per_node: 8
+  nnodes: 1
+  save_freq: 2
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+
+ttt:
+  groups_per_batch: 8
+  group_size: 64
+  eval_timeout: 1100
+  cpus: 1
+  puct_c: 1.0
+  topk_children: 2
+  target_c5: 0.3808
+
+verl_overrides: []

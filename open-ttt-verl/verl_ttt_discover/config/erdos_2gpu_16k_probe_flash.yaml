@@ -1,0 +1,57 @@
+run:
+  output_dir: outputs/ttt_erdos/2gpu_16k_probe_flash
+  project_name: ttt_discover
+  experiment_name: erdos_2gpu_16k_probe_flash
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 2
+  num_steps: 1
+  total_epochs: 1
+  max_prompt_length: 8192
+  max_response_length: 8192
+  learning_rate: 1.0e-5
+  ppo_mini_batch_size: 2
+  ppo_micro_batch_size_per_gpu: 1
+  use_remove_padding: true
+  use_kl_loss: true
+  kl_loss_coef: 0.01
+  rollout_engine: vllm
+  tensor_model_parallel_size: 2
+  gpu_memory_utilization: 0.60
+  n_gpus_per_node: 2
+  nnodes: 1
+  save_freq: 1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+
+ttt:
+  groups_per_batch: 2
+  group_size: 4
+  eval_timeout: 60
+  cpus: 1
+  puct_c: 1.0
+  topk_children: 2
+  target_c5: 0.3808
+
+verl_overrides:
+  - trainer.use_legacy_worker_impl=disable
+  - actor_rollout_ref.model.external_lib=verl_ttt_discover.verl_ext
+  - +actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bf16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bf16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=True
+  - actor_rollout_ref.rollout.agent.num_workers=8
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.max_model_len=16384
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.checkpoint_engine.backend=naive
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1

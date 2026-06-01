@@ -1,0 +1,53 @@
+[37mJob submission server address[39m: [1mhttp://127.0.0.1:8265[22m
+
+[32m-------------------------------------------------------[39m
+[32mJob 'raysubmit_Xz5AzrapjL7ei7RA' submitted successfully[39m
+[32m-------------------------------------------------------[39m
+
+[36mNext steps[39m
+  Query the logs of the job:
+    [1mray job logs raysubmit_Xz5AzrapjL7ei7RA[22m
+  Query the status of the job:
+    [1mray job status raysubmit_Xz5AzrapjL7ei7RA[22m
+  Request the job to be stopped:
+    [1mray job stop raysubmit_Xz5AzrapjL7ei7RA[22m
+
+Tailing logs until the job exits (disable with --no-wait):
+2026-05-31 11:37:05,761	INFO job_manager.py:587 -- Runtime env is setting up.
+Running entrypoint for job raysubmit_Xz5AzrapjL7ei7RA: python3 train.py --actor-num-nodes 1 --actor-num-gpus-per-node 8 --rollout-num-gpus 8 --colocate --spec slime_plugins.models.gpt_oss get_gpt_oss_spec --num-layers 24 --hidden-size 2880 --ffn-hidden-size 2880 --num-attention-heads 64 --group-query-attention --num-query-groups 8 --kv-channels 64 --seq-length 4096 --max-position-embeddings 131072 --padded-vocab-size 201088 --make-vocab-size-divisible-by 128 --tokenizer-type HuggingFaceTokenizer --bf16 --normalization RMSNorm --untie-embeddings-and-output-weights --no-masked-softmax-fusion --no-rope-fusion --no-bias-gelu-fusion --no-bias-dropout-fusion --use-mcore-models --rotary-percent 1.0 --rotary-base 150000 --position-embedding-type rope --use-rope-scaling --rope-scaling-factor 32 --sequence-parallel --num-experts 32 --moe-ffn-hidden-size 2880 --moe-router-topk 4 --moe-router-dtype fp32 --moe-router-score-function softmax --moe-router-load-balancing-type none --moe-aux-loss-coeff 0.0 --moe-token-dispatcher-type alltoall --moe-grouped-gemm --quick-geglu --glu-linear-offset 1.0 --softmax-type learnable --window-attn-skip-freq 2 --window-size 128,0 --activation-func-clamp-value 7.0 --hf-checkpoint /root/workspace/models/gpt-oss-20b-BF16-processed --ref-load /root/workspace/erdos/ckpt/gpt-oss-20b_torch_dist --save /root/workspace/erdos/ckpt/gpt-oss-20b_erdos --save-interval 20 --tensor-model-parallel-size 1 --pipeline-model-parallel-size 2 --expert-model-parallel-size 4 --recompute-granularity full --recompute-method uniform --recompute-num-layers 1 --use-dynamic-batch-size --max-tokens-per-gpu 1536 --seq-length 1536 --train-memory-margin-bytes 268435456 --megatron-to-hf-mode bridge --moe-token-dispatcher-type alltoall --attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --prompt-data /root/workspace/erdos/data/erdos_single.jsonl --input-key prompt --label-key label --apply-chat-template --custom-generate-function-path erdos_slime.erdos_generate.generate --custom-rm-path erdos_slime.erdos_rm.reward --advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.0005 --kl-loss-type low_var_kl --eps-clip 0.2 --num-rollout 500 --rollout-batch-size 16 --n-samples-per-prompt 16 --rollout-max-response-len 8192 --rollout-temperature 0.6 --global-batch-size 256 --micro-batch-size 1 --lr 5e-7 --lr-decay-style cosine --min-lr 0 --lr-warmup-fraction 0.01 --weight-decay 0.01 --adam-beta1 0.9 --adam-beta2 0.99 --clip-grad 1.0 --sglang-dp-attention --sglang-tp 2 --sglang-mem-fraction-static 0.4 --sglang-cuda-graph-max-bs 16 --sglang-max-running-requests 64 --sglang-context-length 16384
+[2026-05-31 11:37:24] param_and_grad_buffer.py:69 - Detected Megatron Core, using Megatron-FSDP with Megatron.
+[2026-05-31 11:37:24] megatron_fsdp.py:47 - Detected Megatron Core, using Megatron-FSDP with Megatron.
+Unable to import `torchao` Tensor objects. This may affect loading checkpoints serialized with `torchao`
+/usr/local/lib/python3.12/dist-packages/modelopt/torch/__init__.py:53: UserWarning: transformers>=5.0 support is experimental. Unified Hugging Face checkpoint export for quantized checkpoints may not work for some models yet.
+  _warnings.warn(
+/root/workspace/erdos/Megatron-LM/megatron/core/models/mimo/config/base_configs.py:11: UserWarning: MimoModelConfig is experimental and still under active development. The API may change without notice in future releases.
+  class MimoModelConfig:
+[2026-05-31 11:37:32] megatron_chunked_grad_coalesce_patch.py:133 - slime grad coalesce patch applied to megatron.core.distributed.finalize_model_grads._allreduce_non_tensor_model_parallel_grads (chunk=1024 MiB)
+LANG_RL Log directory: None
+[2026-05-31 11:37:32] arguments.py:170 - --tokenizer-model not set, use --hf-checkpoint as tokenizer model.
+Traceback (most recent call last):
+  File "/root/workspace/erdos/slime/train.py", line 106, in <module>
+    args = parse_args()
+           ^^^^^^^^^^^^
+  File "/root/workspace/erdos/slime/slime/utils/arguments.py", line 1500, in parse_args
+    slime_validate_args(args)
+  File "/root/workspace/erdos/slime/slime/utils/arguments.py", line 1649, in slime_validate_args
+    raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
+FileNotFoundError: ref_load /root/workspace/erdos/ckpt/gpt-oss-20b_torch_dist does not exist, please check the path.
+
+[31m---------------------------------------[39m
+[31mJob 'raysubmit_Xz5AzrapjL7ei7RA' failed[39m
+[31m---------------------------------------[39m
+
+Status message: Job entrypoint command failed with exit code 1, last available logs (truncated to 20,000 chars):
+[2026-05-31 11:37:32] arguments.py:170 - --tokenizer-model not set, use --hf-checkpoint as tokenizer model.
+Traceback (most recent call last):
+  File "/root/workspace/erdos/slime/train.py", line 106, in <module>
+    args = parse_args()
+           ^^^^^^^^^^^^
+  File "/root/workspace/erdos/slime/slime/utils/arguments.py", line 1500, in parse_args
+    slime_validate_args(args)
+  File "/root/workspace/erdos/slime/slime/utils/arguments.py", line 1649, in slime_validate_args
+    raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
+FileNotFoundError: ref_load /root/workspace/erdos/ckpt/gpt-oss-20b_torch_dist does not exist, please check the path.
+
