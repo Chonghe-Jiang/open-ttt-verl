@@ -45,9 +45,12 @@ jobs:
           python tests/special_sanity/check_license.py \
             --directories verl_ttt_discover tests/ttt_discover scripts/ttt_discover
 
-      - name: Run TTT tests
+      - name: Run CPU-safe TTT tests
         run: |
-          pytest -q tests/ttt_discover
+          pytest -q \
+            tests/ttt_discover/test_archive.py \
+            tests/ttt_discover/test_erdos_env.py \
+            tests/ttt_discover/test_nccl_allreduce_check.py
 
       - name: Prepare official B200 config
         run: |
