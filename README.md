@@ -38,19 +38,30 @@ The parquet file is not updated during training. The dynamic state is
 
 ## Environment
 
-Start from a CUDA-capable Python environment that can install verl and vLLM.
-The exact stack used during local validation was Python 3.13, PyTorch with CUDA,
-vLLM, Ray, FlashAttention packages, PEFT, datasets, pandas, pyarrow, and
-sentencepiece/tiktoken tokenizers. On a fresh machine, first install the normal
-verl dependencies from this repo:
+Start from a CUDA-capable Python environment with a PyTorch build matching the
+machine driver. On a fresh large-GPU machine, install the TTT runtime extras
+from this repo:
 
 ```bash
-pip install -e .
-pip install -r requirements.txt
+pip install --upgrade pip setuptools wheel packaging ninja
+pip install -r requirements-ttt.txt
 pip install -r requirements-test.txt
 ```
 
-For GPT-OSS BF16, keep HuggingFace cache on a large filesystem:
+`requirements-ttt.txt` installs this fork with the verl `vllm`, `gpu`, and
+`math` extras. The `gpu` extra includes `flash-attn`. On clusters with a pinned
+CUDA/PyTorch/vLLM image, install the cluster-provided torch and vLLM first, then
+run the same command.
+
+If `flash-attn` needs to compile from source, make sure `CUDA_HOME` points at a
+CUDA toolkit compatible with your PyTorch build:
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+MAX_JOBS=8 pip install --no-build-isolation flash-attn
+```
+
+For GPT-OSS BF16, keep the HuggingFace cache on a large filesystem:
 
 ```bash
 export HF_HOME=/path/to/large/cache/huggingface
@@ -58,23 +69,29 @@ export HF_HOME=/path/to/large/cache/huggingface
 
 The GPT-OSS BF16 model cache is about 39 GB.
 
+Use `unsloth/gpt-oss-20b-BF16` for training. The original GPT-OSS model release
+uses a quantized/MXFP-style layout that is not a clean trainable actor/ref path
+in verl; the BF16 conversion gives verl FSDP, LoRA, ref logprobs, and vLLM
+weight loading a normal BF16 HuggingFace model to work with.
+
 ## NCCL Preflight
 
 Before launching multi-GPU training, verify the selected GPUs can communicate:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
 NCCL_DEBUG=INFO \
 NCCL_DEBUG_SUBSYS=INIT,ENV,GRAPH \
 NCCL_P2P_DISABLE=0 \
 NCCL_SHM_DISABLE=0 \
 NCCL_IB_DISABLE=1 \
-torchrun --standalone --nproc_per_node=2 \
+torchrun --standalone --nproc_per_node=4 \
   scripts/ttt_discover/nccl_allreduce_check.py
 ```
 
-Expected output includes `allreduce_sum=3.0` from both ranks and nonzero
-bandwidth.
+Expected output includes the correct all-reduce sum from every rank and nonzero
+bandwidth. For two GPUs, use `CUDA_VISIBLE_DEVICES=0,1` and
+`--nproc_per_node=2`; the expected sum is `3.0`.
 
 ## Minimal GPT-OSS BF16 Smoke
 
@@ -111,31 +128,68 @@ On the validated Blackwell workstation, actor/ref use
 FlashAttention path failed with `S aux is currently only supported for Hopper
 GPUs`, and GPT-OSS did not support SDPA in that transformers version.
 
-## H100/H200 Notes
+## Full Erdos Run on 4xB200
 
-H100/H200 are Hopper GPUs, so first try actor/ref FlashAttention:
-
-```bash
-GPUS=0,1 \
-HF_HOME=/path/to/large/cache/huggingface \
-ATTN_IMPL=flash_attention_2 \
-scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh \
-  actor_rollout_ref.rollout.enforce_eager=False
-```
-
-For larger experiments, start from:
+For the main Erdos experiment on four B200 GPUs, use the BF16 GPT-OSS 20B model,
+LoRA rank 32, 16k total context, and the TTT-Discover batch shape from the
+original experiment: `groups_per_batch=8` and `group_size=64`.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 \
+GPUS=0,1,2,3 \
 HF_HOME=/path/to/large/cache/huggingface \
-python -m verl_ttt_discover.main_erdos \
-  --config verl_ttt_discover/config/erdos_2gpu_scale_gptoss20b_flash.yaml
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
 ```
 
-Scale gradually: first increase `max_model_len`, then `group_size`, then
-`groups_per_batch`. In colocated verl runs, actor + ref + vLLM rollout + LoRA
-sync buffers share the same GPU pool, so peak memory can exceed the raw model
-size by a large margin.
+The default config is
+`verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_16k.yaml`:
+
+- `model_path=unsloth/gpt-oss-20b-BF16`
+- `groups_per_batch=8`, `group_size=64`
+- `max_prompt_length=8192`, `max_response_length=8192`,
+  `rollout.max_model_len=16384`
+- `learning_rate=4e-5`, LoRA rank/alpha 32
+- actor/ref dtype `bf16`
+- actor/ref attention `flash_attention_2`
+- vLLM rollout with tensor parallel size 4
+- `checkpoint_engine.backend=naive` for colocated actor/ref/rollout placement
+
+To use a pre-downloaded snapshot:
+
+```bash
+GPUS=0,1,2,3 \
+HF_HOME=/path/to/large/cache/huggingface \
+MODEL_PATH=/path/to/models--unsloth--gpt-oss-20b-BF16/snapshots/<sha> \
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
+```
+
+If your transformers/flash-attn stack hits the GPT-OSS Blackwell attention
+kernel error, keep vLLM enabled but fall back only the actor/ref HuggingFace
+attention path:
+
+```bash
+GPUS=0,1,2,3 \
+HF_HOME=/path/to/large/cache/huggingface \
+ATTN_IMPL=eager \
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
+  actor_rollout_ref.rollout.enforce_eager=True
+```
+
+For first-time machine bring-up, run the two-GPU smoke first, then the 4GPU
+config with a shorter run:
+
+```bash
+GPUS=0,1,2,3 \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
+  run.output_dir=outputs/ttt_erdos/4gpu_b200_bringup_g8_n8 \
+  run.num_steps=1 \
+  run.save_freq=-1 \
+  ttt.group_size=8 \
+  actor_rollout_ref.rollout.max_num_seqs=64
+```
+
+In colocated verl runs, actor + ref + vLLM rollout + LoRA sync buffers share the
+same GPU pool, so peak memory can exceed the raw model size by a large margin.
 
 ## Qwen Smoke
 
@@ -165,7 +219,8 @@ Run the focused TTT suite before pushing changes:
 pytest -q tests/ttt_discover
 ```
 
-Local validation for this repo currently passes this suite with 35 tests.
+Run this suite after changing TTT code or launch configs; it checks the archive,
+agent loop, sandbox, config overrides, NCCL helper, and verl extension hooks.
 
 ## Upstream verl
 

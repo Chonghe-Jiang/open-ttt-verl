@@ -30,6 +30,27 @@ def _load_recipe_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
+def _split_overrides(overrides: list[str]) -> tuple[list[str], list[str]]:
+    recipe_overrides = []
+    verl_overrides = []
+    for override in overrides:
+        if override.startswith(("run.", "ttt.")):
+            recipe_overrides.append(override)
+        else:
+            verl_overrides.append(override)
+    return recipe_overrides, verl_overrides
+
+
+def _apply_recipe_overrides(config: dict, overrides: list[str]) -> dict:
+    if not overrides:
+        return config
+
+    from omegaconf import OmegaConf
+
+    merged = OmegaConf.merge(OmegaConf.create(config), OmegaConf.from_dotlist(overrides))
+    return OmegaConf.to_container(merged, resolve=True)
+
+
 def _prepare_run(config: dict) -> dict[str, Path]:
     run_cfg = config["run"]
     ttt_cfg = config["ttt"]
@@ -145,8 +166,10 @@ def main() -> None:
     args = parser.parse_args()
 
     config = _load_recipe_config(Path(args.config))
+    recipe_overrides, verl_overrides = _split_overrides(args.overrides)
+    config = _apply_recipe_overrides(config, recipe_overrides)
     prepared = _prepare_run(config)
-    overrides = _build_verl_overrides(config, prepared, args.overrides)
+    overrides = _build_verl_overrides(config, prepared, verl_overrides)
 
     print(f"Prepared archive: {prepared['archive_path']}")
     print(f"Prepared slots: {prepared['slot_parquet']}")

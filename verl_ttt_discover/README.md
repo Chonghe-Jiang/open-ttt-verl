@@ -75,6 +75,38 @@ MODEL_PATH=/path/to/model/snapshot \
 scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh
 ```
 
+For the intended large Erdos run on four B200 GPUs:
+
+```bash
+GPUS=0,1,2,3 \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
+```
+
+This uses `verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_16k.yaml`:
+
+- `model_path=unsloth/gpt-oss-20b-BF16`
+- LoRA rank/alpha 32
+- `groups_per_batch=8`, `group_size=64`
+- 16k rollout context, split as 8192 prompt and 8192 response tokens
+- vLLM tensor parallel size 4
+- actor/ref dtype `bf16`
+- actor/ref `attn_implementation=flash_attention_2`
+
+The original GPT-OSS model release is not the recommended verl train target
+because its quantized/MXFP-style layout does not behave like a normal trainable
+BF16 actor/ref checkpoint. Use the Unsloth BF16 conversion for LoRA RL.
+
+If a Blackwell transformers/flash-attn stack errors on the GPT-OSS attention
+kernel, keep vLLM rollout enabled and override only actor/ref attention:
+
+```bash
+GPUS=0,1,2,3 \
+ATTN_IMPL=eager \
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
+  actor_rollout_ref.rollout.enforce_eager=True
+```
+
 The same entry point accepts final Hydra overrides:
 
 ```bash
@@ -90,12 +122,14 @@ python -m verl_ttt_discover.main_erdos \
   step.
 - `group_size` maps to `actor_rollout_ref.rollout.n`, the number of rollout
   candidates sampled per state.
+- The original TTT-Discover Erdos shape is `groups_per_batch=8` and
+  `group_size=64`.
 - On 2-GPU FSDP with static batch sizing, `groups_per_batch * group_size` must
   be divisible by 2.
 - `save_freq=-1` is recommended for smoke tests with 20B models to avoid large
   checkpoints.
 - `actor_rollout_ref.rollout.checkpoint_engine.backend=naive` is used for
-  two-GPU colocated runs; verl's NCCL checkpoint engine is better suited to
+  colocated runs; verl's NCCL checkpoint engine is better suited to
   disaggregated trainer/rollout placement.
 
 ## Validation
