@@ -131,8 +131,9 @@ GPUs`, and GPT-OSS did not support SDPA in that transformers version.
 ## Full Erdos Run on 4xB200
 
 For the main Erdos experiment on four B200 GPUs, use the BF16 GPT-OSS 20B model,
-LoRA rank 32, 16k total context, and the TTT-Discover batch shape from the
-original experiment: `groups_per_batch=8` and `group_size=64`.
+LoRA rank 32, the TTT-Discover batch shape from the original experiment
+(`groups_per_batch=8`, `group_size=64`), and the official
+`phase1_max_tokens=26000` sampling budget.
 
 ```bash
 GPUS=0,1,2,3 \
@@ -141,17 +142,24 @@ scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
 ```
 
 The default config is
-`verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_16k.yaml`:
+`verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_official.yaml`:
 
 - `model_path=unsloth/gpt-oss-20b-BF16`
 - `groups_per_batch=8`, `group_size=64`
-- `max_prompt_length=8192`, `max_response_length=8192`,
-  `rollout.max_model_len=16384`
+- `phase1_max_tokens=26000`
+- `max_prompt_length=8192`, `max_response_length=26000`,
+  `rollout.max_model_len=32768`
 - `learning_rate=4e-5`, LoRA rank/alpha 32
 - actor/ref dtype `bf16`
 - actor/ref attention `flash_attention_2`
 - vLLM rollout with tensor parallel size 4
 - `checkpoint_engine.backend=naive` for colocated actor/ref/rollout placement
+
+The original TTT repo uses a two-phase GPT-OSS completer where
+`phase1_max_tokens` is the total prompt-plus-thinking budget. This verl port
+uses vLLM single-turn generation, so the TTT agent loop dynamically sets
+`max_tokens = phase1_max_tokens - actual_prompt_tokens` for each rollout.
+That is the closest semantic match to the official length handling.
 
 To use a pre-downloaded snapshot:
 
@@ -185,6 +193,9 @@ scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
   run.num_steps=1 \
   run.save_freq=-1 \
   ttt.group_size=8 \
+  run.max_response_length=4096 \
+  ttt.phase1_max_tokens=4096 \
+  actor_rollout_ref.rollout.max_model_len=8192 \
   actor_rollout_ref.rollout.max_num_seqs=64
 ```
 

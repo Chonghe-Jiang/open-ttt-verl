@@ -85,6 +85,7 @@ def _prepare_run(config: dict) -> dict[str, Path]:
                 f"  budget_s: {int(ttt_cfg['eval_timeout'])}",
                 f"  cpus: {int(ttt_cfg.get('cpus', 1))}",
                 f"  target_c5: {float(ttt_cfg.get('target_c5', 0.3808))}",
+                f"  phase1_max_tokens: {int(ttt_cfg.get('phase1_max_tokens', 0))}",
             ]
         )
         + "\n"

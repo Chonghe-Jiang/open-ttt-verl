@@ -1,0 +1,61 @@
+run:
+  output_dir: outputs/ttt_erdos/4gpu_b200_gptoss20b_bf16_official_g8_n64
+  project_name: ttt_discover
+  experiment_name: erdos_4gpu_b200_gptoss20b_bf16_official_g8_n64
+  model_path: unsloth/gpt-oss-20b-BF16
+  seed: 0
+  num_initial_states: 8
+  num_steps: 50
+  total_epochs: 1
+  max_prompt_length: 8192
+  max_response_length: 26000
+  learning_rate: 4.0e-5
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 1
+  use_remove_padding: true
+  use_kl_loss: true
+  kl_loss_coef: 0.1
+  rollout_engine: vllm
+  tensor_model_parallel_size: 4
+  gpu_memory_utilization: 0.72
+  n_gpus_per_node: 4
+  nnodes: 1
+  save_freq: 5
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+
+ttt:
+  groups_per_batch: 8
+  group_size: 64
+  phase1_max_tokens: 26000
+  eval_timeout: 1000
+  cpus: 1
+  puct_c: 1.0
+  topk_children: 2
+  target_c5: 0.3808
+
+verl_overrides:
+  - trainer.use_legacy_worker_impl=disable
+  - actor_rollout_ref.model.external_lib=verl_ttt_discover.verl_ext
+  - +actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bf16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bf16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=True
+  - actor_rollout_ref.rollout.agent.num_workers=64
+  - actor_rollout_ref.rollout.load_format=auto
+  - actor_rollout_ref.rollout.layered_summon=True
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.max_model_len=32768
+  - actor_rollout_ref.rollout.max_num_batched_tokens=65536
+  - actor_rollout_ref.rollout.max_num_seqs=512
+  - actor_rollout_ref.rollout.checkpoint_engine.backend=naive
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1

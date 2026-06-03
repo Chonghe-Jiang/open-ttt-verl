@@ -2,7 +2,8 @@ from pathlib import Path
 
 import yaml
 
-from verl_ttt_discover.main_erdos import _apply_recipe_overrides, _build_verl_overrides, _split_overrides
+from verl_ttt_discover.agent_loop import phase1_generation_budget
+from verl_ttt_discover.main_erdos import _apply_recipe_overrides, _build_verl_overrides, _prepare_run, _split_overrides
 
 
 def test_gpu_smoke_config_is_minimal_single_gpu_vllm_run():
@@ -74,6 +75,29 @@ def test_recipe_overrides_update_preparation_config_before_verl_mapping(tmp_path
     assert "trainer.total_training_steps=1" in overrides
     assert "trainer.save_freq=-1" in overrides
     assert "actor_rollout_ref.rollout.n=8" in overrides
+
+
+def test_phase1_generation_budget_matches_official_prompt_plus_thinking_budget():
+    assert phase1_generation_budget(prompt_len=2000, response_len=26000, phase1_max_tokens=26000) == 24000
+    assert phase1_generation_budget(prompt_len=8192, response_len=26000, phase1_max_tokens=26000) == 17808
+    assert phase1_generation_budget(prompt_len=30000, response_len=26000, phase1_max_tokens=26000) == 0
+    assert phase1_generation_budget(prompt_len=2000, response_len=8192, phase1_max_tokens=None) == 8192
+
+
+def test_prepare_run_writes_phase1_budget_to_agent_loop_config(tmp_path):
+    config = {
+        "run": {"output_dir": str(tmp_path), "num_initial_states": 1},
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 2,
+            "eval_timeout": 20,
+            "phase1_max_tokens": 26000,
+        },
+    }
+
+    prepared = _prepare_run(config)
+
+    assert "phase1_max_tokens: 26000" in prepared["agent_loop_config"].read_text()
 
 
 def test_verl_overrides_start_isolated_local_ray_by_default(tmp_path):
@@ -218,8 +242,8 @@ def test_two_gpu_gptoss_bf16_smoke_config_is_blackwell_compatible_minimal_run():
     assert "actor_rollout_ref.rollout.max_num_seqs=1" in overrides
 
 
-def test_four_gpu_b200_gptoss_bf16_config_matches_official_erdos_batch_shape():
-    config = _load_config("erdos_4gpu_b200_gptoss20b_bf16_16k.yaml")
+def test_four_gpu_b200_gptoss_bf16_official_config_matches_ttt_erdos_defaults():
+    config = _load_config("erdos_4gpu_b200_gptoss20b_bf16_official.yaml")
     overrides = config["verl_overrides"]
 
     assert config["run"]["model_path"] == "unsloth/gpt-oss-20b-BF16"
@@ -231,10 +255,11 @@ def test_four_gpu_b200_gptoss_bf16_config_matches_official_erdos_batch_shape():
     assert config["run"]["kl_loss_coef"] == 0.1
     assert config["run"]["ppo_mini_batch_size"] == 8
     assert config["run"]["max_prompt_length"] == 8192
-    assert config["run"]["max_response_length"] == 8192
+    assert config["run"]["max_response_length"] == 26000
     assert config["ttt"]["groups_per_batch"] == 8
     assert config["ttt"]["group_size"] == 64
-    assert config["ttt"]["eval_timeout"] == 1100
+    assert config["ttt"]["phase1_max_tokens"] == 26000
+    assert config["ttt"]["eval_timeout"] == 1000
     assert "+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2" in overrides
     assert "actor_rollout_ref.model.lora_rank=32" in overrides
     assert "actor_rollout_ref.model.lora_alpha=32" in overrides
@@ -242,6 +267,6 @@ def test_four_gpu_b200_gptoss_bf16_config_matches_official_erdos_batch_shape():
     assert "actor_rollout_ref.ref.fsdp_config.model_dtype=bf16" in overrides
     assert "actor_rollout_ref.rollout.load_format=auto" in overrides
     assert "actor_rollout_ref.rollout.layered_summon=True" in overrides
-    assert "actor_rollout_ref.rollout.max_model_len=16384" in overrides
+    assert "actor_rollout_ref.rollout.max_model_len=32768" in overrides
     assert "actor_rollout_ref.rollout.max_num_seqs=512" in overrides
     assert "actor_rollout_ref.rollout.agent.num_workers=64" in overrides

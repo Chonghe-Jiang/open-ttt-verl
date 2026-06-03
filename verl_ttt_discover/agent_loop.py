@@ -15,6 +15,12 @@ def make_group_uid(*, global_step: int | str, uid: str) -> str:
     return f"{global_step}:{uid}"
 
 
+def phase1_generation_budget(*, prompt_len: int, response_len: int, phase1_max_tokens: int | None) -> int:
+    if phase1_max_tokens is None or phase1_max_tokens <= 0:
+        return response_len
+    return max(0, min(response_len, int(phase1_max_tokens) - int(prompt_len)))
+
+
 def _clip_text(text: str | None, limit: int = 1200) -> str:
     if not text:
         return ""
@@ -66,11 +72,20 @@ except ModuleNotFoundError:
 class TTTDiscoverAgentLoop(AgentLoopBase):
     """Single-turn TTT-Discover rollout loop for the Erdos task."""
 
-    def __init__(self, *args, budget_s: int = 1000, cpus: int = 1, target_c5: float = 0.3808, **kwargs):
+    def __init__(
+        self,
+        *args,
+        budget_s: int = 1000,
+        cpus: int = 1,
+        target_c5: float = 0.3808,
+        phase1_max_tokens: int | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.budget_s = int(budget_s)
         self.cpus = int(cpus)
         self.target_c5 = float(target_c5)
+        self.phase1_max_tokens = None if phase1_max_tokens is None else int(phase1_max_tokens)
         if hasattr(self, "rollout_config"):
             self.prompt_length = self.rollout_config.prompt_length
             self.response_length = self.rollout_config.response_length
@@ -90,6 +105,12 @@ class TTTDiscoverAgentLoop(AgentLoopBase):
         state = archive.acquire_group(group_uid)
         prompt = build_erdos_prompt(state, budget_s=self.budget_s, cpus=self.cpus, target_c5=self.target_c5)
         prompt_ids = await self.apply_chat_template([{"role": "user", "content": prompt}])
+        sampling_params = dict(sampling_params)
+        sampling_params["max_tokens"] = phase1_generation_budget(
+            prompt_len=len(prompt_ids),
+            response_len=self.response_length,
+            phase1_max_tokens=self.phase1_max_tokens,
+        )
 
         metrics: dict[str, Any] = {}
         with simple_timer("generate_sequences", metrics):

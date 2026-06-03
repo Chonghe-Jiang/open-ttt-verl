@@ -5,7 +5,7 @@ set -euo pipefail
 # Override GPUS, CONFIG, HF_HOME, MODEL_PATH, or ATTN_IMPL from the shell.
 
 GPUS="${GPUS:-0,1,2,3}"
-CONFIG="${CONFIG:-verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_16k.yaml}"
+CONFIG="${CONFIG:-verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_official.yaml}"
 HF_HOME="${HF_HOME:-${PWD}/.hf_cache}"
 MODEL_PATH="${MODEL_PATH:-}"
 ATTN_IMPL="${ATTN_IMPL:-}"
