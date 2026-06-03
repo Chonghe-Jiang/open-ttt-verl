@@ -2,11 +2,13 @@
 
 # Open-TTT-verl: TTT-Discover on verl
 
-This repository is a fork of [verl](https://github.com/verl-project/verl) with a
-TTT-Discover/Erdos reproduction layered on top of verl's PPO, FSDP, vLLM,
-multi-turn agent loop, Ray runtime, and LoRA weight-sync machinery.
+This is a TTT-Discover-focused fork of
+[verl](https://github.com/verl-project/verl). Upstream verl is vendored here to
+keep the patched training runtime reproducible while developing and running the
+Erdos TTT experiments.
 
-The implementation keeps the TTT-specific logic in `verl_ttt_discover/` and
+Most users should start from `verl_ttt_discover/` and
+`scripts/ttt_discover/`. The implementation keeps TTT-specific logic there and
 uses small, targeted changes in verl core for agent-loop metadata, rollout
 weight transfer, and LoRA/update behavior needed by TTT.
 
@@ -232,6 +234,10 @@ pytest -q tests/ttt_discover
 
 Run this suite after changing TTT code or launch configs; it checks the archive,
 agent loop, sandbox, config overrides, NCCL helper, and verl extension hooks.
+
+GitHub Actions intentionally runs only the focused TTT CI for this fork. Full
+upstream verl CI for Ascend/NPU, Megatron, SGLang, vLLM, Docker, documentation,
+and scorecard coverage is not enabled here by default.
 
 ## Upstream verl
 

@@ -19,6 +19,7 @@ license_head_bytedance = "Copyright 2024 Bytedance Ltd. and/or its affiliates"
 license_head_bytedance_25 = "Copyright 2025 Bytedance Ltd. and/or its affiliates"
 license_head_bytedance_26 = "Copyright 2026 Bytedance Ltd. and/or its affiliates"
 # Add custom license headers below
+license_head_open_ttt = "Copyright 2026 Chonghe Jiang and/or contributors"
 license_head_prime = "Copyright 2024 PRIME team and/or its affiliates"
 license_head_individual = "Copyright 2025 Individual Contributor:"
 license_head_sglang = "Copyright 2023-2024 SGLang Team"
@@ -32,6 +33,7 @@ license_headers = [
     license_head_bytedance,
     license_head_bytedance_25,
     license_head_bytedance_26,
+    license_head_open_ttt,
     license_head_prime,
     license_head_individual,
     license_head_sglang,
