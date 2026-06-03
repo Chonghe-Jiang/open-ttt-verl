@@ -148,6 +148,8 @@ The default config is
 
 - `model_path=unsloth/gpt-oss-20b-BF16`
 - `groups_per_batch=8`, `group_size=64`
+- `num_steps=50`, matching the official TTT `num_epochs=50` for the
+  single-problem Erdos dataset, where `len(dataset)=1`
 - `phase1_max_tokens=26000`
 - `max_prompt_length=8192`, `max_response_length=26000`,
   `rollout.max_model_len=32768`
@@ -162,6 +164,46 @@ The original TTT repo uses a two-phase GPT-OSS completer where
 uses vLLM single-turn generation, so the TTT agent loop dynamically sets
 `max_tokens = phase1_max_tokens - actual_prompt_tokens` for each rollout.
 That is the closest semantic match to the official length handling.
+
+## Progress and Best-Result Logs
+
+Each run writes its dynamic TTT state under `run.output_dir`. For the default
+4xB200 run this is:
+
+```text
+outputs/ttt_erdos/4gpu_b200_gptoss20b_bf16_official_g8_n64/
+```
+
+The most useful files are:
+
+- `best_state.json`: current global best Erdos construction. It includes
+  `timestep`, `raw_score`, `value`, `code`, and the construction.
+- `archive.json`: full dynamic archive with all retained states, PUCT counters,
+  sampled groups, and `best_state_id`.
+- `puct_stats.json`: compact PUCT/buffer stats and the current `best_state_id`.
+- `archive_snapshots/step_*.json`: archive snapshots written by trainer step.
+- `rollout_debug.jsonl`: one JSON line per rollout with `global_step`,
+  `valid`, `reward_score`, `raw_score`, error message, and code/response
+  excerpts.
+
+To inspect the latest best result:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+run_dir = Path("outputs/ttt_erdos/4gpu_b200_gptoss20b_bf16_official_g8_n64")
+best = json.loads((run_dir / "best_state.json").read_text())
+print("timestep:", best["timestep"])
+print("raw_score:", best["raw_score"])
+print("value:", best["value"])
+print("state_id:", best["id"])
+PY
+```
+
+For Erdos, lower `raw_score` is the C5 bound we are trying to improve, while
+`value=-raw_score` is what the archive maximizes.
 
 To use a pre-downloaded snapshot:
 

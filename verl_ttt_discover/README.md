@@ -88,6 +88,8 @@ This uses `verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_official.yaml
 - `model_path=unsloth/gpt-oss-20b-BF16`
 - LoRA rank/alpha 32
 - `groups_per_batch=8`, `group_size=64`
+- `num_steps=50`, matching official TTT's `num_epochs=50` on the
+  single-problem Erdos dataset
 - official `phase1_max_tokens=26000`
 - 32k rollout context with dynamic per-prompt generation budget
 - vLLM tensor parallel size 4
@@ -125,9 +127,15 @@ python -m verl_ttt_discover.main_erdos \
   candidates sampled per state.
 - The original TTT-Discover Erdos shape is `groups_per_batch=8` and
   `group_size=64`.
+- The original official run length is `num_epochs=50`. Since the official
+  single-problem dataset has one batch per epoch, this verl recipe maps it to
+  `run.num_steps=50`.
 - The original TTT-Discover GPT-OSS length setting is
   `phase1_max_tokens=26000`; the verl agent loop maps this to a dynamic vLLM
   `max_tokens` value for each prompt.
+- Best-so-far progress is recorded in the run output directory:
+  `best_state.json`, `puct_stats.json`, `archive_snapshots/step_*.json`, and
+  `rollout_debug.jsonl`.
 - On 2-GPU FSDP with static batch sizing, `groups_per_batch * group_size` must
   be divisible by 2.
 - `save_freq=-1` is recommended for smoke tests with 20B models to avoid large
