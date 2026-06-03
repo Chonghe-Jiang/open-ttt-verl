@@ -14,7 +14,7 @@
 
 import pytest
 
-pytest.importorskip("vllm")
+pytest.importorskip("vllm", exc_type=ImportError)
 
 from verl.workers.rollout.vllm_rollout.utils import get_zmq_handle_for_device_uuid
 

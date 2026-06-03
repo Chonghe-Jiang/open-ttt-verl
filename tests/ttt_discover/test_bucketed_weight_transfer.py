@@ -14,6 +14,10 @@
 
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("vllm", exc_type=ImportError)
+
 from verl.workers.rollout.vllm_rollout.bucketed_weight_transfer import (
     _ipc_path_from_zmq_handle,
     _unlink_stale_ipc_socket,
