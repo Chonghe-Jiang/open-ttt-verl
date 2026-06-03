@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
+
+pytest.importorskip("vllm")
+
 from verl.workers.rollout.vllm_rollout.utils import get_zmq_handle_for_device_uuid
 
 
