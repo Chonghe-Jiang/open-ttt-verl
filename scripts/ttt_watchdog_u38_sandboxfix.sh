@@ -118,7 +118,7 @@ verl_overrides:
 - actor_rollout_ref.rollout.agent.num_workers=$group_size
 - actor_rollout_ref.rollout.load_format=auto
 - actor_rollout_ref.rollout.layered_summon=True
-- actor_rollout_ref.rollout.enforce_eager=True
+- actor_rollout_ref.rollout.enforce_eager=False
 - actor_rollout_ref.rollout.free_cache_engine=True
 - actor_rollout_ref.rollout.max_model_len=8192
 - actor_rollout_ref.rollout.max_num_batched_tokens=8192

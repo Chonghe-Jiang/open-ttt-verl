@@ -309,9 +309,12 @@ attention path:
 GPUS=0,1,2,3 \
 HF_HOME=/path/to/large/cache/huggingface \
 ATTN_IMPL=eager \
-scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
-  actor_rollout_ref.rollout.enforce_eager=True
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
 ```
+
+`actor_rollout_ref.rollout.enforce_eager=True` is not the default path. Use it
+only as a diagnostic workaround if vLLM fails during GPT-OSS MoE LoRA CUDA graph
+profiling, for example with an assertion in `fused_moe_lora_op.py`.
 
 For first-time machine bring-up, run the two-GPU smoke first, then the 4GPU
 config with a shorter run:
