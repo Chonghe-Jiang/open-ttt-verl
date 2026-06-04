@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+
+ARG BASE_IMAGE=verlai/verl:vllm017.latest
+FROM ${BASE_IMAGE}
+
+ARG PIP_NO_CACHE_DIR=1
+
+ENV PIP_NO_CACHE_DIR=${PIP_NO_CACHE_DIR} \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/hf_cache \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    HYDRA_FULL_ERROR=1 \
+    RAY_DEDUP_LOGS=0 \
+    NCCL_P2P_DISABLE=0 \
+    NCCL_SHM_DISABLE=0 \
+    NCCL_IB_DISABLE=1
+
+WORKDIR /workspace/open-ttt-verl
+
+COPY . .
+
+# The verl vLLM base image already pins the CUDA/PyTorch/vLLM/flash-attn stack.
+# Install this fork without dependency resolution to avoid replacing that stack.
+RUN python -m pip install wheel && \
+    python -m pip install --no-deps -e . && \
+    python -m pip install \
+      "huggingface_hub[cli]" \
+      hf_transfer \
+      protobuf \
+      sentencepiece \
+      tiktoken \
+      math-verify && \
+    python -m compileall -q verl_ttt_discover scripts/ttt_discover && \
+    mkdir -p /hf_cache outputs
+
+ENTRYPOINT ["/bin/bash"]

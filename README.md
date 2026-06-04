@@ -76,6 +76,93 @@ uses a quantized/MXFP-style layout that is not a clean trainable actor/ref path
 in verl; the BF16 conversion gives verl FSDP, LoRA, ref logprobs, and vLLM
 weight loading a normal BF16 HuggingFace model to work with.
 
+## Docker Quickstart
+
+For reproducible machine bring-up, build the TTT runtime image:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+scripts/ttt_discover/docker_build_ttt_vllm.sh
+```
+
+The default base image is `verlai/verl:vllm017.latest`, which already pins the
+CUDA/PyTorch/vLLM/flash-attn stack. The Dockerfile installs this fork with
+`pip install --no-deps -e .` so it does not replace that pinned GPU stack. Use
+`BASE_IMAGE=<image>` only when your cluster provides a known-good CUDA/vLLM
+runtime image.
+
+The image is NVIDIA CUDA/vLLM-specific, but not B200-specific. B200 is the
+default full-run recipe; H100/H200 can reuse the same image with a suitable
+config and memory settings. A100-class machines should start with smoke or
+smaller-scale configs before trying the 20B official batch shape.
+
+Model weights are not baked into the image. Mount a large HuggingFace cache and
+an output directory:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+OUTPUT_DIR=/path/to/outputs \
+scripts/ttt_discover/docker_run_ttt_vllm.sh preflight
+```
+
+`preflight` checks `nvidia-smi`, CUDA availability, and imports for `verl`,
+`verl_ttt_discover`, `vllm`, and `flash_attn`. To validate config parsing
+without launching training:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/docker_run_ttt_vllm.sh prepare
+```
+
+For a two-GPU GPT-OSS BF16 smoke inside Docker:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+GPUS=0,1 \
+CONFIG=verl_ttt_discover/config/erdos_2gpu_smoke_gptoss20b_bf16_flash.yaml \
+HF_HOME=/path/to/large/cache/huggingface \
+OUTPUT_DIR=/path/to/outputs \
+scripts/ttt_discover/docker_run_ttt_vllm.sh
+```
+
+The default two-GPU smoke uses `max_response_length=128`. That is enough to
+verify the runtime path, but it often stops before GPT-OSS emits a Python code
+block. For a more realistic smoke that can produce valid Erdos submissions,
+raise the response budget:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+GPUS=0,1 \
+CONFIG=verl_ttt_discover/config/erdos_2gpu_smoke_gptoss20b_bf16_flash.yaml \
+HF_HOME=/path/to/large/cache/huggingface \
+OUTPUT_DIR=/path/to/outputs \
+scripts/ttt_discover/docker_run_ttt_vllm.sh \
+  run.output_dir=outputs/ttt_erdos/docker_smoke_gptoss_2gpu_len1024 \
+  run.num_steps=1 \
+  run.save_freq=-1 \
+  run.max_response_length=1024 \
+  actor_rollout_ref.rollout.max_model_len=2048
+```
+
+For the default four-GPU full Erdos run:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+GPUS=0,1,2,3 \
+HF_HOME=/path/to/large/cache/huggingface \
+OUTPUT_DIR=/path/to/outputs \
+scripts/ttt_discover/docker_run_ttt_vllm.sh
+```
+
+The Docker runner uses `--gpus all`, `--ipc=host`, `--net=host`,
+`--shm-size=256g`, `memlock=-1`, and `stack=67108864`. It mounts
+`${HF_HOME}` to `/hf_cache` and `${OUTPUT_DIR}` to
+`/workspace/open-ttt-verl/outputs` inside the container. If `MODEL_PATH` points
+to an existing local path, that path is mounted read-only at the same absolute
+path inside the container.
+
 ## NCCL Preflight
 
 Before launching multi-GPU training, verify the selected GPUs can communicate:
