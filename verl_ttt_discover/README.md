@@ -67,6 +67,14 @@ HF_HOME=/path/to/large/cache/huggingface \
 scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh
 ```
 
+On B200, this smoke is expected to run with
+`actor_rollout_ref.rollout.enforce_eager=False`. The verified runtime stack is
+`vllm==0.17.0`, `torch==2.10.0+cu128`, `triton==3.6.0`, and
+`flash-attn==2.8.3` rebuilt for `sm100` when no matching wheel is available.
+This preserves vLLM CUDA graph capture and verl's remove-padding path. The
+Docker recipe rebuilds this flash-attn wheel by default with
+`FLASH_ATTN_CUDA_ARCHS=100`.
+
 For a local model snapshot:
 
 ```bash
@@ -107,8 +115,13 @@ kernel, keep vLLM rollout enabled and override only actor/ref attention:
 GPUS=0,1,2,3 \
 ATTN_IMPL=eager \
 scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
-  actor_rollout_ref.rollout.enforce_eager=True
+  actor_rollout_ref.rollout.enforce_eager=False
 ```
+
+Do not use `actor_rollout_ref.rollout.enforce_eager=True` as the default fix for
+B200 GPT-OSS MoE LoRA failures; it disables the vLLM CUDA graph path. Upgrade to
+the vLLM 0.17 runtime stack and rebuild `flash-attn` for the active PyTorch ABI
+instead.
 
 The same entry point accepts final Hydra overrides:
 

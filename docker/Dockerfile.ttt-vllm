@@ -4,6 +4,13 @@ ARG BASE_IMAGE=verlai/verl:vllm017.latest
 FROM ${BASE_IMAGE}
 
 ARG PIP_NO_CACHE_DIR=1
+ARG REBUILD_FLASH_ATTN=1
+ARG FLASH_ATTN_VERSION=2.8.3
+ARG FLASH_ATTN_CUDA_ARCHS=100
+ARG FLASH_ATTN_TORCH_CUDA_ARCH_LIST=10.0
+ARG FLASH_ATTN_MAX_JOBS=8
+ARG FLASH_ATTN_NVCC_THREADS=4
+ARG FLASH_ATTN_CUDA_HOME=
 
 ENV PIP_NO_CACHE_DIR=${PIP_NO_CACHE_DIR} \
     PYTHONUNBUFFERED=1 \
@@ -15,12 +22,53 @@ ENV PIP_NO_CACHE_DIR=${PIP_NO_CACHE_DIR} \
     NCCL_SHM_DISABLE=0 \
     NCCL_IB_DISABLE=1
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Rebuild flash-attn after the base image has fixed torch/vLLM, so the compiled
+# extension matches the active PyTorch ABI. The default build only targets B200
+# sm100 kernels; pass FLASH_ATTN_CUDA_ARCHS='90;100' if one image must also run
+# on Hopper.
+RUN if [[ "${REBUILD_FLASH_ATTN}" == "1" ]]; then \
+      python -m pip install wheel packaging ninja && \
+      TORCH_CUDA="$(python -c 'import torch; print(torch.version.cuda or "")')" && \
+      if [[ -z "${TORCH_CUDA}" ]]; then \
+        echo "PyTorch reports no CUDA runtime; cannot build flash-attn" >&2; \
+        exit 1; \
+      fi && \
+      CUDA_DIR="${FLASH_ATTN_CUDA_HOME}" && \
+      if [[ -z "${CUDA_DIR}" ]]; then \
+        CUDA_DIR="/usr/local/cuda-${TORCH_CUDA}"; \
+      fi && \
+      if [[ ! -x "${CUDA_DIR}/bin/nvcc" ]]; then \
+        CUDA_DIR="/usr/local/cuda"; \
+      fi && \
+      if [[ ! -x "${CUDA_DIR}/bin/nvcc" ]]; then \
+        echo "No nvcc found. Set FLASH_ATTN_CUDA_HOME to a CUDA toolkit matching torch.version.cuda=${TORCH_CUDA}." >&2; \
+        exit 1; \
+      fi && \
+      echo "Building flash-attn ${FLASH_ATTN_VERSION} with torch CUDA ${TORCH_CUDA}, CUDA_HOME=${CUDA_DIR}, FLASH_ATTN_CUDA_ARCHS=${FLASH_ATTN_CUDA_ARCHS}" && \
+      "${CUDA_DIR}/bin/nvcc" --version && \
+      CUDA_HOME="${CUDA_DIR}" \
+      CUDACXX="${CUDA_DIR}/bin/nvcc" \
+      PATH="${CUDA_DIR}/bin:${PATH}" \
+      FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTN_CUDA_ARCHS}" \
+      TORCH_CUDA_ARCH_LIST="${FLASH_ATTN_TORCH_CUDA_ARCH_LIST}" \
+      MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
+      NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
+      FLASH_ATTENTION_FORCE_BUILD=TRUE \
+        python -m pip install --no-build-isolation --force-reinstall --no-deps \
+          --no-binary=flash-attn --no-cache-dir "flash-attn==${FLASH_ATTN_VERSION}" && \
+      python -c 'import torch, flash_attn; from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input; from flash_attn.ops.triton.rotary import apply_rotary; print("flash-attn import ok; torch=%s; torch_cuda=%s; flash_attn=%s" % (torch.__version__, torch.version.cuda, getattr(flash_attn, "__version__", "unknown")))'; \
+    else \
+      echo "Skipping flash-attn rebuild because REBUILD_FLASH_ATTN=${REBUILD_FLASH_ATTN}"; \
+    fi
+
 WORKDIR /workspace/open-ttt-verl
 
 COPY . .
 
-# The verl vLLM base image already pins the CUDA/PyTorch/vLLM/flash-attn stack.
-# Install this fork without dependency resolution to avoid replacing that stack.
+# The verl vLLM base image already pins the CUDA/PyTorch/vLLM stack. Install
+# this fork without dependency resolution to avoid replacing that stack.
 RUN python -m pip install wheel && \
     python -m pip install --no-deps -e . && \
     python -m pip install \

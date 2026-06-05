@@ -51,17 +51,33 @@ pip install -r requirements-test.txt
 ```
 
 `requirements-ttt.txt` installs this fork with the verl `vllm`, `gpu`, and
-`math` extras. The `gpu` extra includes `flash-attn`. On clusters with a pinned
-CUDA/PyTorch/vLLM image, install the cluster-provided torch and vLLM first, then
-run the same command.
+`math` extras. The TTT vLLM path is pinned to `vllm==0.17.0`, which currently
+pulls `torch==2.10.0+cu128` and `triton==3.6.0` from the PyTorch CUDA 12.8
+index. This version is required for the GPT-OSS MoE LoRA rollout path on B200
+when `actor_rollout_ref.rollout.enforce_eager=False`.
 
-If `flash-attn` needs to compile from source, make sure `CUDA_HOME` points at a
-CUDA toolkit compatible with your PyTorch build:
+The `gpu` extra includes `flash-attn==2.8.3`. If `flash-attn` needs to compile
+from source, make sure `CUDA_HOME` points at a CUDA toolkit compatible with your
+PyTorch build. For B200 with the vLLM 0.17 stack, use CUDA 12.8 and build only
+the `sm100` kernels:
 
 ```bash
-export CUDA_HOME=/usr/local/cuda
-MAX_JOBS=8 pip install --no-build-isolation flash-attn
+export CUDA_HOME=/usr/local/cuda-12.8
+export CUDACXX=/usr/local/cuda-12.8/bin/nvcc
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+export FLASH_ATTN_CUDA_ARCHS=100
+export TORCH_CUDA_ARCH_LIST=10.0
+export MAX_JOBS=8
+export NVCC_THREADS=4
+export FLASH_ATTENTION_FORCE_BUILD=TRUE
+pip install --no-build-isolation --force-reinstall --no-deps \
+  --no-binary=flash-attn --no-cache-dir flash-attn==2.8.3
 ```
+
+Do not install the `cuda` apt metapackage to get this compiler. Install only the
+toolkit components that match the PyTorch wheel, for example
+`cuda-nvcc-12-8 cuda-cudart-dev-12-8`; the NVIDIA driver must remain the
+host-provided driver.
 
 For GPT-OSS BF16, keep the HuggingFace cache on a large filesystem:
 
@@ -86,15 +102,32 @@ scripts/ttt_discover/docker_build_ttt_vllm.sh
 ```
 
 The default base image is `verlai/verl:vllm017.latest`, which already pins the
-CUDA/PyTorch/vLLM/flash-attn stack. The Dockerfile installs this fork with
-`pip install --no-deps -e .` so it does not replace that pinned GPU stack. Use
-`BASE_IMAGE=<image>` only when your cluster provides a known-good CUDA/vLLM
-runtime image.
+CUDA/PyTorch/vLLM stack. The Dockerfile rebuilds `flash-attn==2.8.3` after that
+stack is fixed, so the extension matches the active PyTorch ABI. By default it
+builds only B200 `sm100` kernels:
 
-The image is NVIDIA CUDA/vLLM-specific, but not B200-specific. B200 is the
-default full-run recipe; H100/H200 can reuse the same image with a suitable
-config and memory settings. A100-class machines should start with smoke or
-smaller-scale configs before trying the 20B official batch shape.
+```bash
+REBUILD_FLASH_ATTN=1 \
+FLASH_ATTN_CUDA_ARCHS=100 \
+FLASH_ATTN_TORCH_CUDA_ARCH_LIST=10.0 \
+scripts/ttt_discover/docker_build_ttt_vllm.sh
+```
+
+If one image must run on both Hopper and Blackwell, build more architectures,
+for example `FLASH_ATTN_CUDA_ARCHS='90;100'` and
+`FLASH_ATTN_TORCH_CUDA_ARCH_LIST='9.0;10.0'`. Use
+`FLASH_ATTN_CUDA_HOME=/usr/local/cuda-12.8` only when the base image does not
+put a matching compiler at `/usr/local/cuda-$(python -c 'import torch; print(torch.version.cuda)')`
+or `/usr/local/cuda`.
+
+The Dockerfile installs this fork with `pip install --no-deps -e .` so it does
+not replace the pinned GPU stack. Use `BASE_IMAGE=<image>` only when your
+cluster provides a known-good CUDA/vLLM runtime image.
+
+The default image build is tuned for B200. H100/H200 can reuse the same Docker
+recipe with the architecture build args above, plus a suitable config and memory
+settings. A100-class machines should start with smoke or smaller-scale configs
+before trying the 20B official batch shape.
 
 Model weights are not baked into the image. Mount a large HuggingFace cache and
 an output directory:
@@ -106,9 +139,10 @@ OUTPUT_DIR=/path/to/outputs \
 scripts/ttt_discover/docker_run_ttt_vllm.sh preflight
 ```
 
-`preflight` checks `nvidia-smi`, CUDA availability, and imports for `verl`,
-`verl_ttt_discover`, `vllm`, and `flash_attn`. To validate config parsing
-without launching training:
+`preflight` checks `nvidia-smi`, CUDA availability, imports for `verl`,
+`verl_ttt_discover`, `vllm`, and `flash_attn`, plus the `flash_attn.bert_padding`
+and `flash_attn.ops.triton.rotary` submodules used by verl remove-padding and
+vLLM rotary embedding. To validate config parsing without launching training:
 
 ```bash
 IMAGE_TAG=open-ttt-verl:ttt-vllm \
@@ -312,9 +346,10 @@ ATTN_IMPL=eager \
 scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
 ```
 
-`actor_rollout_ref.rollout.enforce_eager=True` is not the default path. Use it
-only as a diagnostic workaround if vLLM fails during GPT-OSS MoE LoRA CUDA graph
-profiling, for example with an assertion in `fused_moe_lora_op.py`.
+`actor_rollout_ref.rollout.enforce_eager=True` is not the default path and should
+not be used as the performance fix. Older vLLM releases can fail during GPT-OSS
+MoE LoRA CUDA graph profiling on B200, for example in
+`fused_moe_lora_op.py`; use the vLLM 0.17 stack above instead.
 
 For first-time machine bring-up, run the two-GPU smoke first, then the 4GPU
 config with a shorter run:

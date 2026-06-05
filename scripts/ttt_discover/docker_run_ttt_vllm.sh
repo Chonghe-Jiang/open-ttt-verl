@@ -112,6 +112,12 @@ if not torch.cuda.is_available():
 for module_name in ("verl", "verl_ttt_discover", "vllm", "flash_attn"):
     importlib.import_module(module_name)
     print(f"import {module_name}: ok")
+
+from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input  # noqa: F401
+from flash_attn.ops.triton.rotary import apply_rotary  # noqa: F401
+
+print("import flash_attn.bert_padding: ok")
+print("import flash_attn.ops.triton.rotary: ok")
 PY
 '
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}"
