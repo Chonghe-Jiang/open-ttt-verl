@@ -247,9 +247,11 @@ It is intentionally small:
   model and verl syncs LoRA weights.
 
 On the validated Blackwell workstation, actor/ref use
-`attn_implementation=eager` because the current GPT-OSS transformers
-FlashAttention path failed with `S aux is currently only supported for Hopper
-GPUs`, and GPT-OSS did not support SDPA in that transformers version.
+`attn_implementation=flash_attention_2` with the vLLM 0.17 runtime stack and
+the rebuilt `flash-attn==2.8.3` `sm100` extension. If a different
+transformers/flash-attn stack still hits a GPT-OSS Blackwell attention kernel
+error, use `ATTN_IMPL=eager` as a diagnostic fallback while keeping vLLM rollout
+`enforce_eager=False`.
 
 ## Full Erdos Run on 4xB200
 
