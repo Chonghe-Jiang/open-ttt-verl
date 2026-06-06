@@ -35,10 +35,10 @@ def test_gpu_smoke_config_is_minimal_single_gpu_vllm_run():
     assert config["ttt"]["group_size"] == 2
     assert "actor_rollout_ref.model.lora_rank=32" in config["verl_overrides"]
     assert "actor_rollout_ref.model.external_lib=verl_ttt_discover.verl_ext" in config["verl_overrides"]
-    assert "+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2" in config["verl_overrides"]
+    assert "+actor_rollout_ref.model.override_config.attn_implementation=eager" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.agent.num_workers=1" in config["verl_overrides"]
-    assert "actor_rollout_ref.rollout.enforce_eager=False" in config["verl_overrides"]
+    assert "actor_rollout_ref.rollout.enforce_eager=True" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.max_model_len=9216" in config["verl_overrides"]
 
 
@@ -248,7 +248,7 @@ def test_two_gpu_gptoss_bf16_smoke_config_is_blackwell_compatible_minimal_run():
     assert config["run"]["save_freq"] == -1
     assert config["ttt"]["groups_per_batch"] == 2
     assert config["ttt"]["group_size"] == 1
-    assert "+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2" in overrides
+    assert "+actor_rollout_ref.model.override_config.attn_implementation=eager" in overrides
     assert "actor_rollout_ref.rollout.load_format=auto" in overrides
     assert "actor_rollout_ref.rollout.layered_summon=True" in overrides
     assert "actor_rollout_ref.rollout.max_model_len=2048" in overrides

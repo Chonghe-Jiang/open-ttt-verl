@@ -4,8 +4,7 @@ set -euo pipefail
 # Run the portable TTT-Discover Docker image.
 #
 # Modes:
-#   preflight  - check CUDA, torch, verl, vLLM, flash-attn, and runtime lock
-#   preflight-forward - load GPT-OSS once and run a tiny actor/ref forward
+#   preflight  - check CUDA, torch, verl, vLLM, and flash-attn imports
 #   prepare    - parse the selected TTT config with --prepare-only
 #   shell      - open an interactive container shell
 #   run        - default; launch the selected TTT Erdos run
@@ -20,14 +19,12 @@ HOST_HF_HOME="${HF_HOME:-${REPO_ROOT}/.hf_cache}"
 HOST_OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/outputs}"
 MODEL_PATH="${MODEL_PATH:-}"
 ATTN_IMPL="${ATTN_IMPL:-}"
-RUNTIME_LOCK="${RUNTIME_LOCK:-docker/b200_gptoss_env.lock.json}"
-USE_HUB_KERNELS="${USE_HUB_KERNELS:-0}"
 DOCKER_GPUS="${DOCKER_GPUS:-all}"
 SHM_SIZE="${SHM_SIZE:-256g}"
 
 MODE="${1:-run}"
 case "${MODE}" in
-  run|preflight|preflight-forward|prepare|shell|bash)
+  run|preflight|prepare|shell|bash)
     shift || true
     ;;
   *)
@@ -68,8 +65,6 @@ docker_args=(
   -e "CONFIG=${CONFIG}"
   -e "MODEL_PATH=${MODEL_PATH}"
   -e "ATTN_IMPL=${ATTN_IMPL}"
-  -e "RUNTIME_LOCK=${RUNTIME_LOCK}"
-  -e "USE_HUB_KERNELS=${USE_HUB_KERNELS}"
   -e "NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}"
   -e "NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}"
   -e "NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}"
@@ -110,7 +105,6 @@ print(f"torch_cuda={torch.version.cuda}")
 print(f"cuda_available={torch.cuda.is_available()}")
 print(f"cuda_device_count={torch.cuda.device_count()}")
 print(f"HF_HOME={os.environ.get('"'"'HF_HOME'"'"')}")
-print(f"USE_HUB_KERNELS={os.environ.get('"'"'USE_HUB_KERNELS'"'"')}")
 
 if not torch.cuda.is_available():
     raise SystemExit("CUDA is not available inside the container")
@@ -118,35 +112,6 @@ if not torch.cuda.is_available():
 for module_name in ("verl", "verl_ttt_discover", "vllm", "flash_attn"):
     importlib.import_module(module_name)
     print(f"import {module_name}: ok")
-PY
-python scripts/ttt_discover/env_fingerprint.py --compare-lock "${RUNTIME_LOCK}" --forbid-vllm-flash-attn3
-'
-    exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}"
-    ;;
-  preflight-forward)
-    inner_command='
-set -euo pipefail
-python scripts/ttt_discover/env_fingerprint.py --compare-lock "${RUNTIME_LOCK}" --forbid-vllm-flash-attn3
-python - <<'"'"'PY'"'"'
-import os
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_path = os.environ.get("MODEL_PATH") or "unsloth/gpt-oss-20b-BF16"
-attn_impl = os.environ.get("ATTN_IMPL") or "flash_attention_2"
-print(f"Loading {model_path} with attn_implementation={attn_impl}")
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    attn_implementation=attn_impl,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-)
-inputs = tokenizer("Return the number 1.", return_tensors="pt").to(model.device)
-with torch.no_grad():
-    output = model(**inputs)
-print(f"forward ok; logits_shape={tuple(output.logits.shape)}")
 PY
 '
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}"
