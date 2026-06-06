@@ -12,6 +12,13 @@ Most users should start from `verl_ttt_discover/` and
 uses small, targeted changes in verl core for agent-loop metadata, rollout
 weight transfer, and LoRA/update behavior needed by TTT.
 
+Recommended branch for B200 Docker bring-up:
+
+```bash
+git clone -b fix/B200-vllm017-flashattn-sm100 https://github.com/Chonghe-Jiang/open-ttt-verl.git
+cd open-ttt-verl
+```
+
 ## What This Runs
 
 TTT-Discover is treated as an online RL/search workload:
@@ -52,19 +59,19 @@ pip install -r requirements-test.txt
 
 `requirements-ttt.txt` installs this fork with the verl `vllm`, `gpu`, and
 `math` extras. The TTT vLLM path is pinned to `vllm==0.17.0`, which currently
-pulls `torch==2.10.0+cu128` and `triton==3.6.0` from the PyTorch CUDA 12.8
+pulls `torch==2.10.0+cu129` and `triton==3.6.0` from the PyTorch CUDA 12.9
 index. This version is required for the GPT-OSS MoE LoRA rollout path on B200
 when `actor_rollout_ref.rollout.enforce_eager=False`.
 
 The `gpu` extra includes `flash-attn==2.8.3`. If `flash-attn` needs to compile
 from source, make sure `CUDA_HOME` points at a CUDA toolkit compatible with your
-PyTorch build. For B200 with the vLLM 0.17 stack, use CUDA 12.8 and build only
+PyTorch build. For B200 with the vLLM 0.17 stack, use CUDA 12.9 and build only
 the `sm100` kernels:
 
 ```bash
-export CUDA_HOME=/usr/local/cuda-12.8
-export CUDACXX=/usr/local/cuda-12.8/bin/nvcc
-export PATH=/usr/local/cuda-12.8/bin:$PATH
+export CUDA_HOME=/usr/local/cuda-12.9
+export CUDACXX=/usr/local/cuda-12.9/bin/nvcc
+export PATH=/usr/local/cuda-12.9/bin:$PATH
 export FLASH_ATTN_CUDA_ARCHS=100
 export TORCH_CUDA_ARCH_LIST=10.0
 export MAX_JOBS=8
@@ -94,7 +101,9 @@ weight loading a normal BF16 HuggingFace model to work with.
 
 ## Docker Quickstart
 
-For reproducible machine bring-up, build the TTT runtime image:
+For reproducible B200 machine bring-up, build the TTT runtime image. The
+default build is the intended path; the runtime lock is already checked in at
+`docker/b200_vllm017_env.lock.json`.
 
 ```bash
 IMAGE_TAG=open-ttt-verl:ttt-vllm \
@@ -116,7 +125,7 @@ scripts/ttt_discover/docker_build_ttt_vllm.sh
 If one image must run on both Hopper and Blackwell, build more architectures,
 for example `FLASH_ATTN_CUDA_ARCHS='90;100'` and
 `FLASH_ATTN_TORCH_CUDA_ARCH_LIST='9.0;10.0'`. Use
-`FLASH_ATTN_CUDA_HOME=/usr/local/cuda-12.8` only when the base image does not
+`FLASH_ATTN_CUDA_HOME=/usr/local/cuda-12.9` only when the base image does not
 put a matching compiler at `/usr/local/cuda-$(python -c 'import torch; print(torch.version.cuda)')`
 or `/usr/local/cuda`.
 
@@ -124,13 +133,39 @@ The Dockerfile installs this fork with `pip install --no-deps -e .` so it does
 not replace the pinned GPU stack. Use `BASE_IMAGE=<image>` only when your
 cluster provides a known-good CUDA/vLLM runtime image.
 
+This branch is intentionally tied to the B200 non-Docker runtime that was
+validated earlier: `vllm==0.17.0`, `torch==2.10.0+cu129`, CUDA 12.9,
+`flash-attn==2.8.3`, and actor/ref `attn_implementation=flash_attention_2`.
+The Docker image sets `USE_HUB_KERNELS=0` so Transformers does not redirect
+GPT-OSS attention to the HuggingFace Hub
+`kernels-community/vllm-flash-attn3` implementation. That Hub kernel path caused
+the B200 failure:
+
+```text
+RuntimeError: S aux is currently only supported for Hopper GPUs
+```
+
+The build and run scripts also execute `docker_runtime_guard.py`. It fails early
+if the container is not using the expected vLLM017/CUDA12.9/flash-attn stack, if
+`USE_HUB_KERNELS` is not disabled, or if the mounted HF cache already contains a
+stale `models--kernels-community--vllm-flash-attn3` checkout.
+The expected package and environment values come from
+`docker/b200_vllm017_env.lock.json`; replacing that file is the way to retarget
+the Docker build to a different known-good non-Docker B200 environment.
+If the stale-cache check fails, remove that cache entry or point `HF_HOME` at a
+clean directory:
+
+```bash
+rm -rf /path/to/large/cache/huggingface/hub/models--kernels-community--vllm-flash-attn3*
+```
+
 The default image build is tuned for B200. H100/H200 can reuse the same Docker
 recipe with the architecture build args above, plus a suitable config and memory
 settings. A100-class machines should start with smoke or smaller-scale configs
 before trying the 20B official batch shape.
 
 Model weights are not baked into the image. Mount a large HuggingFace cache and
-an output directory:
+an output directory, then run checks in this order:
 
 ```bash
 IMAGE_TAG=open-ttt-verl:ttt-vllm \
@@ -142,7 +177,21 @@ scripts/ttt_discover/docker_run_ttt_vllm.sh preflight
 `preflight` checks `nvidia-smi`, CUDA availability, imports for `verl`,
 `verl_ttt_discover`, `vllm`, and `flash_attn`, plus the `flash_attn.bert_padding`
 and `flash_attn.ops.triton.rotary` submodules used by verl remove-padding and
-vLLM rotary embedding. To validate config parsing without launching training:
+vLLM rotary embedding. It also checks the expected B200 runtime versions and
+fails if the mounted HF cache contains `kernels-community/vllm-flash-attn3`.
+For a deeper check that loads GPT-OSS once and runs a minimal actor/ref forward:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/docker_run_ttt_vllm.sh preflight-forward
+```
+
+If both checks pass, run the two-GPU smoke and then the four-GPU full run below.
+The same guard runs again before training, so stale HF kernels or runtime drift
+fail before the trainer reaches `compute_log_prob`.
+
+To validate config parsing without launching training:
 
 ```bash
 IMAGE_TAG=open-ttt-verl:ttt-vllm \

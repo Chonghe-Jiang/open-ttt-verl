@@ -5,6 +5,7 @@ set -euo pipefail
 #
 # Modes:
 #   preflight  - check CUDA, torch, verl, vLLM, and flash-attn imports
+#   preflight-forward - load GPT-OSS once and run a tiny actor/ref forward
 #   prepare    - parse the selected TTT config with --prepare-only
 #   shell      - open an interactive container shell
 #   run        - default; launch the selected TTT Erdos run
@@ -19,12 +20,14 @@ HOST_HF_HOME="${HF_HOME:-${REPO_ROOT}/.hf_cache}"
 HOST_OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/outputs}"
 MODEL_PATH="${MODEL_PATH:-}"
 ATTN_IMPL="${ATTN_IMPL:-}"
+USE_HUB_KERNELS="${USE_HUB_KERNELS:-0}"
+RUNTIME_LOCK="${RUNTIME_LOCK:-docker/b200_vllm017_env.lock.json}"
 DOCKER_GPUS="${DOCKER_GPUS:-all}"
 SHM_SIZE="${SHM_SIZE:-256g}"
 
 MODE="${1:-run}"
 case "${MODE}" in
-  run|preflight|prepare|shell|bash)
+  run|preflight|preflight-forward|prepare|shell|bash)
     shift || true
     ;;
   *)
@@ -65,6 +68,8 @@ docker_args=(
   -e "CONFIG=${CONFIG}"
   -e "MODEL_PATH=${MODEL_PATH}"
   -e "ATTN_IMPL=${ATTN_IMPL}"
+  -e "USE_HUB_KERNELS=${USE_HUB_KERNELS}"
+  -e "RUNTIME_LOCK=${RUNTIME_LOCK}"
   -e "NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}"
   -e "NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}"
   -e "NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}"
@@ -119,6 +124,45 @@ from flash_attn.ops.triton.rotary import apply_rotary  # noqa: F401
 print("import flash_attn.bert_padding: ok")
 print("import flash_attn.ops.triton.rotary: ok")
 PY
+python scripts/ttt_discover/docker_runtime_guard.py \
+  --lock "${RUNTIME_LOCK}" \
+  --require-cuda \
+  --require-use-hub-kernels-zero \
+  --check-flash-attn \
+  --forbid-vllm-flash-attn3
+'
+    exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}"
+    ;;
+  preflight-forward)
+    inner_command='
+set -euo pipefail
+python scripts/ttt_discover/docker_runtime_guard.py \
+  --lock "${RUNTIME_LOCK}" \
+  --require-cuda \
+  --require-use-hub-kernels-zero \
+  --check-flash-attn \
+  --forbid-vllm-flash-attn3
+python - <<'"'"'PY'"'"'
+import os
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_path = os.environ.get("MODEL_PATH") or "unsloth/gpt-oss-20b-BF16"
+attn_impl = os.environ.get("ATTN_IMPL") or "flash_attention_2"
+print(f"Loading {model_path} with attn_implementation={attn_impl}")
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    attn_implementation=attn_impl,
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+)
+inputs = tokenizer("Return the number 1.", return_tensors="pt").to(model.device)
+with torch.no_grad():
+    output = model(**inputs)
+print(f"forward ok; logits_shape={tuple(output.logits.shape)}")
+PY
 '
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}"
     ;;
@@ -130,7 +174,16 @@ PY
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" "$@"
     ;;
   run)
-    inner_command='scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh "$@"'
+    inner_command='
+set -euo pipefail
+python scripts/ttt_discover/docker_runtime_guard.py \
+  --lock "${RUNTIME_LOCK}" \
+  --require-cuda \
+  --require-use-hub-kernels-zero \
+  --check-flash-attn \
+  --forbid-vllm-flash-attn3
+scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh "$@"
+'
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}" bash "$@"
     ;;
 esac

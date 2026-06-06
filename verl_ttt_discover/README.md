@@ -69,7 +69,7 @@ scripts/ttt_discover/run_erdos_gptoss_bf16_2gpu.sh
 
 On B200, this smoke is expected to run with
 `actor_rollout_ref.rollout.enforce_eager=False`. The verified runtime stack is
-`vllm==0.17.0`, `torch==2.10.0+cu128`, `triton==3.6.0`, and
+`vllm==0.17.0`, `torch==2.10.0+cu129`, `triton==3.6.0`, and
 `flash-attn==2.8.3` rebuilt for `sm100` when no matching wheel is available.
 This preserves vLLM CUDA graph capture and verl's remove-padding path. The
 Docker recipe rebuilds this flash-attn wheel by default with
