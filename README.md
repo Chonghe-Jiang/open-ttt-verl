@@ -12,6 +12,13 @@ Most users should start from `verl_ttt_discover/` and
 uses small, targeted changes in verl core for agent-loop metadata, rollout
 weight transfer, and LoRA/update behavior needed by TTT.
 
+Recommended branch for Docker/B200 GPT-OSS bring-up:
+
+```bash
+git clone -b ttt-vllm-docker-runtime https://github.com/Chonghe-Jiang/open-ttt-verl.git
+cd open-ttt-verl
+```
+
 ## What This Runs
 
 TTT-Discover is treated as an online RL/search workload:
@@ -53,7 +60,14 @@ pip install -r requirements-test.txt
 `requirements-ttt.txt` installs this fork with the verl `vllm`, `gpu`, and
 `math` extras. The `gpu` extra includes `flash-attn`. On clusters with a pinned
 CUDA/PyTorch/vLLM image, install the cluster-provided torch and vLLM first, then
-run the same command.
+run the same command. For B200 GPT-OSS experiments, record the runtime with:
+
+```bash
+python scripts/ttt_discover/env_fingerprint.py --json
+```
+
+The Docker runtime below uses `docker/b200_gptoss_env.lock.json` to reproduce
+the validated non-Docker Blackwell package stack.
 
 If `flash-attn` needs to compile from source, make sure `CUDA_HOME` points at a
 CUDA toolkit compatible with your PyTorch build:
@@ -85,11 +99,47 @@ IMAGE_TAG=open-ttt-verl:ttt-vllm \
 scripts/ttt_discover/docker_build_ttt_vllm.sh
 ```
 
-The default base image is `verlai/verl:vllm017.latest`, which already pins the
-CUDA/PyTorch/vLLM/flash-attn stack. The Dockerfile installs this fork with
-`pip install --no-deps -e .` so it does not replace that pinned GPU stack. Use
-`BASE_IMAGE=<image>` only when your cluster provides a known-good CUDA/vLLM
-runtime image.
+The default base is `nvidia/cuda:13.0.2-devel-ubuntu24.04`, matching the
+`torch_cuda=13.0` runtime lock. The Dockerfile no longer trusts a mutable
+verl/vLLM base image tag to define the Python GPU stack. It creates its own
+Python venv, installs the package versions from
+`docker/b200_gptoss_env.lock.json`, rebuilds `flash-attn` against the active
+PyTorch CUDA ABI, sets `USE_HUB_KERNELS=0`, and fails the build if the final
+fingerprint does not match the lock. `BASE_IMAGE` still controls the OS/CUDA
+tooling layer, so use a base image with a CUDA toolkit compatible with the lock
+file's `torch_cuda` when you regenerate the lock from another validated system.
+By default, `flash-attn` is built for `sm90` and `sm100`
+(`FLASH_ATTN_CUDA_ARCHS="90;100"`), covering H100/H200 and B200. For RTX PRO
+Blackwell-class `sm120` machines, build with
+`FLASH_ATTN_CUDA_ARCHS=120 FLASH_ATTN_TORCH_CUDA_ARCH_LIST=12.0`.
+
+To update the lock from a newly validated non-Docker B200 environment:
+
+```bash
+USE_HUB_KERNELS=0 \
+python scripts/ttt_discover/env_fingerprint.py --json > docker/b200_gptoss_env.lock.json
+```
+
+This is the intended workflow when a non-Docker B200 environment is already
+known to run GPT-OSS TTT successfully:
+
+1. Generate `docker/b200_gptoss_env.lock.json` inside that known-good
+   non-Docker environment.
+2. Build the Docker image from the same branch.
+3. Run `preflight-forward` inside Docker before launching training.
+
+If the original failure was caused by Python runtime drift, such as mismatched
+torch/vLLM/transformers/flash-attn versions or Transformers redirecting GPT-OSS
+to the Hopper-only `kernels-community/vllm-flash-attn3` kernel, the Docker build
+should reproduce the working runtime instead of silently inheriting a different
+one. The build and run scripts compare the live container fingerprint against
+the lock, so a mismatch fails early.
+
+Docker does not replace host-side requirements. The host still needs an NVIDIA
+driver compatible with the container CUDA runtime, a working NVIDIA container
+runtime, consistent model weights in the mounted HuggingFace cache, and a valid
+NCCL/network setup for the selected multi-GPU job. For non-B200 Blackwell
+variants, adjust the flash-attn architecture build args as described above.
 
 The image is NVIDIA CUDA/vLLM-specific, but not B200-specific. B200 is the
 default full-run recipe; H100/H200 can reuse the same image with a suitable
@@ -106,9 +156,20 @@ OUTPUT_DIR=/path/to/outputs \
 scripts/ttt_discover/docker_run_ttt_vllm.sh preflight
 ```
 
-`preflight` checks `nvidia-smi`, CUDA availability, and imports for `verl`,
-`verl_ttt_discover`, `vllm`, and `flash_attn`. To validate config parsing
-without launching training:
+`preflight` checks `nvidia-smi`, CUDA availability, imports for `verl`,
+`verl_ttt_discover`, `vllm`, and `flash_attn`, then compares the runtime
+fingerprint against `docker/b200_gptoss_env.lock.json`. It also fails if the HF
+cache contains `kernels-community/vllm-flash-attn3`, which is the Hopper-only
+path that produced `S aux is currently only supported for Hopper GPUs` on B200.
+For a deeper check that loads GPT-OSS once and runs a minimal actor/ref forward:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/docker_run_ttt_vllm.sh preflight-forward
+```
+
+To validate config parsing without launching training:
 
 ```bash
 IMAGE_TAG=open-ttt-verl:ttt-vllm \
@@ -212,10 +273,9 @@ It is intentionally small:
 - `load_format=auto` and `layered_summon=True`, so vLLM loads the BF16 base
   model and verl syncs LoRA weights.
 
-On the validated Blackwell workstation, actor/ref use
-`attn_implementation=eager` because the current GPT-OSS transformers
-FlashAttention path failed with `S aux is currently only supported for Hopper
-GPUs`, and GPT-OSS did not support SDPA in that transformers version.
+Actor/ref use `attn_implementation=flash_attention_2`. The Docker environment
+sets `USE_HUB_KERNELS=0` so Transformers does not redirect GPT-OSS attention to
+the `kernels-community/vllm-flash-attn3` Hopper-only path.
 
 ## Full Erdos Run on 4xB200
 
@@ -302,8 +362,10 @@ scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh
 ```
 
 If your transformers/flash-attn stack hits the GPT-OSS Blackwell attention
-kernel error, keep vLLM enabled but fall back only the actor/ref HuggingFace
-attention path:
+kernel error, first run the fingerprint checks and make the Docker runtime match
+`docker/b200_gptoss_env.lock.json`. The expected B200 path is
+`flash_attention_2` with `USE_HUB_KERNELS=0`, not actor/ref eager attention.
+Use eager only as an explicit diagnostic override:
 
 ```bash
 GPUS=0,1,2,3 \

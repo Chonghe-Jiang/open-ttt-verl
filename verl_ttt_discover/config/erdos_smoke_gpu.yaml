@@ -36,7 +36,7 @@ ttt:
 
 verl_overrides:
   - actor_rollout_ref.model.external_lib=verl_ttt_discover.verl_ext
-  - +actor_rollout_ref.model.override_config.attn_implementation=eager
+  - +actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2
   - actor_rollout_ref.model.lora_rank=32
   - actor_rollout_ref.model.lora_alpha=32
   - actor_rollout_ref.model.enable_gradient_checkpointing=True

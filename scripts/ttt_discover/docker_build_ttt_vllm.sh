@@ -2,20 +2,40 @@
 set -euo pipefail
 
 # Build the portable TTT-Discover runtime image.
-# Override IMAGE_TAG or BASE_IMAGE from the shell.
+# Override IMAGE_TAG, BASE_IMAGE, or lock/build args from the shell.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 IMAGE_TAG="${IMAGE_TAG:-open-ttt-verl:ttt-vllm}"
-BASE_IMAGE="${BASE_IMAGE:-verlai/verl:vllm017.latest}"
+BASE_IMAGE="${BASE_IMAGE:-nvidia/cuda:13.0.2-devel-ubuntu24.04}"
 DOCKERFILE="${DOCKERFILE:-docker/Dockerfile.ttt-vllm}"
 CONTEXT="${CONTEXT:-${REPO_ROOT}}"
+RUNTIME_LOCK="${RUNTIME_LOCK:-docker/b200_gptoss_env.lock.json}"
+INSTALL_LOCKED_RUNTIME="${INSTALL_LOCKED_RUNTIME:-1}"
+PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+REBUILD_FLASH_ATTN="${REBUILD_FLASH_ATTN:-1}"
+FLASH_ATTN_VERSION="${FLASH_ATTN_VERSION:-}"
+FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTN_CUDA_ARCHS:-90;100}"
+FLASH_ATTN_TORCH_CUDA_ARCH_LIST="${FLASH_ATTN_TORCH_CUDA_ARCH_LIST:-9.0;10.0}"
+FLASH_ATTN_MAX_JOBS="${FLASH_ATTN_MAX_JOBS:-8}"
+FLASH_ATTN_NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS:-4}"
+FLASH_ATTN_CUDA_HOME="${FLASH_ATTN_CUDA_HOME:-}"
 
 cd "${REPO_ROOT}"
 
 docker build \
   --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+  --build-arg "RUNTIME_LOCK=${RUNTIME_LOCK}" \
+  --build-arg "INSTALL_LOCKED_RUNTIME=${INSTALL_LOCKED_RUNTIME}" \
+  --build-arg "PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}" \
+  --build-arg "REBUILD_FLASH_ATTN=${REBUILD_FLASH_ATTN}" \
+  --build-arg "FLASH_ATTN_VERSION=${FLASH_ATTN_VERSION}" \
+  --build-arg "FLASH_ATTN_CUDA_ARCHS=${FLASH_ATTN_CUDA_ARCHS}" \
+  --build-arg "FLASH_ATTN_TORCH_CUDA_ARCH_LIST=${FLASH_ATTN_TORCH_CUDA_ARCH_LIST}" \
+  --build-arg "FLASH_ATTN_MAX_JOBS=${FLASH_ATTN_MAX_JOBS}" \
+  --build-arg "FLASH_ATTN_NVCC_THREADS=${FLASH_ATTN_NVCC_THREADS}" \
+  --build-arg "FLASH_ATTN_CUDA_HOME=${FLASH_ATTN_CUDA_HOME}" \
   -f "${DOCKERFILE}" \
   -t "${IMAGE_TAG}" \
   "$@" \
