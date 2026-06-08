@@ -1,6 +1,7 @@
 # Adapt from https://github.com/NVIDIA/Megatron-LM/blob/b1efb3c7126ef7615e8c333432d76e08038e17ff/pretrain_gpt.py
 import argparse
 import inspect
+import logging
 import re
 from contextlib import nullcontext
 from typing import Literal
@@ -19,6 +20,8 @@ from megatron.training.arguments import core_transformer_config_from_args
 
 from slime.utils.megatron_bridge_utils import patch_auto_bridge_hf_config
 from slime.utils.misc import load_function
+
+logger = logging.getLogger(__name__)
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -264,6 +267,29 @@ def wrap_model_provider_with_freeze(original_provider, args):
 
 def get_model_provider_func(args, role="actor"):
     return wrap_model_provider_with_freeze(_get_model_provider_func(args, role), args)
+
+
+def apply_lora_adapters(model: GPTModel, args: argparse.Namespace):
+    if getattr(args, "lora_rank", 0) <= 0:
+        return
+
+    try:
+        from megatron.bridge.peft.lora import LoRA
+    except ModuleNotFoundError:
+        from mbridge.peft.lora import LoRA
+
+    lora = LoRA(
+        target_modules=list(args.lora_target_modules),
+        dim=int(args.lora_rank),
+        alpha=int(args.lora_alpha),
+        dropout=float(args.lora_dropout),
+    )
+    lora(model, training=True)
+    setattr(model, "_slime_lora_config", lora)
+
+    trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    total = sum(param.numel() for param in model.parameters())
+    logger.info("Applied Megatron Bridge LoRA adapters: trainable=%s total=%s", trainable, total)
 
 
 def freeze_model_params(model: GPTModel, args: argparse.Namespace):

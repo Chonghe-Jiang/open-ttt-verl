@@ -34,7 +34,7 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .cp_utils import reduce_train_step_metrics
 from .data import DataIterator, get_batch
 from .loss import loss_function
-from .model_provider import get_model_provider_func
+from .model_provider import apply_lora_adapters, get_model_provider_func
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,18 @@ def setup_model_and_optimizer(
 
     model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
+    if getattr(args, "lora_rank", 0) > 0 and getattr(args, "_slime_defer_lora_until_after_load", False):
+        return model, None, None
+
     # Optimizer
+    optimizer, opt_param_scheduler = setup_optimizer_and_scheduler(args, model)
+    return model, optimizer, opt_param_scheduler
+
+
+def setup_optimizer_and_scheduler(
+    args: Namespace,
+    model: Sequence[DDP],
+) -> tuple[MegatronOptimizer, OptimizerParamScheduler]:
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args, f.name):
@@ -231,7 +242,14 @@ def setup_model_and_optimizer(
         use_gloo_process_groups=args.enable_gloo_process_groups,
     )
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
-    return model, optimizer, opt_param_scheduler
+    return optimizer, opt_param_scheduler
+
+
+def inject_lora_adapters(model: Sequence[DDP], args: Namespace) -> None:
+    if getattr(args, "lora_rank", 0) <= 0:
+        return
+    for module in unwrap_model(model):
+        apply_lora_adapters(module, args)
 
 
 def enable_forward_pre_hook(model_chunks: Sequence[DDP]) -> None:
@@ -850,18 +868,51 @@ def save(
     args = get_args()
     if should_disable_forward_pre_hook(args):
         disable_forward_pre_hook(model)
-    save_checkpoint(
-        iteration,
-        model,
-        optimizer,
-        opt_param_scheduler,
-        num_floating_point_operations_so_far=0,
-        checkpointing_context=None,
-        train_data_iterator=None,
-        preprocess_common_state_dict_fn=None,
-    )
+    if getattr(args, "lora_save_only", False) and getattr(args, "lora_rank", 0) > 0:
+        save_lora_sidecar(args, iteration, model)
+    else:
+        save_checkpoint(
+            iteration,
+            model,
+            optimizer,
+            opt_param_scheduler,
+            num_floating_point_operations_so_far=0,
+            checkpointing_context=None,
+            train_data_iterator=None,
+            preprocess_common_state_dict_fn=None,
+        )
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
+
+
+def save_lora_sidecar(args, iteration: int, model: Sequence[DDP]) -> None:
+    if args.save is None:
+        return
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    save_dir = Path(args.save) / f"iter_{iteration:07d}" / "lora_adapters"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    state = {}
+    for chunk_id, module in enumerate(model):
+        for name, param in module.named_parameters():
+            if param.requires_grad or "adapter" in name or "lora" in name.lower():
+                state[f"chunk_{chunk_id}.{name}"] = param.detach().cpu()
+
+    tmp_path = save_dir / f"rank_{rank:05d}.pt.tmp"
+    final_path = save_dir / f"rank_{rank:05d}.pt"
+    torch.save(
+        {
+            "iteration": iteration,
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "lora_target_modules": args.lora_target_modules,
+            "state_dict": state,
+        },
+        tmp_path,
+    )
+    os.replace(tmp_path, final_path)
+    if rank == 0:
+        (Path(args.save) / "latest_checkpointed_iteration.txt").write_text(str(iteration))
 
 
 def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
@@ -924,6 +975,10 @@ def initialize_model_and_optimizer(
         filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
         print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
 
+    use_deferred_lora = getattr(args, "lora_rank", 0) > 0
+    if use_deferred_lora:
+        setattr(args, "_slime_defer_lora_until_after_load", True)
+
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     reinit_critic_output_layer = _critic_output_layer_needs_reinit(args, model, role)
@@ -935,6 +990,11 @@ def initialize_model_and_optimizer(
         checkpointing_context={},
         skip_load_to_model_and_opt=False,
     )
+    if use_deferred_lora:
+        delattr(args, "_slime_defer_lora_until_after_load")
+        inject_lora_adapters(model, args)
+        optimizer, opt_param_scheduler = setup_optimizer_and_scheduler(args, model)
+
     if reinit_critic_output_layer:
         _reinitialize_critic_output_layer(model)
         if (args.fp16 or args.bf16) and optimizer is not None:

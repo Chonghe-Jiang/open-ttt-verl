@@ -1,0 +1,17 @@
+.git
+__pycache__
+*.pyc
+*.log
+
+workspace
+models
+ckpt
+logs
+
+data/archive*.json
+data/*archive*.json
+data/best_state.json
+data/*.lock
+data/*.tmp
+
+open-ttt-verl

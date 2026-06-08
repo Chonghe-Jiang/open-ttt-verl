@@ -169,10 +169,15 @@ def create_training_models(args, pgs, rollout_manager):
     else:
         start_rollout_ids = actor_start_rollout_ids
 
-    assert len(set(start_rollout_ids)) == 1
-
     if args.start_rollout_id is None:
+        assert len(set(start_rollout_ids)) == 1
         args.start_rollout_id = start_rollout_ids[0]
+    elif len(set(start_rollout_ids)) != 1:
+        logger.warning(
+            "Ignoring inconsistent checkpoint-derived start_rollout_ids=%s because --start-rollout-id=%s was set.",
+            start_rollout_ids,
+            args.start_rollout_id,
+        )
 
     actor_model.set_rollout_manager(rollout_manager)
     if args.use_critic:

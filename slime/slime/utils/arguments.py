@@ -251,6 +251,37 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                         """,
             )
             parser.add_argument(
+                "--lora-rank",
+                type=int,
+                default=0,
+                help="Megatron Bridge LoRA adapter rank. 0 disables adapter injection.",
+            )
+            parser.add_argument(
+                "--lora-alpha",
+                type=int,
+                default=32,
+                help="Megatron Bridge LoRA alpha/scaling parameter.",
+            )
+            parser.add_argument(
+                "--lora-target-modules",
+                type=str,
+                nargs="*",
+                default=["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"],
+                help="Megatron Bridge LoRA target module names.",
+            )
+            parser.add_argument(
+                "--lora-dropout",
+                type=float,
+                default=0.0,
+                help="Megatron Bridge LoRA dropout.",
+            )
+            parser.add_argument(
+                "--lora-save-only",
+                action="store_true",
+                default=False,
+                help="Also write rank-local adapter-only sidecar checkpoints when saving.",
+            )
+            parser.add_argument(
                 "--allgather-cp",
                 action="store_true",
                 default=False,
@@ -896,6 +927,69 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "Critic values are available in rollout_data['values']. "
                     "(e.g., my_module.py:my_advantage_fn)."
                 ),
+            )
+            parser.add_argument(
+                "--reasoning-effort",
+                type=str,
+                choices=["low", "medium", "high"],
+                default="high",
+                help="Reasoning effort passed to chat templates that support it.",
+            )
+            parser.add_argument(
+                "--ttt-archive-path",
+                type=str,
+                default="/root/workspace/erdos/data/archive.json",
+                help="Path to the persistent TTT-Discover archive JSON.",
+            )
+            parser.add_argument("--ttt-puct-c", type=float, default=1.0, help="PUCT exploration constant.")
+            parser.add_argument(
+                "--ttt-topk-children",
+                type=int,
+                default=2,
+                help="Number of valid children kept when finalizing each archive group.",
+            )
+            parser.add_argument(
+                "--ttt-max-buffer-size",
+                type=int,
+                default=1000,
+                help="Maximum number of archive states to keep.",
+            )
+            parser.add_argument(
+                "--ttt-sandbox-timeout-s",
+                type=int,
+                default=60,
+                help="Sandbox timeout for evaluating generated Erdos code.",
+            )
+            parser.add_argument(
+                "--ttt-sandbox-cpus",
+                type=int,
+                default=1,
+                help="CPU count advertised in the Erdos prompt.",
+            )
+            parser.add_argument(
+                "--ttt-sandbox-work-dir",
+                type=str,
+                default=None,
+                help="Optional work directory for the Erdos sandbox temporary directory.",
+            )
+            parser.add_argument("--ttt-target-c5", type=float, default=0.3808)
+            parser.add_argument(
+                "--ttt-entropic-target-kl",
+                type=float,
+                default=0.6931471805599453,
+                help="Target KL for adaptive-beta entropic leave-one-out advantages.",
+            )
+            parser.add_argument(
+                "--ttt-advantage-clip",
+                type=float,
+                default=20.0,
+                help="Absolute clip for TTT entropic leave-one-out scalar advantages.",
+            )
+            parser.add_argument(
+                "--ttt-is-clip",
+                type=float,
+                default=10.0,
+                help="Maximum rollout-policy importance weight in the TTT REINFORCE loss.",
             )
             parser.add_argument(
                 "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"
@@ -1892,6 +1986,22 @@ def slime_validate_args(args):
 
     if args.only_train_params_name_list and args.freeze_params_name_list:
         raise ValueError("You can only specify ONE of: --only-train-params-name-list, or --freeze-params-name-list.")
+
+    if args.lora_rank < 0:
+        raise ValueError("--lora-rank must be >= 0.")
+    if args.lora_rank > 0:
+        if getattr(args, "q_lora_rank", None) is not None:
+            raise ValueError("--q-lora-rank is an MLA architecture option, not fine-tuning LoRA. Use --lora-rank.")
+        if getattr(args, "kv_lora_rank", None) not in (None, 32):
+            raise ValueError("--kv-lora-rank is an MLA architecture option, not fine-tuning LoRA. Use --lora-rank.")
+        if not args.lora_target_modules:
+            raise ValueError("--lora-target-modules cannot be empty when --lora-rank > 0.")
+        logger.info(
+            "Megatron Bridge LoRA requested: rank=%s alpha=%s targets=%s",
+            args.lora_rank,
+            args.lora_alpha,
+            args.lora_target_modules,
+        )
 
     if args.update_weight_mode == "delta":
         if args.colocate:
