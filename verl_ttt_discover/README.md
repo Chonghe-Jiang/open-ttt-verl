@@ -100,6 +100,20 @@ The original GPT-OSS model release is not the recommended verl train target
 because its quantized/MXFP-style layout does not behave like a normal trainable
 BF16 actor/ref checkpoint. Use the Unsloth BF16 conversion for LoRA RL.
 
+The paper also reports the Erdos setting with `Qwen/Qwen3-8B`. Use the same
+Docker image and switch only the run config:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/docker_run_ttt_vllm.sh run-qwen8b
+```
+
+This uses `verl_ttt_discover/config/erdos_4gpu_b200_qwen3_8b_official.yaml`,
+with 50 steps, `groups_per_batch=8`, `group_size=64`, LoRA rank/alpha 32, and
+`phase1_max_tokens=26000`. The Docker build stage does not download the model;
+`Qwen/Qwen3-8B` is fetched or loaded from `HF_HOME` during the run.
+
 If a Blackwell transformers/flash-attn stack errors on the GPT-OSS attention
 kernel, keep vLLM rollout enabled and override only actor/ref attention:
 

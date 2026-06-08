@@ -6,8 +6,10 @@ set -euo pipefail
 # Modes:
 #   preflight  - check CUDA, torch, verl, vLLM, and flash-attn imports
 #   prepare    - parse the selected TTT config with --prepare-only
+#   prepare-qwen8b - parse the Qwen3-8B official TTT config
 #   shell      - open an interactive container shell
 #   run        - default; launch the selected TTT Erdos run
+#   run-qwen8b - launch the Qwen3-8B official TTT Erdos run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -24,13 +26,19 @@ SHM_SIZE="${SHM_SIZE:-256g}"
 
 MODE="${1:-run}"
 case "${MODE}" in
-  run|preflight|prepare|shell|bash)
+  run|run-qwen8b|preflight|prepare|prepare-qwen8b|shell|bash)
     shift || true
     ;;
   *)
     MODE="run"
     ;;
 esac
+
+if [[ "${MODE}" == "run-qwen8b" || "${MODE}" == "prepare-qwen8b" ]]; then
+  if [[ "${CONFIG}" == "verl_ttt_discover/config/erdos_4gpu_b200_gptoss20b_bf16_official.yaml" ]]; then
+    CONFIG="verl_ttt_discover/config/erdos_4gpu_b200_qwen3_8b_official.yaml"
+  fi
+fi
 
 mkdir -p "${HOST_HF_HOME}" "${HOST_OUTPUT_DIR}"
 
@@ -120,11 +128,19 @@ PY
     inner_command='scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh --prepare-only "$@"'
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}" bash "$@"
     ;;
+  prepare-qwen8b)
+    inner_command='scripts/ttt_discover/run_erdos_qwen3_8b_4gpu_b200.sh --prepare-only "$@"'
+    exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}" bash "$@"
+    ;;
   shell|bash)
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" "$@"
     ;;
   run)
     inner_command='scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh "$@"'
+    exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}" bash "$@"
+    ;;
+  run-qwen8b)
+    inner_command='scripts/ttt_discover/run_erdos_qwen3_8b_4gpu_b200.sh "$@"'
     exec docker "${docker_args[@]}" "${IMAGE_TAG}" -lc "${inner_command}" bash "$@"
     ;;
 esac

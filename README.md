@@ -336,6 +336,53 @@ scripts/ttt_discover/run_erdos_gptoss_bf16_4gpu_b200.sh \
 In colocated verl runs, actor + ref + vLLM rollout + LoRA sync buffers share the
 same GPU pool, so peak memory can exceed the raw model size by a large margin.
 
+## Qwen3-8B Erdos Run on 4xB200
+
+The paper also reports TTT-Discover on Erdos with `Qwen/Qwen3-8B` as a direct
+comparison to ThetaEvolve. This run keeps the same TTT-Discover hyperparameters
+as the main Erdos setting: 50 steps, 8 groups per batch, 64 rollouts per group,
+LoRA rank 32, learning rate `4e-5`, and `phase1_max_tokens=26000`.
+
+No separate Docker image is needed. Build the same portable runtime image once:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+scripts/ttt_discover/docker_build_ttt_vllm.sh
+```
+
+Then launch the Qwen3-8B official config:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+scripts/ttt_discover/docker_run_ttt_vllm.sh run-qwen8b
+```
+
+This uses
+`verl_ttt_discover/config/erdos_4gpu_b200_qwen3_8b_official.yaml`:
+
+- `model_path=Qwen/Qwen3-8B`
+- `groups_per_batch=8`, `group_size=64`
+- `num_steps=50`
+- `phase1_max_tokens=26000`
+- `max_prompt_length=8192`, `max_response_length=26000`,
+  `rollout.max_model_len=32768`
+- `learning_rate=4e-5`, LoRA rank/alpha 32
+- actor/ref dtype `bf16`
+- actor/ref attention `flash_attention_2`
+- vLLM rollout with tensor parallel size 4
+
+The Docker build stage does not download `Qwen/Qwen3-8B`; the model is fetched
+or loaded from `HF_HOME` during `run-qwen8b`. If you already have a local
+snapshot, pass it explicitly:
+
+```bash
+IMAGE_TAG=open-ttt-verl:ttt-vllm \
+HF_HOME=/path/to/large/cache/huggingface \
+MODEL_PATH=/path/to/models--Qwen--Qwen3-8B/snapshots/<sha> \
+scripts/ttt_discover/docker_run_ttt_vllm.sh run-qwen8b
+```
+
 ## Qwen Smoke
 
 For a smaller model smoke:

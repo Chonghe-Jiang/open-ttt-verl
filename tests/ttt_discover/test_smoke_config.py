@@ -38,7 +38,7 @@ def test_gpu_smoke_config_is_minimal_single_gpu_vllm_run():
     assert "+actor_rollout_ref.model.override_config.attn_implementation=eager" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.agent.num_workers=1" in config["verl_overrides"]
-    assert "actor_rollout_ref.rollout.enforce_eager=True" in config["verl_overrides"]
+    assert "actor_rollout_ref.rollout.enforce_eager=False" in config["verl_overrides"]
     assert "actor_rollout_ref.rollout.max_model_len=9216" in config["verl_overrides"]
 
 
@@ -281,6 +281,35 @@ def test_four_gpu_b200_gptoss_bf16_official_config_matches_ttt_erdos_defaults():
     assert "actor_rollout_ref.ref.fsdp_config.model_dtype=bf16" in overrides
     assert "actor_rollout_ref.rollout.load_format=auto" in overrides
     assert "actor_rollout_ref.rollout.layered_summon=True" in overrides
+    assert "actor_rollout_ref.rollout.max_model_len=32768" in overrides
+    assert "actor_rollout_ref.rollout.max_num_seqs=512" in overrides
+    assert "actor_rollout_ref.rollout.agent.num_workers=64" in overrides
+
+
+def test_four_gpu_b200_qwen3_8b_official_config_matches_ttt_erdos_defaults():
+    config = _load_config("erdos_4gpu_b200_qwen3_8b_official.yaml")
+    overrides = config["verl_overrides"]
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["output_dir"] == "outputs/ttt_erdos/4gpu_b200_qwen3_8b_official_g8_n64"
+    assert config["run"]["experiment_name"] == "erdos_4gpu_b200_qwen3_8b_official_g8_n64"
+    assert config["run"]["n_gpus_per_node"] == 4
+    assert config["run"]["tensor_model_parallel_size"] == 4
+    assert config["run"]["num_initial_states"] == 8
+    assert config["run"]["num_steps"] == 50
+    assert config["run"]["learning_rate"] == 4.0e-5
+    assert config["run"]["ppo_mini_batch_size"] == 8
+    assert config["run"]["max_prompt_length"] == 8192
+    assert config["run"]["max_response_length"] == 26000
+    assert config["ttt"]["groups_per_batch"] == 8
+    assert config["ttt"]["group_size"] == 64
+    assert config["ttt"]["phase1_max_tokens"] == 26000
+    assert config["ttt"]["eval_timeout"] == 1000
+    assert "+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2" in overrides
+    assert "actor_rollout_ref.model.lora_rank=32" in overrides
+    assert "actor_rollout_ref.model.lora_alpha=32" in overrides
+    assert "actor_rollout_ref.actor.fsdp_config.model_dtype=bf16" in overrides
+    assert "actor_rollout_ref.ref.fsdp_config.model_dtype=bf16" in overrides
     assert "actor_rollout_ref.rollout.max_model_len=32768" in overrides
     assert "actor_rollout_ref.rollout.max_num_seqs=512" in overrides
     assert "actor_rollout_ref.rollout.agent.num_workers=64" in overrides
