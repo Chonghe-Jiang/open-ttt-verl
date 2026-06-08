@@ -64,7 +64,7 @@ HF_TOKEN=... docker/run_open_ttt_slime.sh scripts/download_qwen3_8b.sh
 - converted checkpoint: `/root/workspace/ckpt/Qwen3-8B_torch_dist`
 - LoRA output: `/root/workspace/ckpt/Qwen3-8B_erdos_lora_2gpu`
 - training steps: `50`
-- default rollouts per step: `2 * 8 = 16`
+- default rollouts per step: `1 * 8 = 8`
 - LoRA rank/alpha: `64`
 - max rollout response length: `30000`
 - SGLang context length: `16384`

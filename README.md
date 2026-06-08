@@ -51,7 +51,7 @@ GPUs. Each SGLang engine uses 1 GPU.
 - converted checkpoint layout: `TP=1`, `PP=2`
 - fine-tuning: LoRA rank/alpha `64`
 - training steps: `50`
-- default rollouts per step: `2 * 8 = 16`
+- default rollouts per step: `1 * 8 = 8`
 - max rollout response length: `30000`
 - SGLang context length: `16384`
 - reasoning effort: `high`
