@@ -53,10 +53,10 @@ sbatch scripts/run_qwen3_8b_erdos_rl_4gpu.slurm
 The 4-GPU script keeps the Megatron actor on 2 GPUs and runs two dedicated
 SGLang rollout engines on the remaining GPUs, avoiding colocate offload pressure.
 
-For the paper-aligned 8×B200 run:
+For the paper-aligned 8×B200 Docker run:
 
 ```bash
-sbatch scripts/run_qwen3_8b_erdos_rl_8b200.slurm
+docker/run_qwen3_8b_8b200_rl.sh
 ```
 
 This uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,

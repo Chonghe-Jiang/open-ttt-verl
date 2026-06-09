@@ -1,35 +1,26 @@
 #!/bin/bash
-#SBATCH -p pi_ppliang
-#SBATCH --gres=gpu:b200:8
-#SBATCH -c 120
-#SBATCH --mem=1440G
-#SBATCH --time=24:00:00
-#SBATCH -J open-ttt-qwen3-8b-erdos-rl-8b200
-#SBATCH -o /home/qua/scratch/open-ttt-workspace/logs/slurm-qwen3-8b-erdos-rl-8b200-%j.out
-
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
-
-export WORKSPACE=${WORKSPACE:-/home/qua/scratch/open-ttt-workspace}
+export WORKSPACE=${WORKSPACE:-/root/workspace}
+export REPO_DIR=${REPO_DIR:-/root/workspace/erdos}
 export LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 export MODEL_RAW=${MODEL_RAW:-${WORKSPACE}/models/Qwen3-8B}
 export REF_CKPT=${REF_CKPT:-${WORKSPACE}/ckpt/Qwen3-8B_torch_dist}
 export SAVE_CKPT=${SAVE_CKPT:-${WORKSPACE}/ckpt/Qwen3-8B_erdos_lora_8b200}
 export ARCHIVE_PATH=${ARCHIVE_PATH:-${WORKSPACE}/data/qwen3_8b_erdos_archive_8b200.json}
 
-export TOTAL_GPUS=8
-export NUM_GPUS_PER_NODE=8
-export ACTOR_NUM_GPUS=4
-export ROLLOUT_NUM_GPUS=4
-export ROLLOUT_NUM_GPUS_PER_ENGINE=1
-export COLOCATE=0
+export TOTAL_GPUS=${TOTAL_GPUS:-8}
+export NUM_GPUS_PER_NODE=${NUM_GPUS_PER_NODE:-8}
+export ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS:-4}
+export ROLLOUT_NUM_GPUS=${ROLLOUT_NUM_GPUS:-4}
+export ROLLOUT_NUM_GPUS_PER_ENGINE=${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}
+export COLOCATE=${COLOCATE:-0}
 
-export TENSOR_MODEL_PARALLEL_SIZE=1
-export PIPELINE_MODEL_PARALLEL_SIZE=2
-export CONTEXT_PARALLEL_SIZE=1
-export EXPERT_MODEL_PARALLEL_SIZE=1
-export EXPERT_TENSOR_PARALLEL_SIZE=1
+export TENSOR_MODEL_PARALLEL_SIZE=${TENSOR_MODEL_PARALLEL_SIZE:-1}
+export PIPELINE_MODEL_PARALLEL_SIZE=${PIPELINE_MODEL_PARALLEL_SIZE:-2}
+export CONTEXT_PARALLEL_SIZE=${CONTEXT_PARALLEL_SIZE:-1}
+export EXPERT_MODEL_PARALLEL_SIZE=${EXPERT_MODEL_PARALLEL_SIZE:-1}
+export EXPERT_TENSOR_PARALLEL_SIZE=${EXPERT_TENSOR_PARALLEL_SIZE:-1}
 
 export NUM_ROLLOUT=${NUM_ROLLOUT:-50}
 export ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-8}
@@ -55,15 +46,9 @@ export KILL_STALE_PROCESSES=${KILL_STALE_PROCESSES:-0}
 
 mkdir -p "${LOG_ROOT}" "${WORKSPACE}/data" "${WORKSPACE}/ckpt"
 
-echo "=== qwen3-8b erdos rl 8b200 slurm ==="
-echo "time: $(date -Is)"
-echo "host: $(hostname)"
-echo "job: ${SLURM_JOB_ID:-unset}"
-echo "partition: ${SLURM_JOB_PARTITION:-unset}"
-echo "gres: ${SLURM_JOB_GRES:-unset}"
-echo "gpus_on_node: ${SLURM_GPUS_ON_NODE:-unset}"
-echo "cuda_visible_devices: ${CUDA_VISIBLE_DEVICES:-unset}"
+echo "=== qwen3-8b erdos rl docker 8b200 ==="
 echo "workspace: ${WORKSPACE}"
+echo "repo_dir: ${REPO_DIR}"
 echo "model_raw: ${MODEL_RAW}"
 echo "ref_ckpt: ${REF_CKPT}"
 echo "save_ckpt: ${SAVE_CKPT}"
@@ -73,8 +58,6 @@ echo "actor_gpus: ${ACTOR_NUM_GPUS}"
 echo "rollout_gpus: ${ROLLOUT_NUM_GPUS}"
 echo "rollout_gpus_per_engine: ${ROLLOUT_NUM_GPUS_PER_ENGINE}"
 echo "colocate: ${COLOCATE}"
-echo "tp: ${TENSOR_MODEL_PARALLEL_SIZE}"
-echo "pp: ${PIPELINE_MODEL_PARALLEL_SIZE}"
 echo "num_rollout: ${NUM_ROLLOUT}"
 echo "rollout_groups: ${ROLLOUT_BATCH_SIZE}"
 echo "rollouts_per_group: ${N_SAMPLES_PER_PROMPT}"
@@ -89,4 +72,5 @@ echo "ttt_entropic_target_kl: ${TTT_ENTROPIC_TARGET_KL}"
 echo "sglang_context_length: ${SGLANG_CONTEXT_LENGTH}"
 echo "rollout_max_response_len: ${ROLLOUT_MAX_RESPONSE_LEN}"
 
-bash scripts/run_qwen3_8b_erdos_rl_with_apptainer.sh
+cd "${REPO_DIR}"
+scripts/run_qwen3_8b_erdos_rl_in_container.sh

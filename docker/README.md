@@ -51,6 +51,19 @@ Or run all three:
 docker/run_open_ttt_slime.sh scripts/docker_qwen3_8b_2gpu_all.sh
 ```
 
+## Qwen3-8B 8×B200 Paper-Aligned RL
+
+After the model has been downloaded and converted in the mounted workspace, run:
+
+```bash
+docker/run_qwen3_8b_8b200_rl.sh
+```
+
+This launches a non-colocated Docker run with 4 actor GPUs and 4 rollout GPUs.
+It uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
+LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
+coefficient `0.01`, PUCT reuse, and entropic target KL `ln 2`.
+
 If Hugging Face auth is required:
 
 ```bash
