@@ -1,9 +1,13 @@
+import logging
+
 import ray
 
 from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from slime.utils.arguments import parse_args
 from slime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
 from slime.utils.misc import should_run_periodic_action
+
+logger = logging.getLogger(__name__)
 
 
 def train(args):
@@ -31,6 +35,12 @@ def train(args):
 
     if args.check_weight_update_equal:
         ray.get(rollout_manager.check_weights.remote(action="compare"))
+
+    if args.num_rollout == 0 and args.eval_interval is None:
+        logger.info("Smoke mode complete: initial actor-to-rollout weight sync finished.")
+        ray.get(rollout_manager.dispose.remote())
+        finish_tracking(args)
+        return
 
     if args.offload_rollout:
         ray.get(rollout_manager.onload_kv.remote())

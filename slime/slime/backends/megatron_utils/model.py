@@ -9,8 +9,9 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from megatron.core import mpu
+from megatron.core import mpu, tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
+from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
@@ -18,6 +19,7 @@ from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
+from megatron.core.transformer.module import Float16Module
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
@@ -37,6 +39,30 @@ from .loss import loss_function
 from .model_provider import apply_lora_adapters, get_model_provider_func
 
 logger = logging.getLogger(__name__)
+
+
+def _rank_context() -> str:
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return "rank=uninitialized"
+    try:
+        rank = torch.distributed.get_rank()
+    except Exception:
+        return "rank=unknown"
+    try:
+        tp_rank = mpu.get_tensor_model_parallel_rank()
+        pp_rank = mpu.get_pipeline_model_parallel_rank()
+        dp_rank = mpu.get_data_parallel_rank(with_context_parallel=False)
+        dp_size = mpu.get_data_parallel_world_size(with_context_parallel=False)
+        return f"rank={rank} tp={tp_rank} pp={pp_rank} dp={dp_rank}/{dp_size}"
+    except Exception:
+        return f"rank={rank}"
+
+
+def _trainable_param_count(model: Sequence[DDP]) -> int:
+    count = 0
+    for module in unwrap_model(model):
+        count += sum(param.numel() for param in module.parameters() if param.requires_grad)
+    return count
 
 
 def _disable_tqdm_for_non_main_rank() -> bool:
@@ -157,7 +183,8 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
     # resume), so the worst case is the cosine/linear schedule reaches its
     # plateau slightly early or late. Pass ``--lr-decay-iters`` explicitly if you
     # need exact decay control.
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    estimated_train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    args.train_iters = max(1, estimated_train_iters)
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters * args.global_batch_size
@@ -229,6 +256,16 @@ def setup_optimizer_and_scheduler(
     args: Namespace,
     model: Sequence[DDP],
 ) -> tuple[MegatronOptimizer, OptimizerParamScheduler]:
+    logger.info(
+        "Megatron optimizer setup start: %s optimizer=%s distributed=%s overlap_grad_reduce=%s "
+        "overlap_param_gather=%s trainable_params=%s",
+        _rank_context(),
+        getattr(args, "optimizer", None),
+        getattr(args, "use_distributed_optimizer", None),
+        getattr(args, "overlap_grad_reduce", None),
+        getattr(args, "overlap_param_gather", None),
+        _trainable_param_count(model),
+    )
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args, f.name):
@@ -236,20 +273,93 @@ def setup_optimizer_and_scheduler(
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
+    logger.info("Megatron optimizer build start: %s", _rank_context())
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
         use_gloo_process_groups=args.enable_gloo_process_groups,
     )
+    logger.info("Megatron optimizer build finished: %s", _rank_context())
+    logger.info("Megatron optimizer scheduler build start: %s", _rank_context())
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
+    logger.info("Megatron optimizer setup finished: %s", _rank_context())
     return optimizer, opt_param_scheduler
 
 
 def inject_lora_adapters(model: Sequence[DDP], args: Namespace) -> None:
     if getattr(args, "lora_rank", 0) <= 0:
         return
+    logger.info(
+        "Megatron LoRA injection start: %s rank=%s alpha=%s targets=%s",
+        _rank_context(),
+        getattr(args, "lora_rank", None),
+        getattr(args, "lora_alpha", None),
+        getattr(args, "lora_target_modules", None),
+    )
     for module in unwrap_model(model):
         apply_lora_adapters(module, args)
+    logger.info("Megatron LoRA injection finished: %s trainable_params=%s", _rank_context(), _trainable_param_count(model))
+
+
+def _rewrap_model_with_fresh_ddp(args: Namespace, model: Sequence[DDP]) -> list[DDP]:
+    """Rebuild Megatron DDP buffers after structural parameter changes."""
+    modules = list(unwrap_model(model))
+    for module in modules:
+        for param in module.parameters():
+            tensor_parallel.set_defaults_if_not_set_tensor_model_parallel_attributes(param)
+
+    config = get_model_config(model[0])
+    if args.fp16 or args.bf16:
+        modules = [Float16Module(config, module) for module in modules]
+
+    kwargs = {}
+    for f in dataclasses.fields(DistributedDataParallelConfig):
+        if hasattr(args, f.name):
+            kwargs[f.name] = getattr(args, f.name)
+    kwargs["grad_reduce_in_fp32"] = args.accumulate_allreduce_grads_in_fp32
+    kwargs["check_for_nan_in_grad"] = args.check_for_nan_in_loss_and_grad
+    kwargs["check_for_large_grads"] = args.check_for_large_grads
+    if args.ddp_num_buckets is not None:
+        assert args.ddp_bucket_size is None, "Cannot specify both --ddp-num-buckets and --ddp-bucket-size"
+        assert args.ddp_num_buckets > 0, "--ddp-num-buckets must be greater than 0"
+        num_parameters = sum(sum(param.nelement() for param in module.parameters()) for module in modules)
+        kwargs["bucket_size"] = num_parameters // args.ddp_num_buckets
+    else:
+        kwargs["bucket_size"] = args.ddp_bucket_size
+    kwargs["pad_buckets_for_high_nccl_busbw"] = args.ddp_pad_buckets_for_high_nccl_busbw
+    kwargs["reduce_scatter_with_fp32_accumulation"] = args.ddp_reduce_scatter_with_fp32_accumulation
+    kwargs["average_in_collective"] = args.ddp_average_in_collective
+
+    ddp_config = DistributedDataParallelConfig(**kwargs)
+    if ddp_config.bucket_size is None:
+        ddp_config.bucket_size = max(40000000, 1000000 * mpu.get_data_parallel_world_size(with_context_parallel=True))
+    if not ddp_config.overlap_grad_reduce:
+        ddp_config.bucket_size = None
+
+    ddp_kwargs = {
+        "disable_grad_buffers_cpu_backup": getattr(args, "disable_grad_buffers_cpu_backup", False),
+        "disable_param_buffers_cpu_backup": getattr(args, "disable_param_buffers_cpu_backup", False),
+    }
+    logger.info("Megatron DDP rewrap start after LoRA: %s", _rank_context())
+    ddp_stream = torch.cuda.Stream()
+    ddp_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(ddp_stream):
+        wrapped = [
+            DDP(
+                config=config,
+                ddp_config=ddp_config,
+                module=module,
+                disable_bucketing=(model_chunk_idx > 0) or args.overlap_param_gather_with_optimizer_step,
+                **ddp_kwargs,
+            )
+            for model_chunk_idx, module in enumerate(modules)
+        ]
+    torch.cuda.current_stream().wait_stream(ddp_stream)
+    if args.data_parallel_random_init:
+        for model_module in wrapped:
+            model_module.broadcast_params()
+    logger.info("Megatron DDP rewrap finished after LoRA: %s trainable_params=%s", _rank_context(), _trainable_param_count(wrapped))
+    return wrapped
 
 
 def enable_forward_pre_hook(model_chunks: Sequence[DDP]) -> None:
@@ -993,6 +1103,8 @@ def initialize_model_and_optimizer(
     if use_deferred_lora:
         delattr(args, "_slime_defer_lora_until_after_load")
         inject_lora_adapters(model, args)
+        model = _rewrap_model_with_fresh_ddp(args, model)
+        model[0].role = role
         optimizer, opt_param_scheduler = setup_optimizer_and_scheduler(args, model)
 
     if reinit_critic_output_layer:

@@ -1,6 +1,7 @@
 import copy
 import logging
 import socket
+import time
 
 import ray
 from ray.util.placement_group import placement_group
@@ -10,6 +11,24 @@ from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
 
 logger = logging.getLogger(__name__)
+
+
+def _ray_get_all_with_timeout(refs, timeout, label):
+    pending = list(refs)
+    results_by_ref = {}
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    while pending:
+        wait_timeout = None
+        if deadline is not None:
+            wait_timeout = max(0.0, deadline - time.monotonic())
+        ready, pending = ray.wait(pending, num_returns=1, timeout=wait_timeout)
+        if not ready:
+            raise TimeoutError(f"Timed out while waiting for {label} after {timeout}s; pending_refs={len(pending)}")
+        for ref in ready:
+            results_by_ref[ref] = ray.get(ref)
+
+    return [results_by_ref[ref] for ref in refs]
 
 
 @ray.remote(num_gpus=1)
@@ -121,6 +140,10 @@ def allocate_train_group(args, num_nodes, num_gpus_per_node, pg, role="actor"):
 
 
 def create_training_models(args, pgs, rollout_manager):
+    init_timeout = getattr(args, "initial_weight_sync_timeout_s", None)
+    if init_timeout is not None and init_timeout <= 0:
+        init_timeout = None
+
     actor_args = args
     if args.megatron_config_path is not None:
         from slime.utils.arguments import parse_megatron_role_args
@@ -153,16 +176,30 @@ def create_training_models(args, pgs, rollout_manager):
             pg=pgs["critic"],
             role="critic",
         )
-        critic_start_rollout_ids = ray.get(critic_model.async_init(critic_model.args, role="critic", with_ref=False))
+        logger.info("Initializing critic training group...")
+        critic_start_rollout_ids = _ray_get_all_with_timeout(
+            critic_model.async_init(critic_model.args, role="critic", with_ref=False),
+            init_timeout,
+            "critic actors to initialize",
+        )
+        logger.info("Critic training group initialized: start_rollout_ids=%s", critic_start_rollout_ids)
 
-    actor_start_rollout_ids = ray.get(
+    logger.info(
+        "Initializing actor training group with_ref=%s with_opd_teacher=%s...",
+        actor_args.kl_coef != 0 or actor_args.use_kl_loss,
+        actor_args.use_opd and actor_args.opd_type == "megatron",
+    )
+    actor_start_rollout_ids = _ray_get_all_with_timeout(
         actor_model.async_init(
             actor_args,
             role="actor",
             with_ref=actor_args.kl_coef != 0 or actor_args.use_kl_loss,
             with_opd_teacher=actor_args.use_opd and actor_args.opd_type == "megatron",
-        )
+        ),
+        init_timeout,
+        "actor actors to initialize",
     )
+    logger.info("Actor training group initialized: start_rollout_ids=%s", actor_start_rollout_ids)
     # TODO how to decide rollout start id when critic is involved? For now we just require user to specify it via args.
     if args.use_critic:
         start_rollout_ids = critic_start_rollout_ids

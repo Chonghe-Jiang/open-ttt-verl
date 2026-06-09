@@ -143,7 +143,14 @@ class RayTrainGroup:
 
     def update_weights(self):
         """Broadcast weights from rank 0 to all other ranks."""
-        return ray.get([actor.update_weights.remote() for actor in self._actor_handlers])
+        refs = [actor.update_weights.remote() for actor in self._actor_handlers]
+        timeout = getattr(self.args, "initial_weight_sync_timeout_s", None)
+        if timeout is not None and timeout <= 0:
+            timeout = None
+        try:
+            return ray.get(refs, timeout=timeout)
+        except ray.exceptions.GetTimeoutError as exc:
+            raise TimeoutError(f"Timed out while waiting for actor weight update after {timeout}s") from exc
 
     def onload(self):
         return ray.get([actor.wake_up.remote() for actor in self._actor_handlers])

@@ -62,6 +62,9 @@ class MegatronTrainRayActor(TrainRayActor):
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
+        rank = dist.get_rank()
+        logger.info("Megatron actor init: rank=%s role=%s initialized process groups", rank, role)
+
         self.prof = TrainProfiler(args)
 
         # read config and tokenizer serialized to prevent concurrent writing bug.
@@ -78,8 +81,15 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
 
+        logger.info("Megatron actor init: rank=%s role=%s initializing model/optimizer", rank, role)
         self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
+        )
+        logger.info(
+            "Megatron actor init: rank=%s role=%s model/optimizer initialized loaded_rollout_id=%s",
+            rank,
+            role,
+            loaded_rollout_id,
         )
 
         vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size() or 1
@@ -112,21 +122,40 @@ class MegatronTrainRayActor(TrainRayActor):
             single_tag=None,
         )
         self._active_model_tag: str | None = "actor"
+        logger.info("Megatron actor init: rank=%s backing up actor weights", rank)
         self.weights_backuper.backup("actor")
+        logger.info("Megatron actor init: rank=%s actor weights backed up", rank)
 
         if with_ref:
-            self.load_other_checkpoint("ref", args.ref_load)
+            same_initial_checkpoint = os.path.abspath(args.ref_load) == os.path.abspath(args.load)
+            if getattr(args, "lora_rank", 0) > 0 and same_initial_checkpoint:
+                logger.info(
+                    "Megatron actor init: rank=%s backing up initialized LoRA actor as ref from %s",
+                    rank,
+                    args.ref_load,
+                )
+                self.weights_backuper.backup("ref")
+                logger.info("Megatron actor init: rank=%s ref weights backed up", rank)
+            else:
+                logger.info("Megatron actor init: rank=%s loading ref checkpoint %s", rank, args.ref_load)
+                self.load_other_checkpoint("ref", args.ref_load)
+                logger.info("Megatron actor init: rank=%s ref checkpoint loaded", rank)
 
         # Load teacher model for Megatron-based on-policy distillation
         if with_opd_teacher:
+            logger.info("Megatron actor init: rank=%s loading teacher checkpoint %s", rank, args.opd_teacher_load)
             self.load_other_checkpoint("teacher", args.opd_teacher_load)
+            logger.info("Megatron actor init: rank=%s teacher checkpoint loaded", rank)
 
         if self.args.keep_old_actor:
             # Load old_actor checkpoint
+            logger.info("Megatron actor init: rank=%s loading old_actor checkpoint %s", rank, args.load)
             self.load_other_checkpoint("old_actor", args.load)
+            logger.info("Megatron actor init: rank=%s old_actor checkpoint loaded", rank)
             # Create rollout_actor as a copy of current actor
             if args.update_weights_interval == 1:
                 self.weights_backuper.backup("rollout_actor")
+                logger.info("Megatron actor init: rank=%s rollout_actor weights backed up", rank)
 
         if self.args.vocab_size is None:
             # Prefer HF config vocab_size (which may include model-native padding)
@@ -170,6 +199,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.rollout_data_postprocess = load_function(self.args.rollout_data_postprocess_path)
 
         self.prof.on_init_end()
+        logger.info("Megatron actor init: rank=%s role=%s finished start_rollout_id=%s", rank, role, start_rollout_id)
 
         return start_rollout_id
 
@@ -596,14 +626,30 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
+        rank = dist.get_rank()
+        timeout = getattr(self.args, "initial_weight_sync_timeout_s", None)
+        if timeout is not None and timeout <= 0:
+            timeout = None
+
         if self.args.use_fault_tolerance:
-            if dist.get_rank() == 0:
+            if rank == 0:
                 ray.get(self.rollout_manager.recover_updatable_engines.remote())
             dist.barrier(group=get_gloo_group())
 
+        if rank == 0:
+            logger.info("update_weights: fetching updatable rollout engines")
         rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
+            self.rollout_manager.get_updatable_engines_and_lock.remote(),
+            timeout=timeout,
         )
+        if rank == 0:
+            logger.info(
+                "update_weights: engines=%s num_new_engines=%s gpu_counts=%s gpu_offsets=%s",
+                len(rollout_engines),
+                num_new_engines,
+                engine_gpu_counts,
+                engine_gpu_offsets,
+            )
 
         reconnect_rollout_engines = self.args.offload_train and self.args.use_critic and not self.args.colocate
 
@@ -613,20 +659,37 @@ class MegatronTrainRayActor(TrainRayActor):
             reload_process_groups()
 
         if num_new_engines > 0 or reconnect_rollout_engines:
+            if rank == 0:
+                logger.info("update_weights: connecting rollout engines")
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
+            if rank == 0:
+                logger.info("update_weights: rollout engine connection finished; entering train barrier")
             dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+            if rank == 0:
+                logger.info("update_weights: train barrier finished")
+                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote(), timeout=timeout)
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
+            if rank == 0:
+                logger.info("update_weights: broadcasting actor weights")
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            merged_lora = self._merge_lora_for_rollout_sync()
+            try:
+                self.weight_updater.update_weights()
+            finally:
+                if merged_lora:
+                    self.weights_backuper.restore("actor")
+                    self._active_model_tag = "actor"
+                    if rank == 0:
+                        logger.info("update_weights: restored unmerged actor weights after LoRA rollout sync")
             print_memory("after update_weights")
+            if rank == 0:
+                logger.info("update_weights: broadcast finished")
 
             if self.args.ci_test and len(rollout_engines) > 0:
                 engine = random.choice(rollout_engines)
@@ -651,6 +714,33 @@ class MegatronTrainRayActor(TrainRayActor):
             self.sleep()
         elif self.args.offload_train:
             destroy_process_groups()
+
+    def _merge_lora_for_rollout_sync(self) -> bool:
+        if getattr(self.args, "lora_rank", 0) <= 0:
+            return False
+
+        if self._active_model_tag != "actor":
+            self._switch_model("actor")
+
+        try:
+            from megatron.bridge.peft.lora import LoRALinear, LoRAMerge
+        except Exception:
+            logger.exception("update_weights: failed to import Megatron Bridge LoRA merge utilities")
+            raise
+
+        merger = LoRAMerge()
+        merged = 0
+        with torch.no_grad():
+            for model_chunk in self.model:
+                for module in model_chunk.modules():
+                    if isinstance(module, LoRALinear):
+                        merger.transform(module)
+                        merged += 1
+
+        rank = dist.get_rank()
+        if rank == 0:
+            logger.info("update_weights: merged %s LoRA modules into actor weights for rollout sync", merged)
+        return merged > 0
 
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
         old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune

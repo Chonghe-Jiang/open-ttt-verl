@@ -130,6 +130,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="raw",
                 help="The method to convert megatron weights to hugging face weights for SGLang.",
             )
+            parser.add_argument(
+                "--initial-weight-sync-timeout-s",
+                type=float,
+                default=900.0,
+                help=(
+                    "Timeout in seconds for actor-to-rollout weight sync Ray/HTTP waits. "
+                    "Set <= 0 to disable these timeout wrappers."
+                ),
+            )
             # Delta weight sync.
             parser.add_argument(
                 "--update-weight-mode",

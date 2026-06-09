@@ -9,6 +9,7 @@ ENV WORKSPACE=/root/workspace \
     HF_HUB_DISABLE_XET=1
 
 RUN python3 -m pip install --no-cache-dir --upgrade \
+    "numpy<2" \
     "huggingface_hub[cli]" \
     hf_transfer \
     scipy \

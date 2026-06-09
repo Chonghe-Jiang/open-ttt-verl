@@ -17,14 +17,16 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
     Uses expert-TP for ".experts.", else regular-TP. linear_fc1 rechunked (GLU), linear_fc2 dim fix.
     """
-    if "expert_bias" in name:
+    sync_name = name.replace(".to_wrap.", ".")
+
+    if "expert_bias" in sync_name:
         return param
 
     assert hasattr(param, "tensor_model_parallel"), f"{name} does not have tensor_model_parallel attribute"
     if not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
         return param.data
 
-    if ".experts." in name:
+    if ".experts." in sync_name:
         tp_size = mpu.get_expert_tensor_parallel_world_size()
         tp_group = mpu.get_expert_tensor_parallel_group()
     else:
@@ -35,15 +37,15 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     dist.all_gather(param_partitions, param.data, group=tp_group)
     partition_dim = param.partition_dim
     assert param.partition_stride == 1 or (
-        param.partition_stride == 2 and "linear_fc1" in name
+        param.partition_stride == 2 and "linear_fc1" in sync_name
     ), "partition_stride != 1 is not supported"
     # TODO: here we did an extra copy during concat, maybe merge this with convert_to_hf is better?
     # TODO: check only GLU is used.
-    if "linear_fc1.weight" in name or "linear_fc1.bias" in name:
+    if "linear_fc1.weight" in sync_name or "linear_fc1.bias" in sync_name:
         param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
         param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
     # this is bug in megatron's grouped moe.
-    if "linear_fc2.weight" in name:
+    if "linear_fc2.weight" in sync_name:
         if partition_dim == 0:
             partition_dim = 1
     param = torch.cat(param_partitions, dim=partition_dim)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import socket
 import time
+import logging
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from datetime import timedelta
 
 import ray
 import torch
@@ -18,6 +20,12 @@ from slime.utils.distributed_utils import get_gloo_group, init_process_group
 from ..megatron_to_hf import convert_to_hf
 from ..sglang import DeltaSpec
 from .common import all_gather_param, named_params_and_buffers
+
+logger = logging.getLogger(__name__)
+
+
+def _is_lora_adapter_param(name: str) -> bool:
+    return ".adapter." in name
 
 
 class UpdateWeightFromDistributed:
@@ -158,6 +166,8 @@ class UpdateWeightFromDistributed:
         buffer_size = 0
         buffer: list[tuple[str, torch.Tensor]] = []
         for name, param in named_params_and_buffers(self.args, self.model):
+            if _is_lora_adapter_param(name):
+                continue
             if ".experts." in name:
                 continue
             param = all_gather_param(name, param)
@@ -290,6 +300,8 @@ def connect_rollout_engines_from_distributed(
     if engine_gpu_counts is None:
         engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
 
+    timeout_s = getattr(args, "initial_weight_sync_timeout_s", None)
+    timeout = None if timeout_s is None or timeout_s <= 0 else timeout_s
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -301,6 +313,14 @@ def connect_rollout_engines_from_distributed(
     for c in engine_gpu_counts:
         cumulative.append(cumulative[-1] + c)
 
+    logger.info(
+        "connect_rollout_engines_from_distributed: group=%s master=%s:%s world_size=%s engine_gpu_counts=%s",
+        group_name,
+        master_address,
+        master_port,
+        world_size,
+        list(engine_gpu_counts),
+    )
     refs = [
         engine.init_weights_update_group.remote(
             master_address=master_address,
@@ -312,14 +332,18 @@ def connect_rollout_engines_from_distributed(
         )
         for i, engine in enumerate(rollout_engines)
     ]
+    logger.info("connect_rollout_engines_from_distributed: initializing trainer process group %s", group_name)
     model_update_groups = init_process_group(
         backend="nccl",
         init_method=f"tcp://{master_address}:{master_port}",
         world_size=world_size,
         rank=0,
         group_name=group_name,
+        timeout=None if timeout is None else timedelta(seconds=timeout),
     )
-    ray.get(refs)
+    logger.info("connect_rollout_engines_from_distributed: trainer process group ready %s", group_name)
+    ray.get(refs, timeout=timeout)
+    logger.info("connect_rollout_engines_from_distributed: rollout engines joined %s", group_name)
     return model_update_groups
 
 

@@ -32,24 +32,47 @@ Use another host path with:
 WORKSPACE_HOST=/data/open-ttt-workspace docker/run_open_ttt_slime.sh
 ```
 
-## Qwen3-8B 2-GPU Flow
+## Qwen3-8B 8-GPU B200 Flow
 
-The default packaged path is Qwen3-8B on 2 GPUs with `TP=1`, `PP=2`, LoRA, and
-colocated Slime actor/SGLang rollout. Each SGLang engine uses 1 GPU.
+The recommended path is Qwen3-8B on 8 B200 GPUs with `TP=1`, `PP=2`, LoRA, 4
+actor GPUs, and 4 rollout GPUs. Each SGLang rollout engine uses 1 GPU.
 
-Run step by step:
+The default in-container paths are:
+
+```text
+/root/workspace/models/Qwen3-8B
+/root/workspace/ckpt/Qwen3-8B_torch_dist
+```
+
+If those already exist in the mounted workspace, skip directly to training.
+On a clean workspace, download and convert first:
 
 ```bash
 docker/run_open_ttt_slime.sh scripts/download_qwen3_8b.sh
 docker/run_open_ttt_slime.sh scripts/convert_qwen3_8b_in_container.sh
-docker/run_open_ttt_slime.sh scripts/run_qwen3_8b_erdos_rl_in_container.sh
 ```
 
-Or run all three:
+Then run the 8-GPU smoke test:
 
 ```bash
-docker/run_open_ttt_slime.sh scripts/docker_qwen3_8b_2gpu_all.sh
+docker/smoke_qwen3_8b_8b200.sh
 ```
+
+Then verify one real training update with small batch/group defaults and 30k max
+response tokens:
+
+```bash
+docker/run_qwen3_8b_8b200_one_step.sh
+```
+
+After smoke passes, start the full 50-step run:
+
+```bash
+docker/run_qwen3_8b_8b200_rl.sh
+```
+
+The legacy 2-GPU scripts remain available for low-resource debugging, but they
+are not the paper-aligned configuration.
 
 ## Qwen3-8B 8×B200 Smoke
 
@@ -82,7 +105,8 @@ Both smoke and full training use a non-colocated Docker run with 4 actor GPUs
 and 4 rollout GPUs.
 It uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
 LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
-coefficient `0.01`, PUCT reuse, and entropic target KL `ln 2`.
+coefficient `0.01`, 30k maximum rollout response tokens, PUCT reuse, and
+entropic target KL `ln 2`.
 
 If Hugging Face auth is required:
 
@@ -95,17 +119,51 @@ HF_TOKEN=... docker/run_open_ttt_slime.sh scripts/download_qwen3_8b.sh
 - model: `Qwen/Qwen3-8B`
 - raw model: `/root/workspace/models/Qwen3-8B`
 - converted checkpoint: `/root/workspace/ckpt/Qwen3-8B_torch_dist`
-- LoRA output: `/root/workspace/ckpt/Qwen3-8B_erdos_lora_2gpu`
+- LoRA output: `/root/workspace/ckpt/Qwen3-8B_erdos_lora_8b200`
 - training steps: `50`
-- default rollouts per step: `1 * 8 = 8`
-- LoRA rank/alpha: `64`
+- actor GPUs: `4`
+- rollout GPUs: `4`
+- rollout groups per step: `8`
+- rollouts per group: `64`
+- global batch size: `512`
+- micro batch size: `1`
+- LoRA rank/alpha: `32`
 - max rollout response length: `30000`
-- SGLang context length: `16384`
+- SGLang context length: `32768`
+- max tokens per GPU: `8192`
+- Megatron-to-HF weight conversion mode: `bridge`
+- initial actor-to-rollout weight sync timeout: `900` seconds
 - reasoning effort: `high`
 
-The default batch is conservative for colocated 2-GPU runs. Increase
-`ROLLOUT_BATCH_SIZE` and `GLOBAL_BATCH_SIZE` only after confirming the job is
-not OOM-limited on the target node.
+The 8-GPU B200 scripts intentionally keep the 8B200 rollout/group/batch
+parameters fixed. Override them only for debugging non-paper-aligned runs.
+
+## GPT-OSS-20B One-Step Flow
+
+The 20B path uses:
+
+```text
+/root/workspace/models/gpt-oss-20b
+/root/workspace/models/gpt-oss-20b-bf16
+/root/workspace/ckpt/gpt-oss-20b_torch_dist
+```
+
+Download and convert:
+
+```bash
+docker/run_open_ttt_slime.sh scripts/download_gpt_oss_20b.sh
+docker/run_open_ttt_slime.sh scripts/convert_gpt_oss_20b_in_container.sh
+```
+
+Run a one-step training validation:
+
+```bash
+docker/run_gpt_oss_20b_one_step.sh
+```
+
+Defaults: `NUM_ROLLOUT=1`, `ROLLOUT_BATCH_SIZE=1`,
+`N_SAMPLES_PER_PROMPT=2`, `GLOBAL_BATCH_SIZE=2`,
+`ROLLOUT_MAX_RESPONSE_LEN=30000`.
 
 ## Open a Shell
 
@@ -118,5 +176,8 @@ Inside the container:
 ```bash
 scripts/download_qwen3_8b.sh
 scripts/convert_qwen3_8b_in_container.sh
-scripts/run_qwen3_8b_erdos_rl_in_container.sh
+scripts/convert_gpt_oss_20b_in_container.sh
+scripts/docker_qwen3_8b_8b200_one_step.sh
+scripts/docker_qwen3_8b_8b200_smoke.sh
+scripts/docker_qwen3_8b_8b200_rl.sh
 ```

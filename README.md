@@ -3,7 +3,7 @@
 This repo wires Slime, Megatron-LM, SGLang, and local Erdos task utilities for
 TTT-Discover-style RL on the Erdos minimum overlap task.
 
-## Recommended Entry Point: Docker + Qwen3-8B
+## Recommended Entry Point: 8-GPU Docker + Qwen3-8B
 
 Build the Docker image:
 
@@ -11,18 +11,39 @@ Build the Docker image:
 docker/build_image.sh
 ```
 
-Run the 2-GPU Qwen3-8B flow step by step:
+If the workspace already contains the raw model and converted checkpoint, these
+paths are used directly:
+
+```text
+/root/workspace/models/Qwen3-8B
+/root/workspace/ckpt/Qwen3-8B_torch_dist
+```
+
+On a clean workspace, prepare them with:
 
 ```bash
 docker/run_open_ttt_slime.sh scripts/download_qwen3_8b.sh
 docker/run_open_ttt_slime.sh scripts/convert_qwen3_8b_in_container.sh
-docker/run_open_ttt_slime.sh scripts/run_qwen3_8b_erdos_rl_in_container.sh
 ```
 
-Or run the full 2-GPU sequence:
+Then run the 8-GPU B200 smoke test. This verifies model init and actor-to-rollout
+weight sync, but exits before rollout generation:
 
 ```bash
-docker/run_open_ttt_slime.sh scripts/docker_qwen3_8b_2gpu_all.sh
+docker/smoke_qwen3_8b_8b200.sh
+```
+
+To verify a real training update with a small batch/group while keeping 30k max
+output tokens:
+
+```bash
+docker/run_qwen3_8b_8b200_one_step.sh
+```
+
+After smoke and one-step pass, run the full 8-GPU B200 training flow:
+
+```bash
+docker/run_qwen3_8b_8b200_rl.sh
 ```
 
 By default, generated models/checkpoints/logs are stored under `./workspace`,
@@ -69,26 +90,63 @@ For the full paper-aligned 8×B200 Docker run:
 docker/run_qwen3_8b_8b200_rl.sh
 ```
 
-This uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
+This uses 8 GPUs, 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
 LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
-coefficient `0.01`, PUCT reuse, and entropic target KL `ln 2`.
+coefficient `0.01`, 30k maximum rollout response tokens, PUCT reuse, and
+entropic target KL `ln 2`.
 
-## Training Defaults
+## 8-GPU B200 Training Defaults
 
 - model: `Qwen/Qwen3-8B`
+- raw model: `/root/workspace/models/Qwen3-8B`
+- converted checkpoint: `/root/workspace/ckpt/Qwen3-8B_torch_dist`
 - converted checkpoint layout: `TP=1`, `PP=2`
-- fine-tuning: LoRA rank/alpha `64`
+- actor GPUs: `4`
+- rollout GPUs: `4`
+- rollout groups per step: `8`
+- rollouts per group: `64`
+- global batch size: `512`
+- micro batch size: `1`
+- fine-tuning: LoRA rank/alpha `32`
 - training steps: `50`
-- default rollouts per step: `1 * 8 = 8`
 - max rollout response length: `30000`
-- SGLang context length: `16384`
+- SGLang context length: `32768`
+- max tokens per GPU: `8192`
+- Megatron-to-HF weight conversion mode: `bridge`
+- initial actor-to-rollout weight sync timeout: `900` seconds
 - reasoning effort: `high`
 - task/archive/sandbox utilities: `erdos_slime/ttt_discover`
 
-The packaged 2-GPU defaults are intentionally conservative after OOMs on
-colocated actor/rollout jobs. Larger batches can be tested by overriding
-`ROLLOUT_BATCH_SIZE`, `GLOBAL_BATCH_SIZE`, `LORA_RANK`, and `LORA_ALPHA` at
-submission time.
+The packaged 2-GPU scripts are kept only as low-resource smoke/debug helpers.
+For paper-aligned Erdos TTT-Discover runs, use the 8-GPU B200 scripts above.
+
+## GPT-OSS-20B
+
+The 20B path uses the same workspace layout:
+
+```text
+/root/workspace/models/gpt-oss-20b
+/root/workspace/models/gpt-oss-20b-bf16
+/root/workspace/ckpt/gpt-oss-20b_torch_dist
+```
+
+Download and convert:
+
+```bash
+docker/run_open_ttt_slime.sh scripts/download_gpt_oss_20b.sh
+docker/run_open_ttt_slime.sh scripts/convert_gpt_oss_20b_in_container.sh
+```
+
+Run one training step with small batch/group defaults:
+
+```bash
+docker/run_gpt_oss_20b_one_step.sh
+```
+
+The 20B one-step defaults are `NUM_ROLLOUT=1`, `ROLLOUT_BATCH_SIZE=1`,
+`N_SAMPLES_PER_PROMPT=2`, `GLOBAL_BATCH_SIZE=2`, and
+`ROLLOUT_MAX_RESPONSE_LEN=30000`. Override those environment variables when a
+larger 20B run is needed.
 
 ## Core Frameworks
 

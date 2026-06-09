@@ -3,6 +3,8 @@ import torch
 
 
 def convert_qwen2_to_hf(args, name, param):
+    name = name.replace(".to_wrap.", ".")
+
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":

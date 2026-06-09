@@ -36,6 +36,14 @@ ROLLOUT_TOP_P=${ROLLOUT_TOP_P:-1.0}
 SEQ_LENGTH=${SEQ_LENGTH:-4096}
 MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-40960}
 MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-8192}
+MEGATRON_TO_HF_MODE=${MEGATRON_TO_HF_MODE:-bridge}
+INITIAL_WEIGHT_SYNC_TIMEOUT_S=${INITIAL_WEIGHT_SYNC_TIMEOUT_S:-900}
+SGLANG_DISABLE_CUSTOM_ALL_REDUCE=${SGLANG_DISABLE_CUSTOM_ALL_REDUCE:-1}
+TTT_SANDBOX_TIMEOUT_S=${TTT_SANDBOX_TIMEOUT_S:-60}
+TTT_SANDBOX_CPUS=${TTT_SANDBOX_CPUS:-1}
+TTT_TARGET_C5=${TTT_TARGET_C5:-0.3808}
+ERDOS_NUM_INIT_STATES=${ERDOS_NUM_INIT_STATES:-4}
+ERDOS_ENABLE_THINKING=${ERDOS_ENABLE_THINKING:-0}
 
 SAVE_INTERVAL=${SAVE_INTERVAL:-10}
 LORA_RANK=${LORA_RANK:-64}
@@ -75,6 +83,11 @@ if [ $((ACTOR_NUM_GPUS % MODEL_PARALLEL_WORLD_SIZE)) -ne 0 ]; then
   echo "Invalid actor config: ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS} must be divisible by TP*PP*CP=${MODEL_PARALLEL_WORLD_SIZE}" >&2
   exit 1
 fi
+DATA_PARALLEL_SIZE=$((ACTOR_NUM_GPUS / MODEL_PARALLEL_WORLD_SIZE))
+if [ "${DATA_PARALLEL_SIZE}" -le 0 ]; then
+  echo "Invalid actor config: data parallel size resolved to ${DATA_PARALLEL_SIZE}" >&2
+  exit 1
+fi
 if [ $((ROLLOUT_NUM_GPUS % ROLLOUT_NUM_GPUS_PER_ENGINE)) -ne 0 ]; then
   echo "Invalid rollout config: ROLLOUT_NUM_GPUS=${ROLLOUT_NUM_GPUS} must be divisible by ROLLOUT_NUM_GPUS_PER_ENGINE=${ROLLOUT_NUM_GPUS_PER_ENGINE}" >&2
   exit 1
@@ -82,6 +95,12 @@ fi
 if [ $((ROLLOUT_BATCH_SIZE * N_SAMPLES_PER_PROMPT)) -ne "${GLOBAL_BATCH_SIZE}" ]; then
   echo "Invalid rollout batch config: ROLLOUT_BATCH_SIZE*N_SAMPLES_PER_PROMPT must equal GLOBAL_BATCH_SIZE." >&2
   echo "Got ${ROLLOUT_BATCH_SIZE}*${N_SAMPLES_PER_PROMPT} != ${GLOBAL_BATCH_SIZE}" >&2
+  exit 1
+fi
+TRAIN_BATCH_UNIT=$((MICRO_BATCH_SIZE * DATA_PARALLEL_SIZE))
+if [ "${TRAIN_BATCH_UNIT}" -le 0 ] || [ $((GLOBAL_BATCH_SIZE % TRAIN_BATCH_UNIT)) -ne 0 ]; then
+  echo "Invalid train batch config: GLOBAL_BATCH_SIZE must be divisible by MICRO_BATCH_SIZE*DATA_PARALLEL_SIZE." >&2
+  echo "Got ${GLOBAL_BATCH_SIZE} % (${MICRO_BATCH_SIZE}*${DATA_PARALLEL_SIZE}) != 0" >&2
   exit 1
 fi
 
@@ -102,12 +121,17 @@ echo "Rollout GPUs per engine: ${ROLLOUT_NUM_GPUS_PER_ENGINE}"
 echo "GPUs per node: ${NUM_GPUS_PER_NODE}"
 echo "Colocate: ${COLOCATE}"
 echo "TP/PP/CP: ${TENSOR_MODEL_PARALLEL_SIZE}/${PIPELINE_MODEL_PARALLEL_SIZE}/${CONTEXT_PARALLEL_SIZE}"
+echo "Data parallel size: ${DATA_PARALLEL_SIZE}"
 echo "Rollouts: ${NUM_ROLLOUT} steps, ${ROLLOUT_BATCH_SIZE} prompts/step, ${N_SAMPLES_PER_PROMPT} samples/prompt, ${GLOBAL_BATCH_SIZE} samples/train-step"
 echo "LoRA: rank=${LORA_RANK}, alpha=${LORA_ALPHA}"
 echo "Optimizer: adam lr=${LR}, beta1=${ADAM_BETA1}, beta2=${ADAM_BETA2}, eps=${ADAM_EPS}, weight_decay=${WEIGHT_DECAY}"
 echo "KL loss coef: ${KL_LOSS_COEF}"
 echo "TTT entropic target KL: ${TTT_ENTROPIC_TARGET_KL}"
+echo "TTT sandbox: timeout=${TTT_SANDBOX_TIMEOUT_S}s cpus=${TTT_SANDBOX_CPUS}"
 echo "Reasoning effort: high"
+echo "Megatron-to-HF mode: ${MEGATRON_TO_HF_MODE}"
+echo "Initial weight sync timeout: ${INITIAL_WEIGHT_SYNC_TIMEOUT_S}s"
+echo "SGLang disable custom all-reduce: ${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}"
 
 test -d "${REPO_DIR}/slime"
 test -f "${REPO_DIR}/slime/scripts/models/qwen3-8B.sh"
@@ -161,6 +185,8 @@ else
   HAS_NVLINK=0
 fi
 echo "HAS_NVLINK: ${HAS_NVLINK} (detected ${NVLINK_COUNT} NVLink references)"
+NCCL_NVLS_ENABLE_VALUE=${NCCL_NVLS_ENABLE:-${HAS_NVLINK}}
+echo "NCCL_NVLS_ENABLE: ${NCCL_NVLS_ENABLE_VALUE}"
 
 source scripts/models/qwen3-8B.sh
 
@@ -169,6 +195,8 @@ CKPT_ARGS=(
   --ref-load "${REF_CKPT}"
   --save "${SAVE_CKPT}"
   --save-interval "${SAVE_INTERVAL}"
+  --megatron-to-hf-mode "${MEGATRON_TO_HF_MODE}"
+  --initial-weight-sync-timeout-s "${INITIAL_WEIGHT_SYNC_TIMEOUT_S}"
   --lora-rank "${LORA_RANK}"
   --lora-alpha "${LORA_ALPHA}"
   --lora-target-modules linear_qkv linear_proj linear_fc1 linear_fc2
@@ -182,16 +210,14 @@ TTT_ARGS=(
   --apply-chat-template
   --custom-generate-function-path erdos_slime.erdos_generate.generate
   --custom-rm-path erdos_slime.erdos_rm.reward
-  --custom-reward-post-process-path erdos_slime.ttt_slime.ttt_reward_post_process
-  --custom-advantage-function-path erdos_slime.ttt_slime.ttt_advantages
-  --loss-type custom_loss
-  --custom-loss-function-path erdos_slime.ttt_slime.ttt_reinforce_loss
+  --custom-advantage-function-path erdos_slime.entropic_advantage.compute
   --ttt-archive-path "${ARCHIVE_PATH}"
   --ttt-puct-c 1.0
   --ttt-topk-children 2
-  --ttt-sandbox-timeout-s 60
-  --ttt-sandbox-cpus 1
+  --ttt-sandbox-timeout-s "${TTT_SANDBOX_TIMEOUT_S}"
+  --ttt-sandbox-cpus "${TTT_SANDBOX_CPUS}"
   --ttt-sandbox-work-dir "${TTT_SANDBOX_WORK_DIR}"
+  --ttt-target-c5 "${TTT_TARGET_C5}"
   --ttt-entropic-target-kl "${TTT_ENTROPIC_TARGET_KL}"
   --ttt-advantage-clip 20.0
   --reasoning-effort high
@@ -229,6 +255,7 @@ ALGO_ARGS=(
   --kl-loss-type low_var_kl
   --eps-clip 0.2
   --entropy-coef 0.0
+  --disable-rewards-normalization
 )
 
 PARALLEL_ARGS=(
@@ -264,6 +291,9 @@ SGLANG_ARGS=(
   --sglang-mem-fraction-static "${SGLANG_MEM_FRACTION_STATIC}"
   --sglang-context-length "${SGLANG_CONTEXT_LENGTH}"
 )
+if [ "${SGLANG_DISABLE_CUSTOM_ALL_REDUCE}" = "1" ]; then
+  SGLANG_ARGS+=(--sglang-disable-custom-all-reduce)
+fi
 
 MISC_ARGS=(
   --attention-dropout 0.0
@@ -281,7 +311,21 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${REPO_DIR}/Megatron-LM:${REPO_DIR}:${REPO_DIR}/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
+    \"NCCL_NVLS_ENABLE\": \"${NCCL_NVLS_ENABLE_VALUE}\",
+    \"ERDOS_ARCHIVE_PATH\": \"${ARCHIVE_PATH}\",
+    \"ERDOS_RUN_ID\": \"${RUN_ID}\",
+    \"ERDOS_MODEL_PATH\": \"${MODEL_RAW}\",
+    \"ERDOS_BUDGET_S\": \"${TTT_SANDBOX_TIMEOUT_S}\",
+    \"ERDOS_CPUS\": \"${TTT_SANDBOX_CPUS}\",
+    \"ERDOS_TARGET_C5\": \"${TTT_TARGET_C5}\",
+    \"ERDOS_ROLLOUT_N\": \"${N_SAMPLES_PER_PROMPT}\",
+    \"ERDOS_PUCT_C\": \"1.0\",
+    \"ERDOS_TOPK_CHILDREN\": \"2\",
+    \"ERDOS_NUM_INIT_STATES\": \"${ERDOS_NUM_INIT_STATES}\",
+    \"ERDOS_TRAIN_MAX_RESPONSE_TOKENS\": \"${ROLLOUT_MAX_RESPONSE_LEN}\",
+    \"ERDOS_ENABLE_THINKING\": \"${ERDOS_ENABLE_THINKING}\",
+    \"ERDOS_PROJECT_ROOT\": \"${REPO_DIR}\"
   }
 }"
 
