@@ -53,7 +53,17 @@ sbatch scripts/run_qwen3_8b_erdos_rl_4gpu.slurm
 The 4-GPU script keeps the Megatron actor on 2 GPUs and runs two dedicated
 SGLang rollout engines on the remaining GPUs, avoiding colocate offload pressure.
 
-For the paper-aligned 8×B200 Docker run:
+For the paper-aligned 8×B200 Docker smoke test:
+
+```bash
+docker/smoke_qwen3_8b_8b200.sh
+```
+
+The smoke test builds the image by default, checks 8 visible CUDA devices, checks
+the raw model and converted checkpoint paths, starts Ray/SGLang/Megatron, applies
+LoRA, syncs actor weights to rollout, and exits before rollout generation.
+
+For the full paper-aligned 8×B200 Docker run:
 
 ```bash
 docker/run_qwen3_8b_8b200_rl.sh

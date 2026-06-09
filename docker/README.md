@@ -51,15 +51,35 @@ Or run all three:
 docker/run_open_ttt_slime.sh scripts/docker_qwen3_8b_2gpu_all.sh
 ```
 
-## Qwen3-8B 8×B200 Paper-Aligned RL
+## Qwen3-8B 8×B200 Smoke
 
 After the model has been downloaded and converted in the mounted workspace, run:
+
+```bash
+docker/smoke_qwen3_8b_8b200.sh
+```
+
+The smoke command builds the image by default, checks that Docker exposes 8 CUDA
+devices, checks `/root/workspace/models/Qwen3-8B` and
+`/root/workspace/ckpt/Qwen3-8B_torch_dist`, starts Ray/SGLang/Megatron, applies
+LoRA, syncs actor weights to rollout, and exits before rollout generation.
+
+If the image is already built:
+
+```bash
+BUILD_IMAGE=0 docker/smoke_qwen3_8b_8b200.sh
+```
+
+## Qwen3-8B 8×B200 Paper-Aligned RL
+
+After smoke passes, run the full training entrypoint:
 
 ```bash
 docker/run_qwen3_8b_8b200_rl.sh
 ```
 
-This launches a non-colocated Docker run with 4 actor GPUs and 4 rollout GPUs.
+Both smoke and full training use a non-colocated Docker run with 4 actor GPUs
+and 4 rollout GPUs.
 It uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
 LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
 coefficient `0.01`, PUCT reuse, and entropic target KL `ln 2`.
