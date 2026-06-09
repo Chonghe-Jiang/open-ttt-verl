@@ -46,6 +46,11 @@ LORA_RANK=${LORA_RANK:-64}
 LORA_ALPHA=${LORA_ALPHA:-64}
 LR=${LR:-5e-7}
 KL_LOSS_COEF=${KL_LOSS_COEF:-0.001}
+TTT_ENTROPIC_TARGET_KL=${TTT_ENTROPIC_TARGET_KL:-0.6931471805599453}
+ADAM_BETA1=${ADAM_BETA1:-0.9}
+ADAM_BETA2=${ADAM_BETA2:-0.99}
+ADAM_EPS=${ADAM_EPS:-1e-8}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.01}
 SGLANG_MEM_FRACTION_STATIC=${SGLANG_MEM_FRACTION_STATIC:-0.35}
 SGLANG_CONTEXT_LENGTH=${SGLANG_CONTEXT_LENGTH:-16384}
 RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
@@ -113,6 +118,9 @@ echo "Colocate: ${COLOCATE}"
 echo "TP/PP/CP: ${TENSOR_MODEL_PARALLEL_SIZE}/${PIPELINE_MODEL_PARALLEL_SIZE}/${CONTEXT_PARALLEL_SIZE}"
 echo "Rollouts: ${NUM_ROLLOUT} steps, ${ROLLOUT_BATCH_SIZE} prompts/step, ${N_SAMPLES_PER_PROMPT} samples/prompt, ${GLOBAL_BATCH_SIZE} samples/train-step"
 echo "LoRA: rank=${LORA_RANK}, alpha=${LORA_ALPHA}"
+echo "Optimizer: adam lr=${LR}, beta1=${ADAM_BETA1}, beta2=${ADAM_BETA2}, eps=${ADAM_EPS}, weight_decay=${WEIGHT_DECAY}"
+echo "KL loss coef: ${KL_LOSS_COEF}"
+echo "TTT entropic target KL: ${TTT_ENTROPIC_TARGET_KL}"
 echo "Reasoning effort: high"
 
 test -d "${REPO_DIR}"
@@ -242,6 +250,7 @@ TTT_ARGS=(
   --ttt-sandbox-timeout-s 60
   --ttt-sandbox-cpus 1
   --ttt-sandbox-work-dir "${TTT_SANDBOX_WORK_DIR}"
+  --ttt-entropic-target-kl "${TTT_ENTROPIC_TARGET_KL}"
   --ttt-advantage-clip 20.0
   --reasoning-effort high
 )
@@ -264,9 +273,10 @@ OPTIMIZER_ARGS=(
   --optimizer adam
   --lr "${LR}"
   --lr-decay-style constant
-  --weight-decay 0.01
-  --adam-beta1 0.9
-  --adam-beta2 0.99
+  --weight-decay "${WEIGHT_DECAY}"
+  --adam-beta1 "${ADAM_BETA1}"
+  --adam-beta2 "${ADAM_BETA2}"
+  --adam-eps "${ADAM_EPS}"
   --clip-grad 1.0
 )
 
