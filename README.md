@@ -43,7 +43,15 @@ sbatch scripts/run_qwen3_8b_erdos_rl_2gpu.slurm
 ```
 
 The 2-GPU RL script uses colocated Slime actor and SGLang rollout on H200-class
-GPUs. Each SGLang engine uses 1 GPU.
+GPUs. If this colocated job is OOM-killed during actor initialization, use the
+4-GPU non-colocated layout:
+
+```bash
+sbatch scripts/run_qwen3_8b_erdos_rl_4gpu.slurm
+```
+
+The 4-GPU script keeps the Megatron actor on 2 GPUs and runs two dedicated
+SGLang rollout engines on the remaining GPUs, avoiding colocate offload pressure.
 
 ## Training Defaults
 
