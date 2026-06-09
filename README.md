@@ -46,6 +46,16 @@ After smoke and one-step pass, run the full 8-GPU B200 training flow:
 docker/run_qwen3_8b_8b200_rl.sh
 ```
 
+For 8xA800 80GB machines, use the lighter training profile:
+
+```bash
+docker/run_qwen3_8b_a800_rl.sh
+```
+
+This keeps Qwen3-8B, LoRA rank/alpha 32, 50 training steps, and 30k max rollout
+response tokens, but uses actor `TP=2`, 1 rollout group x 4 rollouts per group
+(`GLOBAL_BATCH_SIZE=4`) instead of the B200 8 x 64 profile.
+
 By default, generated models/checkpoints/logs are stored under `./workspace`,
 which is ignored by git.
 
@@ -119,6 +129,20 @@ entropic target KL `ln 2`.
 
 The packaged 2-GPU scripts are kept only as low-resource smoke/debug helpers.
 For paper-aligned Erdos TTT-Discover runs, use the 8-GPU B200 scripts above.
+
+## 8-GPU A800 Training Defaults
+
+- model/checkpoint layout: same as the 8-GPU B200 run
+- actor GPUs: `4`
+- rollout GPUs: `4`
+- actor parallelism: `TP=2`, `PP=2`, `DP=1`
+- rollout groups per step: `1`
+- rollouts per group: `4`
+- global batch size: `4`
+- micro batch size: `1`
+- training steps: `50`
+- max rollout response length: `30000`
+- command: `docker/run_qwen3_8b_a800_rl.sh`
 
 ## GPT-OSS-20B
 

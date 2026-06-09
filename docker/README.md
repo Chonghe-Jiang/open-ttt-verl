@@ -71,6 +71,16 @@ After smoke passes, start the full 50-step run:
 docker/run_qwen3_8b_8b200_rl.sh
 ```
 
+On 8xA800 80GB machines, start the lighter 50-step run:
+
+```bash
+docker/run_qwen3_8b_a800_rl.sh
+```
+
+The A800 profile keeps the same model, optimizer, LoRA, KL, actor/rollout GPU
+split, and 30k maximum response length, but uses actor `TP=2`, `PP=2`,
+`ROLLOUT_BATCH_SIZE=1`, `N_SAMPLES_PER_PROMPT=4`, and `GLOBAL_BATCH_SIZE=4`.
+
 The legacy 2-GPU scripts remain available for low-resource debugging, but they
 are not the paper-aligned configuration.
 
@@ -107,6 +117,18 @@ It uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
 LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
 coefficient `0.01`, 30k maximum rollout response tokens, PUCT reuse, and
 entropic target KL `ln 2`.
+
+## Qwen3-8B 8×A800 RL
+
+For 8 A800 80GB GPUs:
+
+```bash
+docker/run_qwen3_8b_a800_rl.sh
+```
+
+Defaults: 50 training steps, 4 actor GPUs as `TP=2, PP=2`, 4 rollout GPUs,
+1 rollout group, 4 rollouts per group, global batch size 4, micro batch size 1,
+and 30k maximum rollout response tokens.
 
 If Hugging Face auth is required:
 
