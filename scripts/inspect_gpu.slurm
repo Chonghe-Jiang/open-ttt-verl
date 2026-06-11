@@ -5,11 +5,12 @@
 #SBATCH --mem=65G
 #SBATCH --time=00:30:00
 #SBATCH -J open-ttt-inspect-gpu
-#SBATCH -o /home/qua/scratch/open-ttt-workspace/logs/slurm-inspect-gpu-%j.out
+#SBATCH -o /work/mit/ppliang_mit/lsy/open-ttt-workspace/logs/slurm-inspect-gpu-%j.out
 
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
 echo "=== slurm inspect gpu ==="
 echo "time: $(date -Is)"

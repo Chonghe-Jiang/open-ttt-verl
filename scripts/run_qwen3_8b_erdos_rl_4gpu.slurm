@@ -5,13 +5,14 @@
 #SBATCH --mem=960G
 #SBATCH --time=24:00:00
 #SBATCH -J open-ttt-qwen3-8b-erdos-rl-4gpu
-#SBATCH -o /home/qua/scratch/open-ttt-workspace/logs/slurm-qwen3-8b-erdos-rl-4gpu-%j.out
+#SBATCH -o /work/mit/ppliang_mit/lsy/open-ttt-workspace/logs/slurm-qwen3-8b-erdos-rl-4gpu-%j.out
 
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
-export WORKSPACE=${WORKSPACE:-/home/qua/scratch/open-ttt-workspace}
+export WORKSPACE=${WORKSPACE:-/work/mit/ppliang_mit/lsy/open-ttt-workspace}
 export LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 export MODEL_RAW=${MODEL_RAW:-${WORKSPACE}/models/Qwen3-8B}
 export REF_CKPT=${REF_CKPT:-${WORKSPACE}/ckpt/Qwen3-8B_torch_dist}
@@ -35,8 +36,8 @@ export NUM_ROLLOUT=${NUM_ROLLOUT:-50}
 export ROLLOUT_BATCH_SIZE=${ROLLOUT_BATCH_SIZE:-1}
 export N_SAMPLES_PER_PROMPT=${N_SAMPLES_PER_PROMPT:-8}
 export GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-8}
-export LORA_RANK=${LORA_RANK:-64}
-export LORA_ALPHA=${LORA_ALPHA:-64}
+export LORA_RANK=${LORA_RANK:-32}
+export LORA_ALPHA=${LORA_ALPHA:-32}
 export SGLANG_MEM_FRACTION_STATIC=${SGLANG_MEM_FRACTION_STATIC:-0.75}
 export SGLANG_CONTEXT_LENGTH=${SGLANG_CONTEXT_LENGTH:-32768}
 export MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-8192}

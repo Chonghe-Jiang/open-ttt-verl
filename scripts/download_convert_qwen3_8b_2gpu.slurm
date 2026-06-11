@@ -5,13 +5,14 @@
 #SBATCH --mem=160G
 #SBATCH --time=08:00:00
 #SBATCH -J open-ttt-qwen3-8b-convert-2gpu
-#SBATCH -o /home/qua/scratch/open-ttt-workspace/logs/slurm-qwen3-8b-convert-%j.out
+#SBATCH -o /work/mit/ppliang_mit/lsy/open-ttt-workspace/logs/slurm-qwen3-8b-convert-%j.out
 
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
-export WORKSPACE=${WORKSPACE:-/home/qua/scratch/open-ttt-workspace}
+export WORKSPACE=${WORKSPACE:-/work/mit/ppliang_mit/lsy/open-ttt-workspace}
 export MODEL_ID=${MODEL_ID:-Qwen/Qwen3-8B}
 export MODEL_DIR=${MODEL_DIR:-${WORKSPACE}/models/Qwen3-8B}
 export MODEL_RAW=${MODEL_RAW:-${MODEL_DIR}}

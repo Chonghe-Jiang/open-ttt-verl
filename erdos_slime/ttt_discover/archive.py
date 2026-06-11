@@ -174,6 +174,7 @@ class PUCTArchive:
             "puct_c": self.puct_c,
             "topk_children": self.topk_children,
             "max_buffer_size": self.max_buffer_size,
+            "best_raw_score": self._state_by_id(self._best_state_id).raw_score if self._best_state_id else None,
         }
 
     def _load(self) -> None:
@@ -212,3 +213,22 @@ class PUCTArchive:
             best_tmp = best_path.with_suffix(".json.tmp")
             best_tmp.write_text(json.dumps(best_state.to_dict(), indent=2, sort_keys=True))
             os.replace(best_tmp, best_path)
+        stats_path = self.path.with_name("puct_stats.json")
+        stats_tmp = stats_path.with_suffix(".json.tmp")
+        stats_tmp.write_text(
+            json.dumps(
+                {
+                    "puct_n": self._puct_n,
+                    "puct_m": self._puct_m,
+                    "puct_T": self._puct_T,
+                    "best_state_id": self._best_state_id,
+                    "best_raw_score": self._state_by_id(self._best_state_id).raw_score if self._best_state_id else None,
+                    "num_states": len(self._states),
+                    "num_groups": len(self._groups),
+                    "num_finalized_groups": sum(1 for group in self._groups.values() if group.get("finalized")),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        os.replace(stats_tmp, stats_path)

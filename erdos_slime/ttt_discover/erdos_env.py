@@ -39,7 +39,7 @@ def verify_c5_solution(h_values: Any, c5_achieved: float, n_points: int) -> floa
     current_sum = float(np.sum(h_array))
     if current_sum == 0:
         raise ErdosEvaluationError("h_values sum to zero")
-    if not np.isclose(current_sum, target_sum, atol=1e-8):
+    if current_sum != target_sum:
         h_array = h_array * (target_sum / current_sum)
         if np.any(h_array < 0) or np.any(h_array > 1):
             raise ErdosEvaluationError(
@@ -88,8 +88,7 @@ def create_random_initial_state(seed: int | None = None, n_points_min: int = 40,
     construction = np.ones(n_points, dtype=np.float64) * 0.5
     perturbation = rng.uniform(-0.4, 0.4, n_points)
     perturbation = perturbation - np.mean(perturbation)
-    construction = np.clip(construction + perturbation, 0.0, 1.0)
-    construction = construction * ((n_points / 2.0) / np.sum(construction))
+    construction = construction + perturbation
     c5_bound = verify_c5_solution(
         construction,
         float(np.max(np.correlate(construction, 1.0 - construction, mode="full") * (2.0 / n_points))),
@@ -109,36 +108,49 @@ def build_erdos_prompt(
     *,
     budget_s: int,
     cpus: int,
-    target_c5: float = 0.3808,
+    target_c5: float = 0.38080,
 ) -> str:
     raw_score = state.raw_score if state.raw_score is not None else -float(state.value)
-    code_context = (
-        "Here is the last code we ran:\n```python\n" + state.code + "\n```"
-        if state.code.strip()
-        else "No previous code available."
-    )
     construction_context = ""
     if state.construction:
-        construction_context = (
-            f"\nYou may start from the current construction through the pre-imported "
-            f"`initial_h_values` global variable (n={len(state.construction)} samples).\n"
-        )
+        construction_context = f"""
+You may want to start your search from the current construction, which you can access through the `initial_h_values` global variable (n={len(state.construction)} samples).
+You are encouraged to explore solutions that use other starting points to prevent getting stuck in a local optimum.
+"""
 
-    return f"""You are an expert in harmonic analysis, numerical optimization, and mathematical discovery.
-Your task is to find an improved upper bound for the Erdos minimum overlap problem constant C5.
+    state_context = (
+        f"\nCurrent C5 bound: {raw_score:.6f}\n"
+        f"Target C5 bound: {target_c5:.6f}\n"
+    )
+    if state.code and state.code.strip():
+        state_context += f"\nPrevious code:\n```python\n{state.code}\n```\n"
+        code_section = (
+            "Reason about how you could further improve this construction. Ideally, try to do something different "
+            "than the above algorithm. Could be using different algorithmic ideas, adjusting your heuristics, "
+            "adjusting / sweeping your hyperparemeters, etc.\nUnless you make a meaningful improvement, you will not be rewarded."
+        )
+    else:
+        code_section = "Write code to optimize this construction."
+
+    return f"""You are an expert in harmonic analysis, numerical optimization, and mathematical discovery. Your task is to find an improved upper bound for the Erdős minimum overlap problem constant C₅.
 
 ## Problem
 
-Find a step function h: [0, 2] -> [0, 1] that minimizes:
+Find a step function h: [0, 2] -> [0, 1] that **minimizes** the overlap integral:
 
-C5 = max_k integral h(x)(1 - h(x+k)) dx
+    C5 = max_k integral h(x)(1 - h(x+k)) dx
 
 Constraints:
 1. h(x) is in [0, 1] for all x
-2. integral_0^2 h(x) dx = 1
+2. integral from 0 to 2 of h(x) dx = 1
 
-Represent h as n_points samples over [0, 2]. The evaluator computes:
-max(np.correlate(h, 1-h, mode="full") * (2.0 / n_points)).
+Discretization:
+Represent h as n_points samples over [0, 2]. With dx = 2.0 / n_points:
+- 0 <= h[i] <= 1 for all i
+- sum(h) * dx = 1, equivalently sum(h) == n_points / 2 exactly
+- The evaluator computes C5 = max(np.correlate(h, 1-h, mode="full") * dx)
+
+Smaller sequences with less than 1k samples are preferred because they are faster to optimize and evaluate.
 
 ## Budget & Resources
 - Time budget: {budget_s}s
@@ -146,15 +158,16 @@ max(np.correlate(h, 1-h, mode="full") * (2.0 / n_points)).
 
 ## Rules
 - Define `run(seed=42, budget_s={budget_s}, **kwargs)` returning `(h_values, c5_bound, n_points)`.
-- Use numpy, scipy, cvxpy, and math only.
+- Use scipy, numpy, cvxpy, and math.
+- Make all helper functions top level, no closures or lambdas.
 - No filesystem or network IO.
 - `evaluate_erdos_solution()` and `initial_h_values` are pre-imported.
-- Return the best solution found before timeout.
+- Your function must complete within budget_s seconds and return the best solution found.
 
-Lower C5 values are better. Current C5 bound: {raw_score:.6f}
-Target: {target_c5:.6f}
+Lower C5 values are better. Current record: C5 <= 0.38092. Our goal is to find a construction that shows C5 <= 0.38080.
+{state_context}
 {construction_context}
-{code_context}
+{code_section}
 
 Write Python code in one final ```python code block.
 """

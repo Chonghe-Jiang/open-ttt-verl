@@ -21,14 +21,14 @@ ROLLOUT_MAX_RESPONSE_LEN=${ROLLOUT_MAX_RESPONSE_LEN:-30000}
 ROLLOUT_TEMPERATURE=${ROLLOUT_TEMPERATURE:-1.0}
 ROLLOUT_TOP_P=${ROLLOUT_TOP_P:-1.0}
 SAVE_INTERVAL=${SAVE_INTERVAL:-1}
-LORA_RANK=${LORA_RANK:-128}
-LORA_ALPHA=${LORA_ALPHA:-128}
-LR=${LR:-5e-7}
-KL_LOSS_COEF=${KL_LOSS_COEF:-0.0005}
+LORA_RANK=${LORA_RANK:-32}
+LORA_ALPHA=${LORA_ALPHA:-32}
+LR=${LR:-4e-5}
+KL_LOSS_COEF=${KL_LOSS_COEF:-0.1}
 TTT_ENTROPIC_TARGET_KL=${TTT_ENTROPIC_TARGET_KL:-0.6931471805599453}
-TTT_TARGET_C5=${TTT_TARGET_C5:-0.3808}
-TTT_SANDBOX_TIMEOUT_S=${TTT_SANDBOX_TIMEOUT_S:-60}
-TTT_SANDBOX_CPUS=${TTT_SANDBOX_CPUS:-1}
+TTT_TARGET_C5=${TTT_TARGET_C5:-0.38080}
+TTT_SANDBOX_TIMEOUT_S=${TTT_SANDBOX_TIMEOUT_S:-1000}
+TTT_SANDBOX_CPUS=${TTT_SANDBOX_CPUS:-2}
 TTT_SANDBOX_WORK_DIR=${TTT_SANDBOX_WORK_DIR:-${WORKSPACE}/tmp/erdos-sandbox}
 
 test -f "${MODEL_BF16}/config.json" || {
@@ -96,7 +96,7 @@ ray start --head --node-ip-address "${MASTER_ADDR}" \
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"${ERDOS_DIR}/Megatron-LM:${ERDOS_DIR}:${ERDOS_DIR}/open-ttt-verl\",
+    \"PYTHONPATH\": \"${ERDOS_DIR}/Megatron-LM:${ERDOS_DIR}:${ERDOS_DIR}/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"ERDOS_ARCHIVE_PATH\": \"${ARCHIVE_PATH}\",
@@ -124,9 +124,12 @@ TTT_ARGS=(
   --input-key prompt
   --label-key label
   --apply-chat-template
-  --custom-generate-function-path erdos_slime.erdos_generate.generate
-  --custom-rm-path erdos_slime.erdos_rm.reward
-  --custom-advantage-function-path erdos_slime.entropic_advantage.compute
+  --custom-generate-function-path erdos_slime.ttt_slime.generate
+  --custom-rm-path erdos_slime.ttt_slime.reward
+  --custom-reward-post-process-path erdos_slime.ttt_slime.ttt_reward_post_process
+  --custom-advantage-function-path erdos_slime.ttt_slime.ttt_advantages
+  --loss-type custom_loss
+  --custom-loss-function-path erdos_slime.ttt_slime.ttt_reinforce_loss
   --ttt-archive-path "${ARCHIVE_PATH}"
   --ttt-puct-c 1.0
   --ttt-topk-children 2
@@ -136,6 +139,7 @@ TTT_ARGS=(
   --ttt-target-c5 "${TTT_TARGET_C5}"
   --ttt-entropic-target-kl "${TTT_ENTROPIC_TARGET_KL}"
   --ttt-advantage-clip 20.0
+  --ttt-is-clip 0
   --reasoning-effort high
 )
 

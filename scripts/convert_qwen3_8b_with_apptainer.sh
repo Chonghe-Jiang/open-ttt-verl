@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_DIR=${REPO_DIR:-/home/qua/code/open-ttt}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR=${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}
 WORKSPACE=${WORKSPACE:-${HOME}/scratch/open-ttt-workspace}
 LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 IMAGE_ROOT=${IMAGE_ROOT:-${WORKSPACE}/images}
@@ -93,10 +94,18 @@ else
   exit 1
 fi
 
+BIND_ARGS=(--bind "${REPO_DIR}:${REPO_DIR}" --bind "${WORKSPACE}:${WORKSPACE}")
+if [ -n "${APPTAINER_EXTRA_BINDS:-}" ]; then
+  IFS=',' read -r -a EXTRA_BINDS <<< "${APPTAINER_EXTRA_BINDS}"
+  for bind_path in "${EXTRA_BINDS[@]}"; do
+    [ -n "${bind_path}" ] && BIND_ARGS+=(--bind "${bind_path}")
+  done
+fi
+
 echo "Started at: $(date -Is)"
 echo "Runtime: ${RUNTIME}"
 "${RUNTIME}" exec --nv --cleanenv \
-  --bind /home/qua:/home/qua \
+  "${BIND_ARGS[@]}" \
   "${CONTAINER_PATH}" \
   bash -c "
     set -euo pipefail

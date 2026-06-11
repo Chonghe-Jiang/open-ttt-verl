@@ -44,10 +44,14 @@ ray job submit --address="http://127.0.0.1:8265" \
   --prompt-data /root/workspace/erdos/data/erdos_single.jsonl \
   --input-key prompt --label-key label \
   --apply-chat-template \
-  --custom-generate-function-path erdos_slime.erdos_generate.generate \
-  --custom-rm-path erdos_slime.erdos_rm.reward \
+  --custom-generate-function-path erdos_slime.ttt_slime.generate \
+  --custom-rm-path erdos_slime.ttt_slime.reward \
+  --custom-reward-post-process-path erdos_slime.ttt_slime.ttt_reward_post_process \
+  --custom-advantage-function-path erdos_slime.ttt_slime.ttt_advantages \
+  --loss-type custom_loss \
+  --custom-loss-function-path erdos_slime.ttt_slime.ttt_reinforce_loss \
   --advantage-estimator grpo \
-  --use-kl-loss --kl-loss-coef 0.001 --kl-loss-type low_var_kl \
+  --use-kl-loss --kl-loss-coef 0.1 --kl-loss-type low_var_kl \
   --eps-clip 0.2 \
   --num-rollout 300 \
   --rollout-batch-size 2 \

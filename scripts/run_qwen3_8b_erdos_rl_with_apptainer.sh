@@ -1,7 +1,8 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-REPO_DIR=${REPO_DIR:-/home/qua/code/open-ttt}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR=${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}
 WORKSPACE=${WORKSPACE:-${HOME}/scratch/open-ttt-workspace}
 LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 IMAGE_ROOT=${IMAGE_ROOT:-${WORKSPACE}/images}
@@ -15,6 +16,9 @@ SAVE_CKPT=${SAVE_CKPT:-${WORKSPACE}/ckpt/Qwen3-8B_erdos_lora}
 PROMPT_DATA=${PROMPT_DATA:-${REPO_DIR}/data/erdos_single.jsonl}
 ARCHIVE_PATH=${ARCHIVE_PATH:-${WORKSPACE}/data/qwen3_8b_erdos_archive.json}
 TTT_SANDBOX_WORK_DIR=${TTT_SANDBOX_WORK_DIR:-${WORKSPACE}/tmp/erdos-sandbox}
+TTT_SANDBOX_TIMEOUT_S=${TTT_SANDBOX_TIMEOUT_S:-1000}
+TTT_SANDBOX_CPUS=${TTT_SANDBOX_CPUS:-2}
+TTT_TARGET_C5=${TTT_TARGET_C5:-0.38080}
 
 TOTAL_GPUS=${TOTAL_GPUS:-8}
 ACTOR_NUM_GPUS=${ACTOR_NUM_GPUS:-4}
@@ -42,10 +46,10 @@ MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS:-40960}
 MAX_TOKENS_PER_GPU=${MAX_TOKENS_PER_GPU:-8192}
 
 SAVE_INTERVAL=${SAVE_INTERVAL:-10}
-LORA_RANK=${LORA_RANK:-64}
-LORA_ALPHA=${LORA_ALPHA:-64}
-LR=${LR:-5e-7}
-KL_LOSS_COEF=${KL_LOSS_COEF:-0.001}
+LORA_RANK=${LORA_RANK:-32}
+LORA_ALPHA=${LORA_ALPHA:-32}
+LR=${LR:-4e-5}
+KL_LOSS_COEF=${KL_LOSS_COEF:-0.1}
 TTT_ENTROPIC_TARGET_KL=${TTT_ENTROPIC_TARGET_KL:-0.6931471805599453}
 ADAM_BETA1=${ADAM_BETA1:-0.9}
 ADAM_BETA2=${ADAM_BETA2:-0.99}
@@ -121,6 +125,8 @@ echo "LoRA: rank=${LORA_RANK}, alpha=${LORA_ALPHA}"
 echo "Optimizer: adam lr=${LR}, beta1=${ADAM_BETA1}, beta2=${ADAM_BETA2}, eps=${ADAM_EPS}, weight_decay=${WEIGHT_DECAY}"
 echo "KL loss coef: ${KL_LOSS_COEF}"
 echo "TTT entropic target KL: ${TTT_ENTROPIC_TARGET_KL}"
+echo "TTT sandbox: timeout=${TTT_SANDBOX_TIMEOUT_S}s cpus=${TTT_SANDBOX_CPUS}"
+echo "TTT target C5: ${TTT_TARGET_C5}"
 echo "Reasoning effort: high"
 
 test -d "${REPO_DIR}"
@@ -167,6 +173,14 @@ elif [ -x /usr/bin/singularity ]; then
 else
   echo "Neither apptainer nor singularity was found." >&2
   exit 1
+fi
+
+BIND_ARGS=(--bind "${REPO_DIR}:${REPO_DIR}" --bind "${WORKSPACE}:${WORKSPACE}")
+if [ -n "${APPTAINER_EXTRA_BINDS:-}" ]; then
+  IFS=',' read -r -a EXTRA_BINDS <<< "${APPTAINER_EXTRA_BINDS}"
+  for bind_path in "${EXTRA_BINDS[@]}"; do
+    [ -n "${bind_path}" ] && BIND_ARGS+=(--bind "${bind_path}")
+  done
 fi
 
 cat > "${INNER_SCRIPT}" <<INNER
@@ -238,8 +252,8 @@ TTT_ARGS=(
   --input-key prompt
   --label-key label
   --apply-chat-template
-  --custom-generate-function-path erdos_slime.erdos_generate.generate
-  --custom-rm-path erdos_slime.erdos_rm.reward
+  --custom-generate-function-path erdos_slime.ttt_slime.generate
+  --custom-rm-path erdos_slime.ttt_slime.reward
   --custom-reward-post-process-path erdos_slime.ttt_slime.ttt_reward_post_process
   --custom-advantage-function-path erdos_slime.ttt_slime.ttt_advantages
   --loss-type custom_loss
@@ -247,11 +261,13 @@ TTT_ARGS=(
   --ttt-archive-path "${ARCHIVE_PATH}"
   --ttt-puct-c 1.0
   --ttt-topk-children 2
-  --ttt-sandbox-timeout-s 60
-  --ttt-sandbox-cpus 1
+  --ttt-sandbox-timeout-s "${TTT_SANDBOX_TIMEOUT_S}"
+  --ttt-sandbox-cpus "${TTT_SANDBOX_CPUS}"
   --ttt-sandbox-work-dir "${TTT_SANDBOX_WORK_DIR}"
+  --ttt-target-c5 "${TTT_TARGET_C5}"
   --ttt-entropic-target-kl "${TTT_ENTROPIC_TARGET_KL}"
   --ttt-advantage-clip 20.0
+  --ttt-is-clip 0
   --reasoning-effort high
 )
 
@@ -287,6 +303,7 @@ ALGO_ARGS=(
   --kl-loss-type low_var_kl
   --eps-clip 0.2
   --entropy-coef 0.0
+  --disable-rewards-normalization
 )
 
 PARALLEL_ARGS=(
@@ -367,7 +384,7 @@ echo "Runtime: ${RUNTIME}"
 echo "Inner script: ${INNER_SCRIPT}"
 
 "${RUNTIME}" exec --nv --cleanenv \
-  --bind /home/qua:/home/qua \
+  "${BIND_ARGS[@]}" \
   "${CONTAINER_PATH}" \
   bash "${INNER_SCRIPT}"
 

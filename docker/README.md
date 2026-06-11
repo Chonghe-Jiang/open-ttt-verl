@@ -115,7 +115,7 @@ Both smoke and full training use a non-colocated Docker run with 4 actor GPUs
 and 4 rollout GPUs.
 It uses 50 training steps, 512 rollouts per step as 8 groups × 64 rollouts,
 LoRA rank/alpha 32, Adam lr `4e-5`, β1 `0.9`, β2 `0.95`, ε `1e-8`, KL
-coefficient `0.01`, 30k maximum rollout response tokens, PUCT reuse, and
+coefficient `0.1`, 30k maximum rollout response tokens, PUCT reuse, and
 entropic target KL `ln 2`.
 
 ## Qwen3-8B 8×A800 RL

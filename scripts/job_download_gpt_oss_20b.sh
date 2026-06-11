@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
 export WORKSPACE=${WORKSPACE:-${HOME}/scratch/open-ttt-workspace}
 export LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
+import io
 import multiprocessing as mp
 import os
 import queue
@@ -50,7 +52,7 @@ def _install_sandbox_guards() -> None:
             setattr(os, name, blocked)
 
 
-def _worker(code: str, construction: list[Any] | None, result_queue: mp.Queue) -> None:
+def _worker(code: str, construction: list[Any] | None, timeout_s: int, result_queue: mp.Queue) -> None:
     try:
         _install_sandbox_guards()
         globals_dict = {
@@ -62,12 +64,14 @@ def _worker(code: str, construction: list[Any] | None, result_queue: mp.Queue) -
             "initial_h_values": np.asarray(construction, dtype=np.float64) if construction is not None else None,
         }
         locals_dict: dict[str, Any] = {}
-        exec(code, globals_dict, locals_dict)
-        run_fn = locals_dict.get("run") or globals_dict.get("run")
-        if run_fn is None:
-            raise ValueError("Program must define run(seed=42, budget_s=..., **kwargs)")
-        output = run_fn()
-        result_queue.put(SandboxResult(output=output, stdout="", error=None))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exec(code, globals_dict, locals_dict)
+            run_fn = locals_dict.get("run") or globals_dict.get("run")
+            if run_fn is None:
+                raise ValueError("Program must define run(seed=42, budget_s=..., **kwargs)")
+            output = run_fn(seed=42, budget_s=int(timeout_s))
+        result_queue.put(SandboxResult(output=output, stdout=stdout.getvalue(), error=None))
     except Exception:
         result_queue.put(SandboxResult(output=None, stdout="", error=traceback.format_exc()))
 
@@ -82,7 +86,7 @@ def evaluate_python_code(
     ctx = mp.get_context("spawn")
     result_queue: mp.Queue = ctx.Queue(maxsize=1)
     with tempfile.TemporaryDirectory(dir=str(work_dir) if work_dir else None):
-        process = ctx.Process(target=_worker, args=(code, state.construction, result_queue))
+        process = ctx.Process(target=_worker, args=(code, state.construction, int(timeout_s), result_queue))
         process.start()
         process.join(timeout_s)
         if process.is_alive():

@@ -966,13 +966,13 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ttt-sandbox-timeout-s",
                 type=int,
-                default=60,
+                default=1000,
                 help="Sandbox timeout for evaluating generated Erdos code.",
             )
             parser.add_argument(
                 "--ttt-sandbox-cpus",
                 type=int,
-                default=1,
+                default=2,
                 help="CPU count advertised in the Erdos prompt.",
             )
             parser.add_argument(
@@ -981,7 +981,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Optional work directory for the Erdos sandbox temporary directory.",
             )
-            parser.add_argument("--ttt-target-c5", type=float, default=0.3808)
+            parser.add_argument("--ttt-target-c5", type=float, default=0.38080)
             parser.add_argument(
                 "--ttt-entropic-target-kl",
                 type=float,
@@ -997,8 +997,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--ttt-is-clip",
                 type=float,
-                default=10.0,
-                help="Maximum rollout-policy importance weight in the TTT REINFORCE loss.",
+                default=0.0,
+                help="Maximum rollout-policy importance weight in the TTT REINFORCE loss. 0 disables clipping.",
             )
             parser.add_argument(
                 "--use-kl-loss", action="store_true", default=False, help="whether to use KL loss from GRPO"

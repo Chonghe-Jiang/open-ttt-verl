@@ -1,9 +1,10 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
-export WORKSPACE=${WORKSPACE:-/home/qua/scratch/open-ttt-workspace}
+export WORKSPACE=${WORKSPACE:-/work/mit/ppliang_mit/lsy/open-ttt-workspace}
 export LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 export IMAGE_ROOT=${IMAGE_ROOT:-${WORKSPACE}/images}
 export SIF_PATH=${SIF_PATH:-${IMAGE_ROOT}/slime_latest.sif}

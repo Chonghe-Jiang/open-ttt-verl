@@ -5,14 +5,15 @@
 #SBATCH --mem=160G
 #SBATCH --time=08:00:00
 #SBATCH -J open-ttt-convert-gpt-oss-20b
-#SBATCH -o /home/qua/scratch/open-ttt-workspace/logs/slurm-convert-gpt-oss-20b-%j.out
+#SBATCH -o /work/mit/ppliang_mit/lsy/open-ttt-workspace/logs/slurm-convert-gpt-oss-20b-%j.out
 
 set -Eeuo pipefail
 
-cd /home/qua/code/open-ttt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}/.."
 
 export NPROC=2
-export WORKSPACE=/home/qua/scratch/open-ttt-workspace
+export WORKSPACE=${WORKSPACE:-/work/mit/ppliang_mit/lsy/open-ttt-workspace}
 export TENSOR_MODEL_PARALLEL_SIZE=1
 export PIPELINE_MODEL_PARALLEL_SIZE=2
 export EXPERT_MODEL_PARALLEL_SIZE=1

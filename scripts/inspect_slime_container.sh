@@ -2,6 +2,7 @@
 set -euo pipefail
 
 WORKSPACE=${WORKSPACE:-${HOME}/scratch/open-ttt-workspace}
+REPO_DIR=${REPO_DIR:-$(pwd)}
 LOG_ROOT=${LOG_ROOT:-${WORKSPACE}/logs}
 IMAGE_ROOT=${IMAGE_ROOT:-${WORKSPACE}/images}
 SANDBOX_PATH=${SANDBOX_PATH:-${IMAGE_ROOT}/slime_latest.sandbox}
@@ -57,11 +58,19 @@ else
   exit 1
 fi
 
+BIND_ARGS=(--bind "${REPO_DIR}:${REPO_DIR}" --bind "${WORKSPACE}:${WORKSPACE}")
+if [ -n "${APPTAINER_EXTRA_BINDS:-}" ]; then
+  IFS=',' read -r -a EXTRA_BINDS <<< "${APPTAINER_EXTRA_BINDS}"
+  for bind_path in "${EXTRA_BINDS[@]}"; do
+    [ -n "${bind_path}" ] && BIND_ARGS+=(--bind "${bind_path}")
+  done
+fi
+
 test -e "${CONTAINER_PATH}"
 
 APPTAINERENV_REQUIRE_CUDA="${REQUIRE_CUDA}" \
 "${RUNTIME}" exec --nv --cleanenv \
-  --bind /home/qua:/home/qua \
+  "${BIND_ARGS[@]}" \
   "${CONTAINER_PATH}" \
   bash -c '
     set -euo pipefail
