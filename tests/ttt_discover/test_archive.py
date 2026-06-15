@@ -32,6 +32,34 @@ def test_acquire_group_binds_same_uid_to_one_state(tmp_path):
     assert archive.snapshot()["groups"]["7:uid-0"]["state_id"] == first.id
 
 
+def test_archive_reloads_persisted_puct_config(tmp_path):
+    path = tmp_path / "archive.json"
+    state = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="state")
+    PUCTArchive(
+        path,
+        initial_states=[state],
+        rollout_n=7,
+        puct_c=0.25,
+        topk_children=1,
+        max_buffer_size=3,
+        max_construction_len=123,
+    )
+
+    archive = PUCTArchive(path)
+    snapshot = archive.snapshot()
+
+    assert archive.rollout_n == 7
+    assert archive.puct_c == 0.25
+    assert archive.topk_children == 1
+    assert archive.max_buffer_size == 3
+    assert archive.max_construction_len == 123
+    assert snapshot["rollout_n"] == 7
+    assert snapshot["puct_c"] == 0.25
+    assert snapshot["topk_children"] == 1
+    assert snapshot["max_buffer_size"] == 3
+    assert snapshot["max_construction_len"] == 123
+
+
 def test_concurrent_acquire_group_is_atomic(tmp_path):
     states = [
         DiscoveryState(timestep=-1, value=float(i), raw_score=float(10 - i), code="", construction=[0.5], id=f"s{i}")
@@ -134,6 +162,30 @@ def test_lineage_blocking_avoids_same_step_family(tmp_path):
     archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent, child, other], rollout_n=2)
 
     assert archive.acquire_group("4:uid-0").id == "parent"
+    assert archive.acquire_group("4:uid-1").id == "other"
+
+
+def test_finalized_group_still_blocks_same_step_lineage(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=3.0, raw_score=0.3, code="", construction=[0.3], id="parent")
+    child = DiscoveryState(
+        timestep=0,
+        value=2.0,
+        raw_score=0.5,
+        code="child",
+        construction=[0.2],
+        id="child",
+        parents=[{"id": "parent", "timestep": -1}],
+    )
+    other = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.1], id="other")
+    archive = PUCTArchive(tmp_path / "archive.json", initial_states=[parent, child, other], rollout_n=1)
+
+    assert archive.acquire_group("4:uid-0").id == "parent"
+    assert archive.submit_child(
+        "4:uid-0",
+        DiscoveryState(timestep=4, value=2.5, raw_score=0.4, code="new-child", construction=[0.25], id="new-child"),
+    )
+
+    assert archive.snapshot()["groups"]["4:uid-0"]["finalized"] is True
     assert archive.acquire_group("4:uid-1").id == "other"
 
 

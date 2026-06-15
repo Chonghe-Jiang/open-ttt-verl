@@ -243,7 +243,7 @@ class PUCTArchive:
         children_map = self._children_map()
         blocked: set[str] = set()
         for existing_uid, group in self._groups.items():
-            if group.get("finalized") or existing_uid == group_uid or not existing_uid.startswith(f"{step_prefix}:"):
+            if existing_uid == group_uid or not existing_uid.startswith(f"{step_prefix}:"):
                 continue
             try:
                 state = self._state_by_id(group["state_id"])
@@ -284,6 +284,10 @@ class PUCTArchive:
         self._puct_m = {str(k): float(v) for k, v in store.get("puct_m", {}).items()}
         self._puct_T = int(store.get("puct_T", 0))
         self._best_state_id = store.get("best_state_id")
+        self.rollout_n = int(store.get("rollout_n", self.rollout_n))
+        self.puct_c = float(store.get("puct_c", self.puct_c))
+        self.topk_children = int(store.get("topk_children", self.topk_children))
+        self.max_buffer_size = int(store.get("max_buffer_size", self.max_buffer_size))
         self.max_construction_len = store.get("max_construction_len", self.max_construction_len)
         self._last_sampled_stats = list(store.get("last_sampled_stats", []))
 
