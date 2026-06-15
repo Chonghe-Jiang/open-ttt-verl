@@ -1,7 +1,7 @@
 from guidance_ttt.prompts import (
     build_execution_prompt,
     build_guidance_prompt,
-    build_summary_prompt,
+    extract_tag,
 )
 from guidance_ttt.state import LibraryEntry, LibraryNode
 
@@ -71,23 +71,26 @@ def test_execution_prompt_attaches_same_library_node_full_solution_and_guidance(
     assert "Previous full solution code" in prompt.user
     assert "def run(seed=42" in prompt.user
     assert "<execution_thinking>" in prompt.user
-
-
-def test_summary_prompt_contains_guidance_execution_solution_and_reward():
-    prompt = build_summary_prompt(
-        selected_entry=_entry(),
-        guidance="Try deterministic coordinate descent.",
-        execution_thinking="I changed the optimizer.",
-        solution="def run(): return None",
-        reward=0.0,
-        raw_score=None,
-        status="invalid",
-        message="shape mismatch",
-    )
-
-    assert "Try deterministic coordinate descent." in prompt.user
-    assert "I changed the optimizer." in prompt.user
-    assert "def run()" in prompt.user
-    assert "shape mismatch" in prompt.user
     assert "<summary>" in prompt.user
+    assert "Risk / possible failure mode" in prompt.user
+    assert "Do not claim verifier success" in prompt.user
 
+
+def test_execution_text_contains_parseable_summary_tag():
+    execution_text = """<execution_thinking>
+I changed the optimizer.
+</execution_thinking>
+
+```python
+def run(): return None
+```
+
+<summary>
+Outcome hypothesis: test
+Reusable idea: coordinate descent
+Risk / possible failure mode: shape mismatch
+What future guidance should preserve: symmetry
+What future guidance should change: step schedule
+</summary>"""
+
+    assert extract_tag(execution_text, "summary").startswith("Outcome hypothesis")

@@ -28,7 +28,15 @@ Use the guidance to return a simple valid Erdos baseline construction.
 ```python
 def run(seed=42, budget_s=1, **kwargs):
     return ([0.5, 0.5], 0.5, 2)
-```"""
+```
+
+<summary>
+Outcome hypothesis: The baseline construction should pass verifier checks but is not a discovery improvement.
+Reusable idea: Preserve a simple verifier-valid construction while testing the guidance/execution pipeline.
+Risk / possible failure mode: The construction is too trivial to improve reward.
+What future guidance should preserve: The exact run(seed=42, budget_s=..., **kwargs) interface.
+What future guidance should change: Propose a nontrivial search or optimization over h_values.
+</summary>"""
         else:
             text = request.user
         return LLMResponse(
@@ -53,4 +61,3 @@ def make_llm_client(config: dict) -> BaseLLMClient:
     if provider == "mock":
         return MockLLMClient()
     return UnconfiguredLLMClient()
-

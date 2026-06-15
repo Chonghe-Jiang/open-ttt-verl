@@ -10,15 +10,14 @@ PUCT library node
 -> trainable guidance model
 -> guidance / idea
 -> execution LLM
--> solution code
+-> execution thinking + solution code + summary
 -> verifier reward
--> summarizer LLM
 -> new library child node
 -> RL update on guidance tokens only
 ```
 
-The first target task is Erdos minimum overlap. Execution and summarization use
-`MockLLMClient` by default so the package can be tested without a real API.
+The first target task is Erdos minimum overlap. Execution uses `MockLLMClient`
+by default so the package can be tested without a real API.
 
 ## Prepare a Smoke Run
 
@@ -47,6 +46,7 @@ pytest -q tests
 - PUCT selects one library node before prompt assembly.
 - Guidance prompt attaches the selected node summary and scores, not full global history.
 - Execution prompt attaches the same selected node plus the full prior solution code when available.
+- Execution LLM returns `<execution_thinking>`, one Python code block, and `<summary>` in a single response.
 - The verifier reward is assigned only to guidance model response tokens.
-- Execution/summarization failures are environment outcomes and become library entries with reward `0.0`.
-
+- Execution failures are environment outcomes and become library entries with reward `0.0`.
+- The execution-provided summary is stored with verifier reward/status as structured library metadata; the summary should not claim verifier success before verification runs.

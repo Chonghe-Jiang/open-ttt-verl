@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
-from guidance_ttt.prompts import build_execution_prompt, build_guidance_prompt, build_summary_prompt, extract_tag
+from guidance_ttt.prompts import build_execution_prompt, build_guidance_prompt, extract_tag
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult
 from guidance_ttt.tasks.erdos import ERDOS_PROBLEM_PROMPT
 from guidance_ttt.verifier.erdos import verify_erdos_solution_text
@@ -78,16 +78,13 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         self,
         *args,
         execution_llm: dict[str, Any] | None = None,
-        summarizer_llm: dict[str, Any] | None = None,
         verifier_timeout_s: int = 60,
         problem_prompt: str = ERDOS_PROBLEM_PROMPT,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.execution_llm_config = execution_llm or {"provider": "mock", "model": "mock-exec"}
-        self.summarizer_llm_config = summarizer_llm or {"provider": "mock", "model": "mock-summary"}
         self.execution_client = make_llm_client(self.execution_llm_config)
-        self.summarizer_client = make_llm_client(self.summarizer_llm_config)
         self.verifier_timeout_s = int(verifier_timeout_s)
         self.problem_prompt = problem_prompt
         if hasattr(self, "rollout_config"):
@@ -150,38 +147,11 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             execution_text = execution_response.text
             execution_thinking = extract_tag(execution_text, "execution_thinking")
             solution = extract_python_code(execution_text) or ""
+            summary = _execution_summary_or_fallback(execution_text=execution_text, guidance=guidance)
             verification = verify_erdos_solution_text(execution_text, timeout_s=self.verifier_timeout_s)
         except Exception as exc:
             verification = VerificationResult.execution_error(str(exc))
-
-        summary_prompt = build_summary_prompt(
-            selected_entry=selected_entry,
-            guidance=guidance,
-            execution_thinking=execution_thinking,
-            solution=solution,
-            reward=verification.reward,
-            raw_score=verification.raw_score,
-            status=verification.status,
-            message=verification.message,
-        )
-        try:
-            summary_response = await self.summarizer_client.complete(
-                LLMRequest(
-                    system=summary_prompt.system,
-                    user=summary_prompt.user,
-                    model=self.summarizer_llm_config.get("model", "mock-summary"),
-                    temperature=float(self.summarizer_llm_config.get("temperature", 0.0)),
-                    max_tokens=int(self.summarizer_llm_config.get("max_tokens", 2048)),
-                    metadata={"purpose": "summary"},
-                )
-            )
-            summary = extract_tag(summary_response.text, "summary")
-        except Exception as exc:
-            summary = (
-                f"Outcome: summarizer failed: {exc}\n"
-                f"Reusable idea: {guidance[:300]}\n"
-                f"Failure mode: {verification.status if not verification.valid else 'None'}"
-            )
+            summary = _execution_summary_or_fallback(execution_text=execution_text, guidance=guidance)
 
         entry = LibraryEntry(
             id=str(uuid4()),
@@ -228,3 +198,15 @@ def _extract_summary_line(summary: str, prefix: str) -> str:
             return line.split(":", 1)[1].strip()
     return ""
 
+
+def _execution_summary_or_fallback(*, execution_text: str, guidance: str) -> str:
+    summary = extract_tag(execution_text, "summary")
+    if summary != execution_text.strip():
+        return summary
+    return (
+        "Outcome hypothesis: execution did not provide summary.\n"
+        f"Reusable idea: {guidance[:300]}\n"
+        "Risk / possible failure mode: missing_summary\n"
+        "What future guidance should preserve: selected library context.\n"
+        "What future guidance should change: request clearer executable plan."
+    )

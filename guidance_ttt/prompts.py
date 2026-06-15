@@ -103,6 +103,8 @@ Raw score: {selected_node.raw_score}
 {guidance}
 </guidance>
 
+Return all three sections in this exact order. Do not claim verifier success because the verifier has not run yet.
+
 Return:
 <execution_thinking>
 brief reasoning
@@ -111,54 +113,20 @@ brief reasoning
 ```python
 # final runnable solution
 ```
-"""
-    return Prompt(
-        system="You are the execution model. Turn guidance into one concrete candidate solution.",
-        user=user,
-    )
 
-
-def build_summary_prompt(
-    *,
-    selected_entry: LibraryEntry | None,
-    guidance: str,
-    execution_thinking: str,
-    solution: str,
-    reward: float,
-    raw_score: float | None,
-    status: str,
-    message: str,
-) -> Prompt:
-    user = f"""Selected parent summary:
-{_entry_summary(selected_entry, include_solution=False)}
-
-Guidance:
-{guidance}
-
-Execution thinking:
-{execution_thinking}
-
-Solution/code:
-```python
-{solution}
-```
-
-Verifier reward: {reward}
-Verifier raw score: {raw_score}
-Verifier status: {status}
-Verifier message: {message}
-
-Return exactly:
 <summary>
-Outcome: ...
+Outcome hypothesis: ...
 Reusable idea: ...
-Failure mode: ...
+Risk / possible failure mode: ...
 What future guidance should preserve: ...
 What future guidance should change: ...
 </summary>
 """
     return Prompt(
-        system="You summarize attempts for a TTT library. Use only provided evidence.",
+        system=(
+            "You are the execution model. Turn guidance into one concrete candidate solution, "
+            "and include a concise library summary of the attempt intent."
+        ),
         user=user,
     )
 

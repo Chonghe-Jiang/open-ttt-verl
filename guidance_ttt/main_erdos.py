@@ -75,7 +75,6 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
                     "name": "guidance_execution_erdos",
                     "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
                     "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
-                    "summarizer_llm": config.get("llm", {}).get("summarizer", {"provider": "mock"}),
                     "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
                     "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
                 }

@@ -20,7 +20,6 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
         },
         "llm": {
             "execution": {"provider": "mock", "model": "mock-exec"},
-            "summarizer": {"provider": "mock", "model": "mock-summary"},
         },
     }
 
@@ -32,3 +31,5 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     data = yaml.safe_load(Path(prepared["agent_loop_config"]).read_text())
     assert data[0]["name"] == "guidance_execution_erdos"
     assert data[0]["verifier_timeout_s"] == 5
+    assert "execution_llm" in data[0]
+    assert "summarizer_llm" not in data[0]
