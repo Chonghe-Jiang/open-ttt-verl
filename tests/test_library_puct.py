@@ -1,0 +1,66 @@
+from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.state import LibraryEntry, make_root_node
+
+
+def _entry(parent_id: str, reward: float, suffix: str) -> LibraryEntry:
+    return LibraryEntry(
+        id=f"entry-{suffix}",
+        parent_id=parent_id,
+        problem_id="erdos",
+        timestep=1,
+        guidance=f"try idea {suffix}",
+        execution_thinking=f"thinking {suffix}",
+        solution=f"def run(): return {suffix!r}",
+        verifier_reward=reward,
+        verifier_raw_score=None,
+        verifier_status="valid",
+        verifier_message="ok",
+        summary=f"summary {suffix}",
+        reusable_idea=f"idea {suffix}",
+        failure_mode=None,
+        metadata={},
+    )
+
+
+def test_acquire_group_binds_same_group_to_same_node(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2)
+
+    first = library.acquire_group("0:slot-a")
+    second = library.acquire_group("0:slot-a")
+
+    assert first.id == second.id == root.id
+
+
+def test_submit_child_adds_entry_child_and_updates_best(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+    selected = library.acquire_group("0:slot-a")
+
+    child = library.submit_child("0:slot-a", _entry(selected.id, reward=4.0, suffix="a"))
+    snapshot = library.snapshot()
+
+    assert child.parent_id == selected.id
+    assert child.entry_id == "entry-a"
+    assert child.value == 4.0
+    assert snapshot["best_node_id"] == child.id
+    assert snapshot["nodes"][selected.id]["children"] == [child.id]
+
+
+def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, puct_c=5.0)
+    selected = library.acquire_group("0:slot-a")
+    good = library.submit_child("0:slot-a", _entry(selected.id, reward=10.0, suffix="good"))
+    library.acquire_group("0:slot-b")
+    fresh = library.submit_child("0:slot-b", _entry(selected.id, reward=1.0, suffix="fresh"))
+
+    library.mark_node_visited(good.id, count=10)
+    library.mark_node_visited(fresh.id, count=0)
+    picked = library.acquire_group("1:slot-a")
+
+    assert picked.id == fresh.id
+
