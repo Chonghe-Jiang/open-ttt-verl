@@ -202,7 +202,7 @@ def _state_prompt_context(state: DiscoveryState, *, target_c5: float, raw_score:
         context += f"\nTarget: {target_c5}. Current gap: {current_gap:.6f}. Further improvements will also be generously rewarded."
     elif state.value is not None:
         current_gap = raw_score - target_c5
-        context += f"\nCurrent C5 bound (higher is better): {raw_score:.6f}"
+        context += f"\nCurrent C5 bound (lower is better): {raw_score:.6f}"
         context += f"\nTarget: {target_c5}. Current gap: {current_gap:.6f}. Further improvements will also be generously rewarded."
     else:
         context += f"\nTarget C5 bound: {target_c5}"
