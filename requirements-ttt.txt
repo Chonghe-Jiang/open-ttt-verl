@@ -1,0 +1,15 @@
+# Portable TTT-Discover runtime install target.
+#
+# Usage from a fresh clone:
+#   pip install -r requirements-ttt.txt
+#
+# Keep CUDA/PyTorch/vLLM compatibility in mind on cluster images. If your
+# machine already provides a pinned torch/vLLM stack, install those first and
+# then run this file.
+-e .[vllm,gpu,math]
+-r requirements.txt
+huggingface_hub[cli]
+hf_transfer
+protobuf
+sentencepiece
+tiktoken

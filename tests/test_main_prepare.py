@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from guidance_ttt.main_erdos import prepare_run
+from guidance_ttt.main_erdos import _default_verl_config_dir, prepare_run
 
 
 def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
@@ -33,3 +33,9 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     assert data[0]["verifier_timeout_s"] == 5
     assert "execution_llm" in data[0]
     assert "summarizer_llm" not in data[0]
+
+
+def test_default_verl_config_dir_uses_local_verl_tree():
+    expected = Path.cwd() / "verl" / "trainer" / "config"
+
+    assert _default_verl_config_dir() == expected

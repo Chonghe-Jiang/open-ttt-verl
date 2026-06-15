@@ -1,7 +1,8 @@
 # Guidance + Execution TTT
 
-This repository implements a Guidance-TTT prototype on top of the `open-ttt-verl`
-pattern.
+This repository implements a self-contained Guidance-TTT prototype on top of
+`open-ttt-verl`. It includes a local `verl/` tree, so the guidance recipe no
+longer depends on `/reference/open-ttt-verl` at runtime.
 
 The rollout loop is:
 
@@ -18,6 +19,18 @@ PUCT library node
 
 The first target task is Erdos minimum overlap. Execution uses `MockLLMClient`
 by default so the package can be tested without a real API.
+
+## Repository Layout
+
+```text
+verl/                 # local verl runtime and trainer config
+guidance_ttt/         # Guidance-TTT agent loop, library, prompts, verifier
+scripts/              # convenience launchers
+tests/                # lightweight Guidance-TTT tests
+```
+
+The default verl config directory is `verl/trainer/config` in this repository.
+`run.verl_config_dir=...` can still override it for debugging.
 
 ## Prepare a Smoke Run
 
@@ -39,6 +52,7 @@ outputs/guidance_ttt/erdos_smoke/agent_loop.yaml
 
 ```bash
 pytest -q tests
+python -m compileall -q guidance_ttt verl
 ```
 
 ## Design Notes

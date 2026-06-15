@@ -145,9 +145,6 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
 
 
 def _default_verl_config_dir() -> Path:
-    reference = Path("/home/chonghej/scratch/chonghej/Guidance-ttt/reference/open-ttt-verl/verl/trainer/config")
-    if reference.exists():
-        return reference
     return Path.cwd() / "verl" / "trainer" / "config"
 
 
