@@ -63,7 +63,11 @@ Visits: {selected_node.visits}
 {failure_text or "No local failure entries yet."}
 </local_failures>
 
-Return exactly:
+The preferred submitted guidance is the text inside the XML block below. Thinking is allowed,
+but if the XML block is missing, only text outside any <think>...</think> block will be used
+as the submitted guidance.
+
+Return exactly one block and nothing else:
 <guidance>
 Hypothesis: ...
 Plan:
@@ -75,7 +79,11 @@ Expected verifier signal: ...
 </guidance>
 """
     return Prompt(
-        system="You are the trainable guidance model. Produce ideas, not final code.",
+        system=(
+            "You are the trainable guidance model. Produce high level ideas, not final code. "
+            "You may think first, but the final submitted guidance should be in one "
+            "<guidance>...</guidance> block."
+        ),
         user=user,
     )
 
@@ -137,3 +145,49 @@ def extract_tag(text: str, tag: str) -> str:
     if start == -1 or end == -1 or end <= start:
         return text.strip()
     return text[start + len(tag) + 2 : end].strip()
+
+
+def extract_tag_or_none(text: str, tag: str) -> str | None:
+    start = text.find(f"<{tag}>")
+    end = text.find(f"</{tag}>")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return text[start + len(tag) + 2 : end].strip()
+
+
+def extract_text_outside_tag(text: str, tag: str) -> str:
+    lower_text = text.lower()
+    open_tag = f"<{tag.lower()}>"
+    close_tag = f"</{tag.lower()}>"
+    parts: list[str] = []
+    cursor = 0
+    while True:
+        start = lower_text.find(open_tag, cursor)
+        if start == -1:
+            parts.append(text[cursor:])
+            break
+        parts.append(text[cursor:start])
+        end = lower_text.find(close_tag, start + len(open_tag))
+        if end == -1:
+            break
+        cursor = end + len(close_tag)
+    return "".join(parts).strip()
+
+
+def extract_guidance_or_format_error(text: str) -> tuple[str, bool]:
+    guidance = extract_tag_or_none(text, "guidance")
+    if guidance:
+        return guidance, True
+    outside_think = extract_text_outside_tag(text, "think")
+    if outside_think:
+        return outside_think, False
+    return (
+        "Hypothesis: The guidance model did not emit a valid <guidance> block.\n"
+        "Plan:\n"
+        "1. Treat this attempt as a formatting failure because no text was found outside the thinking block.\n"
+        "2. Retry with an explicit tagged guidance response on the next rollout.\n"
+        "What to preserve: The selected library context and Erdos verifier constraints.\n"
+        "What to change: Emit exactly one tagged guidance block after any thinking.\n"
+        "Expected verifier signal: formatting_error",
+        False,
+    )

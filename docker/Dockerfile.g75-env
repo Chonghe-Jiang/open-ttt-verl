@@ -1,0 +1,25 @@
+FROM vllm/vllm-openai:v0.8.5.post1
+
+ENV PYTHONUNBUFFERED=1 \
+    HF_HOME=/home/wangshuo/wangshuo03/.cache/huggingface \
+    TOKENIZERS_PARALLELISM=false \
+    HYDRA_FULL_ERROR=1 \
+    RAY_DEDUP_LOGS=0
+
+WORKDIR /opt/guidance-ttt-build
+COPY requirements.txt ./requirements.txt
+
+# Keep the CUDA/PyTorch/vLLM stack from the base image. Install the control-plane
+# dependencies recorded by the current guidance-ttt tree; do not reinstall
+# flash-attn here because the vLLM image already carries a compatible CUDA stack.
+RUN python3 -m pip install --no-cache-dir -r requirements.txt \
+    && python3 -m pip install --no-cache-dir \
+      "huggingface_hub[cli]" \
+      hf_transfer \
+      protobuf \
+      sentencepiece \
+      tiktoken \
+      pytest-asyncio \
+      pytest-rerunfailures
+
+ENTRYPOINT ["/bin/bash"]

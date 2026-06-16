@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
-from guidance_ttt.prompts import build_execution_prompt, build_guidance_prompt, extract_tag
+from guidance_ttt.prompts import build_execution_prompt, build_guidance_prompt, extract_guidance_or_format_error, extract_tag
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult
 from guidance_ttt.tasks.erdos import ERDOS_PROBLEM_PROMPT
 from guidance_ttt.verifier.erdos import verify_erdos_solution_text
@@ -102,9 +102,13 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         global_step = kwargs.get("global_steps", kwargs.get("global_step", 0))
         group_uid = f"{global_step}:{uid}"
 
-        library = GuidanceLibrary(library_path, rollout_n=int(extra_info.get("rollout_n", 1)))
-        selected_node = library.acquire_group(group_uid)
-        context = library.context_for_node(selected_node)
+        library = GuidanceLibrary(
+            library_path,
+            rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
+            puct_c=float(extra_info.get("puct_c", 1.0)),
+        )
+        selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
+        context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
         selected_entry = context["selected_entry"]
         guidance_prompt = build_guidance_prompt(
             problem_prompt=self.problem_prompt,
@@ -113,7 +117,12 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             global_best_entries=context["global_best_entries"],
             local_failure_entries=context["local_failure_entries"],
         )
-        prompt_ids = await self.apply_chat_template([{"role": "user", "content": guidance_prompt.user}])
+        prompt_ids = await self.apply_chat_template(
+            [
+                {"role": "system", "content": guidance_prompt.system},
+                {"role": "user", "content": guidance_prompt.user},
+            ]
+        )
         output = await self.server_manager.generate(
             request_id=uuid4().hex,
             prompt_ids=prompt_ids,
@@ -121,7 +130,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         )
         response_ids = output.token_ids[: self.response_length]
         guidance_text = _decode_response(self.tokenizer, response_ids)
-        guidance = extract_tag(guidance_text, "guidance")
+        guidance, guidance_format_ok = extract_guidance_or_format_error(guidance_text)
 
         execution_prompt = build_execution_prompt(
             problem_prompt=self.problem_prompt,
@@ -168,7 +177,12 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             summary=summary,
             reusable_idea=_extract_summary_line(summary, "Reusable idea"),
             failure_mode=None if verification.valid else verification.status,
-            metadata={"group_uid": group_uid, "selected_node_id": selected_node.id},
+            metadata={
+                "group_uid": group_uid,
+                "selected_node_id": selected_node.id,
+                "guidance_format_ok": guidance_format_ok,
+                "raw_guidance_text": guidance_text,
+            },
         )
         child = library.submit_child(group_uid, entry)
 
@@ -182,6 +196,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "selected_node_id": selected_node.id,
                 "child_node_id": child.id,
                 "guidance": guidance,
+                "guidance_format_ok": guidance_format_ok,
+                "raw_guidance_text": guidance_text,
                 "execution_text": execution_text,
                 "execution_thinking": execution_thinking,
                 "solution": solution,

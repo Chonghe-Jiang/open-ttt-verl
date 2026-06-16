@@ -57,20 +57,21 @@ class GuidanceLibrary:
                 self._reload()
                 return self._to_store()
 
-    def acquire_group(self, group_uid: str) -> LibraryNode:
+    def acquire_group(self, group_uid: str, *, visible_timestep_exclusive: int | None = None) -> LibraryNode:
         with self._thread_lock:
             with self._file_lock():
                 self._reload()
                 group = self._groups.get(group_uid)
                 if group is not None:
                     return self._nodes[group["selected_node_id"]]
-                selected = self._select_node()
+                selected = self._select_node(visible_timestep_exclusive=visible_timestep_exclusive)
                 selected.visits += 1
                 self._groups[group_uid] = {
                     "selected_node_id": selected.id,
                     "submitted": 0,
                     "children": [],
                     "finalized": False,
+                    "visible_timestep_exclusive": visible_timestep_exclusive,
                 }
                 self._save()
                 return selected
@@ -123,40 +124,101 @@ class GuidanceLibrary:
                 self._reload()
                 return self._entries.get(entry_id)
 
-    def context_for_node(self, node: LibraryNode) -> dict[str, Any]:
+    def context_for_node(
+        self,
+        node: LibraryNode,
+        *,
+        visible_timestep_exclusive: int | None = None,
+    ) -> dict[str, Any]:
         with self._thread_lock:
             with self._file_lock():
                 self._reload()
                 lineage: list[LibraryEntry] = []
                 current: LibraryNode | None = self._nodes.get(node.id)
                 while current is not None:
-                    if current.entry_id and current.entry_id in self._entries:
+                    if (
+                        current.entry_id
+                        and current.entry_id in self._entries
+                        and self._entry_is_visible(
+                            self._entries[current.entry_id],
+                            visible_timestep_exclusive=visible_timestep_exclusive,
+                        )
+                    ):
                         lineage.append(self._entries[current.entry_id])
                     current = self._nodes.get(current.parent_id) if current.parent_id else None
                 lineage.reverse()
-                best = self._nodes.get(self._best_node_id) if self._best_node_id else None
+                best = self._best_visible_node(visible_timestep_exclusive=visible_timestep_exclusive)
                 best_entry = self._entries.get(best.entry_id) if best and best.entry_id else None
                 failures = [
                     entry
                     for entry in self._entries.values()
                     if entry.parent_id == node.id and entry.verifier_status != "valid"
+                    and self._entry_is_visible(entry, visible_timestep_exclusive=visible_timestep_exclusive)
                 ]
                 return {
-                    "selected_entry": self._entries.get(node.entry_id) if node.entry_id else None,
+                    "selected_entry": self._visible_entry(
+                        node.entry_id,
+                        visible_timestep_exclusive=visible_timestep_exclusive,
+                    ),
                     "lineage_entries": lineage,
                     "global_best_entries": [best_entry] if best_entry else [],
                     "local_failure_entries": failures,
                 }
 
-    def _select_node(self) -> LibraryNode:
+    def _select_node(self, *, visible_timestep_exclusive: int | None = None) -> LibraryNode:
         roots = [node for node in self._nodes.values() if node.parent_id is None]
         if not roots:
             raise ValueError("GuidanceLibrary requires at least one root node")
         root = max(roots, key=lambda node: (node.value, node.id))
         if not root.children:
             return root
-        children = [self._nodes[child_id] for child_id in root.children if child_id in self._nodes]
+        children = [
+            self._nodes[child_id]
+            for child_id in root.children
+            if child_id in self._nodes
+            and self._node_is_visible(
+                self._nodes[child_id],
+                visible_timestep_exclusive=visible_timestep_exclusive,
+            )
+        ]
+        if not children:
+            return root
         return choose_child(root, children, puct_c=self.puct_c)
+
+    def _node_is_visible(self, node: LibraryNode, *, visible_timestep_exclusive: int | None) -> bool:
+        if visible_timestep_exclusive is None:
+            return True
+        if node.parent_id is None:
+            return True
+        return node.timestep < int(visible_timestep_exclusive)
+
+    def _entry_is_visible(self, entry: LibraryEntry, *, visible_timestep_exclusive: int | None) -> bool:
+        if visible_timestep_exclusive is None:
+            return True
+        return entry.timestep < int(visible_timestep_exclusive)
+
+    def _visible_entry(
+        self,
+        entry_id: str | None,
+        *,
+        visible_timestep_exclusive: int | None,
+    ) -> LibraryEntry | None:
+        if entry_id is None:
+            return None
+        entry = self._entries.get(entry_id)
+        if entry is None or not self._entry_is_visible(entry, visible_timestep_exclusive=visible_timestep_exclusive):
+            return None
+        return entry
+
+    def _best_visible_node(self, *, visible_timestep_exclusive: int | None) -> LibraryNode | None:
+        visible_nodes = [
+            node
+            for node in self._nodes.values()
+            if self._node_is_visible(node, visible_timestep_exclusive=visible_timestep_exclusive)
+        ]
+        if not visible_nodes:
+            return None
+        return max(visible_nodes, key=lambda node: (node.value, node.id))
 
     def _refresh_best(self) -> None:
         if not self._nodes:
@@ -170,6 +232,10 @@ class GuidanceLibrary:
             "entries": {entry_id: entry.to_dict() for entry_id, entry in self._entries.items()},
             "groups": self._groups,
             "best_node_id": self._best_node_id,
+            "config": {
+                "rollout_n": self.rollout_n,
+                "puct_c": self.puct_c,
+            },
             "rollout_n": self.rollout_n,
             "puct_c": self.puct_c,
         }
@@ -190,5 +256,6 @@ class GuidanceLibrary:
         }
         self._groups = dict(data.get("groups", {}))
         self._best_node_id = data.get("best_node_id")
-        self.rollout_n = int(data.get("rollout_n", self.rollout_n))
-        self.puct_c = float(data.get("puct_c", self.puct_c))
+        config = data.get("config", {})
+        self.rollout_n = int(config.get("rollout_n", data.get("rollout_n", self.rollout_n)))
+        self.puct_c = float(config.get("puct_c", data.get("puct_c", self.puct_c)))

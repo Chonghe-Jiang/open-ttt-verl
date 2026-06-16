@@ -26,13 +26,15 @@ from packaging import version
 from ray.actor import ActorHandle
 from vllm import SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs
-from vllm.entrypoints.cli.serve import run_headless
 from vllm.entrypoints.openai.api_server import build_app, init_app_state
 from vllm.inputs import TokensPrompt
 from vllm.lora.request import LoRARequest
 from vllm.outputs import RequestOutput
 from vllm.usage.usage_lib import UsageContext
-from vllm.v1.engine.async_llm import AsyncLLM
+if version.parse(vllm.__version__) < version.parse("0.10.0"):
+    from vllm.engine.async_llm_engine import AsyncLLMEngine as AsyncLLM
+else:
+    from vllm.v1.engine.async_llm import AsyncLLM
 
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_resource_name, get_visible_devices_keyword
@@ -51,6 +53,13 @@ from verl.workers.rollout.vllm_rollout.utils import (
     build_cli_args_from_config,
     get_vllm_max_lora_rank,
 )
+
+try:
+    from vllm.entrypoints.cli.serve import run_headless
+except ImportError:
+
+    def run_headless(*args, **kwargs):
+        raise ImportError("This vLLM version does not expose vllm.entrypoints.cli.serve.run_headless")
 
 _VLLM_VERSION = version.parse(vllm.__version__)
 
@@ -74,6 +83,36 @@ else:
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
+
+
+def _get_model_executor_collective_rpc(engine: Any) -> Callable | None:
+    inner_engine = getattr(engine, "engine", None)
+    executor = getattr(inner_engine, "model_executor", None)
+    return getattr(executor, "collective_rpc", None)
+
+
+async def _vllm_collective_rpc(
+    engine: Any,
+    method: str | Callable,
+    timeout: float | None = None,
+    args: tuple = (),
+    kwargs: dict[str, Any] | None = None,
+) -> Any:
+    kwargs = kwargs or {}
+    try:
+        result = engine.collective_rpc(method=method, timeout=timeout, args=args, kwargs=kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    except NotImplementedError:
+        fallback = _get_model_executor_collective_rpc(engine)
+        if fallback is None:
+            raise
+        logger.warning("Falling back to vLLM model_executor.collective_rpc(%s)", method)
+        result = fallback(method=method, timeout=timeout, args=args, kwargs=kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 class vLLMHttpServer:
@@ -195,7 +234,8 @@ class vLLMHttpServer:
         args: tuple = (),
         kwargs: dict[str, Any] | None = None,
     ):
-        await self.engine.collective_rpc(
+        return await _vllm_collective_rpc(
+            self.engine,
             method=method,
             timeout=timeout,
             args=args,
@@ -325,6 +365,8 @@ class vLLMHttpServer:
             "compilation_config": compilation_config,
             **engine_kwargs,
         }
+        if _VLLM_VERSION < version.parse("0.10.0"):
+            args.pop("logprobs_mode", None)
 
         # update profiler args
         profiler_args = build_vllm_profiler_args(
@@ -453,15 +495,19 @@ class vLLMHttpServer:
 
         engine_client = AsyncLLM.from_vllm_config(vllm_config=vllm_config, usage_context=usage_context, **kwargs)
 
-        # Don't keep the dummy data in memory
-        await engine_client.reset_mm_cache()
-        await engine_client.collective_rpc(
-            method="monkey_patch_model", kwargs={"vocab_size": len(self.model_config.tokenizer)}
+        # Don't keep the dummy data in memory when the vLLM engine exposes the hook.
+        reset_mm_cache = getattr(engine_client, "reset_mm_cache", None)
+        if reset_mm_cache is not None:
+            await reset_mm_cache()
+        await _vllm_collective_rpc(
+            engine_client,
+            method="monkey_patch_model",
+            kwargs={"vocab_size": len(self.model_config.tokenizer)},
         )
 
         build_app_sig = inspect.signature(build_app)
         supported_tasks: tuple[Any, ...] = ()
-        if "supported_tasks" in build_app_sig.parameters:
+        if "supported_tasks" in build_app_sig.parameters and hasattr(engine_client, "get_supported_tasks"):
             supported_tasks = await engine_client.get_supported_tasks()
             app = build_app(args, supported_tasks)
         else:
@@ -554,13 +600,23 @@ class vLLMHttpServer:
         if video_data is not None:
             multi_modal_data["video"] = video_data
 
-        prompt = TokensPrompt(prompt_token_ids=prompt_ids, multi_modal_data=multi_modal_data)
+        prompt_kwargs = {"prompt_token_ids": prompt_ids}
+        if multi_modal_data:
+            prompt_kwargs["multi_modal_data"] = multi_modal_data
+        prompt = TokensPrompt(**prompt_kwargs)
 
         # Add lora request
         lora_request = None
         if self.lora_as_adapter:
             # Make sure we also check that the lora is already loaded in the engine
-            lora_loaded = VLLM_LORA_INT_ID in await self.engine.list_loras()
+            list_loras = getattr(self.engine, "list_loras", None)
+            if list_loras is not None:
+                lora_loaded = VLLM_LORA_INT_ID in await list_loras()
+            else:
+                # vLLM 0.8.x does not expose list_loras on AsyncLLMEngine.
+                # Avoid constructing an unverifiable LoRARequest that can stall old vLLM generation.
+                logger.warning("vLLM list_loras is unavailable; generating without an explicit LoRARequest")
+                lora_loaded = False
             if lora_loaded:
                 lora_request = LoRARequest(
                     lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH
@@ -622,7 +678,9 @@ class vLLMHttpServer:
         elif self.rollout_mode == RolloutMode.COLOCATED:
             # Directly call engine to wake up without sync weights.
             await self.engine.wake_up(tags=["kv_cache", "weights"])
-            await self.engine.reset_prefix_cache()
+            reset_prefix_cache = getattr(self.engine, "reset_prefix_cache", None)
+            if reset_prefix_cache is not None:
+                await reset_prefix_cache()
         elif self.rollout_mode == RolloutMode.STANDALONE:
             logger.info("skip wake_up in standalone mode")
 
@@ -637,7 +695,10 @@ class vLLMHttpServer:
                 sleep_level = 1
             else:
                 sleep_level = 2
-            await self.engine.collective_rpc("sleep", kwargs={"level": sleep_level})
+            try:
+                await self.engine.collective_rpc("sleep", kwargs={"level": sleep_level})
+            except NotImplementedError:
+                await self.engine.sleep(level=sleep_level)
 
             # clear encoder cache: https://github.com/vllm-project/vllm/pull/33452
             # await self.engine.reset_encoder_cache()
@@ -664,14 +725,18 @@ class vLLMHttpServer:
 
     async def clear_kv_cache(self):
         if self.node_rank == 0:
-            await self.engine.reset_prefix_cache()
+            reset_prefix_cache = getattr(self.engine, "reset_prefix_cache", None)
+            if reset_prefix_cache is not None:
+                await reset_prefix_cache()
 
     async def set_global_steps(self, global_steps: int):
         """Set the global steps of the model weights."""
         self.global_steps = global_steps
 
     async def wait_for_requests_to_drain(self):
-        await self.engine.wait_for_requests_to_drain()
+        wait_for_requests_to_drain = getattr(self.engine, "wait_for_requests_to_drain", None)
+        if wait_for_requests_to_drain is not None:
+            await wait_for_requests_to_drain()
 
     async def abort_all_requests(self, reset_prefix_cache: bool = True) -> dict[str, Any]:
         """Abort all ongoing generation requests.

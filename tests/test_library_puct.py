@@ -1,3 +1,5 @@
+import json
+
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.state import LibraryEntry, make_root_node
 
@@ -64,3 +66,37 @@ def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path)
 
     assert picked.id == fresh.id
 
+
+def test_library_restores_puct_config_from_archive_config(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=4, puct_c=2.5)
+    store = library.snapshot()
+    store.pop("rollout_n")
+    store.pop("puct_c")
+    path.write_text(json.dumps(store))
+
+    restored = GuidanceLibrary(path, rollout_n=1, puct_c=1.0)
+
+    assert restored.rollout_n == 4
+    assert restored.puct_c == 2.5
+    assert restored.snapshot()["config"] == {"rollout_n": 4, "puct_c": 2.5}
+
+
+def test_same_step_selection_does_not_see_child_created_in_same_step(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, puct_c=1.0)
+
+    selected = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+    child = library.submit_child("1:slot-a", _entry(selected.id, reward=10.0, suffix="same-step"))
+    same_step = library.acquire_group("1:slot-b", visible_timestep_exclusive=1)
+    same_step_context = library.context_for_node(root, visible_timestep_exclusive=1)
+    next_step = library.acquire_group("2:slot-a", visible_timestep_exclusive=2)
+    next_step_context = library.context_for_node(root, visible_timestep_exclusive=2)
+
+    assert selected.id == root.id
+    assert same_step.id == root.id
+    assert same_step_context["global_best_entries"] == []
+    assert next_step.id == child.id
+    assert next_step_context["global_best_entries"][0].id == "entry-same-step"

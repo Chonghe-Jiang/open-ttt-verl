@@ -1528,9 +1528,13 @@ class RayPPOTrainer:
                             with marked_timer("save_checkpoint", timing_raw, color="green"):
                                 self._save_checkpoint()
 
-                        # update weights from trainer to rollout
-                        with marked_timer("update_weights", timing_raw, color="red"):
-                            self.checkpoint_manager.update_weights(self.global_steps)
+                        # No next rollout consumes these weights on the last step.
+                        if is_last_step:
+                            print("Skipping final rollout weight update on last training step.")
+                        else:
+                            # update weights from trainer to rollout
+                            with marked_timer("update_weights", timing_raw, color="red"):
+                                self.checkpoint_manager.update_weights(self.global_steps)
 
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)

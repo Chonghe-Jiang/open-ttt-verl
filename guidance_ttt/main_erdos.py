@@ -65,7 +65,13 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         )
 
     slot_parquet = output_dir / "ttt_slots.parquet"
-    write_slot_parquet(slot_parquet, num_slots=int(ttt_cfg["groups_per_batch"]), library_path=str(library_path))
+    write_slot_parquet(
+        slot_parquet,
+        num_slots=int(ttt_cfg["groups_per_batch"]),
+        library_path=str(library_path),
+        rollout_n=int(ttt_cfg["group_size"]),
+        puct_c=float(ttt_cfg.get("puct_c", 1.0)),
+    )
 
     agent_loop_config = output_dir / "agent_loop.yaml"
     agent_loop_config.write_text(
@@ -96,7 +102,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     zmq_key = f"{prepared['output_dir']}:{os.getpid()}"
     zmq_suffix = f"guidance-ttt-{hashlib.sha1(zmq_key.encode()).hexdigest()[:12]}"
     overrides = [
-        "algorithm.adv_estimator=entropic_adaptive_beta",
+        "algorithm.adv_estimator=grpo",
         "algorithm.use_kl_in_reward=False",
         "algorithm.rollout_correction.rollout_is=token",
         "algorithm.rollout_correction.rollout_is_threshold=2.0",
@@ -107,7 +113,9 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         f"data.max_response_length={int(run_cfg.get('max_response_length', 2048))}",
         "data.filter_overlong_prompts=True",
         "data.truncation=error",
+        "+data.apply_chat_template_kwargs.enable_thinking=True",
         f"actor_rollout_ref.model.path={run_cfg['model_path']}",
+        "actor_rollout_ref.model.use_remove_padding=False",
         f"actor_rollout_ref.actor.optim.lr={float(run_cfg.get('learning_rate', 1e-5))}",
         f"actor_rollout_ref.actor.ppo_mini_batch_size={int(run_cfg.get('ppo_mini_batch_size', ttt_cfg['groups_per_batch']))}",
         f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={int(run_cfg.get('ppo_micro_batch_size_per_gpu', 1))}",

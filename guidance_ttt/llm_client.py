@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 from typing import Protocol
+import urllib.error
+import urllib.request
 
 from guidance_ttt.state import LLMRequest, LLMResponse
 
@@ -56,8 +61,56 @@ class UnconfiguredLLMClient:
         )
 
 
+class OpenAICompatibleLLMClient:
+    def __init__(self, config: dict):
+        self.endpoint = str(config.get("endpoint") or config.get("base_url") or os.environ.get("ENDPOINT", "")).rstrip("/")
+        self.api_key = str(config.get("api_key") or os.environ.get("API_KEY", ""))
+        if not self.endpoint or not self.api_key:
+            raise ValueError("OpenAI-compatible executor requires endpoint/base_url and api_key, or ENDPOINT/API_KEY env vars")
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        payload = {
+            "model": request.model,
+            "messages": [
+                {"role": "system", "content": request.system},
+                {"role": "user", "content": request.user},
+            ],
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+        }
+        data = await asyncio.to_thread(self._post_json, "/chat/completions", payload)
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message") or {}
+        text = message.get("content") or choice.get("text") or ""
+        return LLMResponse(
+            text=text,
+            model=data.get("model") or request.model,
+            finish_reason=choice.get("finish_reason", ""),
+            usage=data.get("usage", {}),
+            metadata={"provider": "openai_compatible", **request.metadata},
+        )
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        req = urllib.request.Request(
+            self.endpoint + path,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")[:1000]
+            raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+
+
 def make_llm_client(config: dict) -> BaseLLMClient:
     provider = (config or {}).get("provider", "mock")
     if provider == "mock":
         return MockLLMClient()
+    if provider in {"openai", "openai_compatible"}:
+        return OpenAICompatibleLLMClient(config)
     return UnconfiguredLLMClient()
