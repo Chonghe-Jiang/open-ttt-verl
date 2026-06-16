@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "erdos-openevolve-pipeline"
+version = "0.1.0"
+description = "Self-contained OpenEvolve pipeline for the Erdos minimum overlap problem"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["erdos_evolve*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+

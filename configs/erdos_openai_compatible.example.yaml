@@ -1,0 +1,58 @@
+max_iterations: 50
+checkpoint_interval: 10
+log_level: "INFO"
+random_seed: 42
+language: "python"
+file_suffix: ".py"
+
+llm:
+  primary_model: "gpt-5-mini"
+  primary_model_weight: 1.0
+  secondary_model: "gpt-5-nano"
+  secondary_model_weight: 0.0
+  api_base: "${OPENAI_API_BASE}"
+  api_key: "${OPENAI_API_KEY}"
+  temperature: 0.7
+  max_tokens: 12000
+  timeout: 120
+  retries: 3
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are an expert numerical search programmer working on the Erdos minimum overlap problem.
+
+    Improve only the evolved construction strategy while preserving the public
+    run(seed=42, budget_s=..., **kwargs) interface and verifier constraints.
+    Good candidates return a one-dimensional h array with values in [0, 1],
+    sum(h) = n_points / 2, and a correctly recomputed C5 bound.
+
+    Optimize for lower C5. Do not remove numpy imports, the run function, or the C5 recomputation.
+  include_artifacts: true
+  max_artifact_bytes: 12000
+
+database:
+  population_size: 50
+  archive_size: 20
+  num_islands: 3
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.7
+  feature_dimensions: ["complexity", "c5_quality", "runtime_s"]
+  feature_bins:
+    complexity: 10
+    c5_quality: 12
+    runtime_s: 6
+  similarity_threshold: 0.99
+
+evaluator:
+  timeout: 30
+  cascade_evaluation: true
+  cascade_thresholds: [1.0]
+  parallel_evaluations: 2
+  enable_artifacts: true
+  use_llm_feedback: false
+
+diff_based_evolution: true
+max_code_length: 20000
+

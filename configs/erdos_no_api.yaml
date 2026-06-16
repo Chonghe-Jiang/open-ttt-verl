@@ -1,0 +1,52 @@
+# Structure-only config for checking OpenEvolve settings without committing API details.
+# Real evolution still requires an OpenAI-compatible API or manual-mode workflow.
+max_iterations: 0
+checkpoint_interval: 5
+log_level: "INFO"
+random_seed: 42
+language: "python"
+file_suffix: ".py"
+
+llm:
+  primary_model: "manual-local"
+  primary_model_weight: 1.0
+  api_base: "http://localhost:8000/v1"
+  api_key: "not-used"
+  manual_mode: true
+  temperature: 0.7
+  max_tokens: 12000
+  timeout: 120
+
+prompt:
+  system_message: |
+    You are an expert numerical search programmer working on the Erdos minimum overlap problem.
+    Preserve run(seed=42, budget_s=..., **kwargs), return finite h_values in [0, 1],
+    keep sum(h)=n_points/2, and recompute c5_bound exactly. Optimize for lower C5.
+  include_artifacts: true
+  max_artifact_bytes: 12000
+
+database:
+  population_size: 20
+  archive_size: 10
+  num_islands: 2
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.7
+  feature_dimensions: ["complexity", "c5_quality", "runtime_s"]
+  feature_bins:
+    complexity: 10
+    c5_quality: 10
+    runtime_s: 5
+  similarity_threshold: 0.99
+
+evaluator:
+  timeout: 30
+  cascade_evaluation: true
+  cascade_thresholds: [1.0]
+  parallel_evaluations: 1
+  enable_artifacts: true
+  use_llm_feedback: false
+
+diff_based_evolution: true
+max_code_length: 20000
+
