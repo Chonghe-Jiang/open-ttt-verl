@@ -6,5 +6,4 @@ cd "$ROOT"
 
 python scripts/evaluate_initial.py
 pytest -q tests
-python -m compileall -q erdos_evolve evaluator.py initial_program.py scripts/evaluate_initial.py
-
+python -m compileall -q erdos_evolve evaluator.py initial_program.py scripts/evaluate_initial.py scripts/check_vllm_server.py

@@ -126,6 +126,45 @@ python openevolve/openevolve-run.py initial_program.py evaluator.py \
   --config configs/erdos_openai_compatible.example.yaml
 ```
 
+## Local Qwen3-8B via vLLM
+
+To run OpenEvolve with local Qwen3-8B inference instead of an external API,
+start a vLLM OpenAI-compatible server in one terminal:
+
+```bash
+bash scripts/start_vllm_qwen3_8b.sh
+```
+
+By default this runs:
+
+```text
+vllm serve Qwen/Qwen3-8B --host 127.0.0.1 --port 8000 --served-model-name Qwen/Qwen3-8B
+```
+
+Then run OpenEvolve in another terminal:
+
+```bash
+bash scripts/run_openevolve.sh --local-qwen-vllm --iterations 20
+```
+
+The local mode uses `configs/erdos_qwen3_8b_vllm.yaml`, checks
+`http://127.0.0.1:8000/v1/models` before starting evolution, and sends requests
+only to the localhost vLLM server. If `VLLM_BASE_URL` or `VLLM_MODEL` is set,
+the run script passes those values through to OpenEvolve with `--api-base` and
+`--primary-model`.
+
+Useful overrides:
+
+```bash
+VLLM_MODEL=Qwen/Qwen3-8B \
+VLLM_PORT=8000 \
+VLLM_BASE_URL=http://127.0.0.1:8000/v1 \
+VLLM_MAX_MODEL_LEN=8192 \
+VLLM_GPU_MEMORY_UTILIZATION=0.90 \
+VLLM_TENSOR_PARALLEL_SIZE=1 \
+bash scripts/start_vllm_qwen3_8b.sh
+```
+
 ## Relationship To Guidance-TTT
 
 The `guidance` project uses a guidance model, an execution model, and a verifier
