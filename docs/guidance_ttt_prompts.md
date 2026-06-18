@@ -7,7 +7,7 @@ Source files:
 
 - `guidance_ttt/tasks/erdos.py`: problem prompt.
 - `guidance_ttt/prompts.py`: guidance prompt, execution prompt, minimax template.
-- `guidance_ttt/agent_loop.py`: runtime construction, model calls, fallback, metadata.
+- `guidance_ttt/agent_loop.py`: runtime construction, model calls, verification, metadata.
 
 ## Runtime Construction Flow
 
@@ -67,7 +67,7 @@ run(...)
 
   verify_erdos_solution_text(execution_text)
     if valid: store execution_text
-    else: replace with minimax fallback execution text and verify again
+    else: store the invalid execution status directly; no automatic solution fallback is used
 ```
 
 Each library entry stores the exact prompts and outputs in metadata:
@@ -81,17 +81,12 @@ Each library entry stores the exact prompts and outputs in metadata:
   "execution_prompt": {"system": "...", "user": "..."},
   "execution_text": "...",
   "original_execution_text": "...",
-  "execution_fallback_used": true,
-  "execution_fallback_reason": "parse_error | execution_error | invalid | ..."
+  "execution_fallback_used": false,
+  "execution_fallback_reason": null
 }
 ```
 
-The best run exported these fields to:
-
-```text
-outputs/guidance_ttt/erdos_gpt_oss_20b_2gpu_cpu_exec_4step_minimax_fallback_run23/best_rollout_outputs.md
-outputs/guidance_ttt/erdos_gpt_oss_20b_2gpu_cpu_exec_4step_minimax_fallback_run23/best_rollout_outputs.json
-```
+Run summaries and best-rollout exports copy these exact fields from `library.json`.
 
 ## Shared Entry Summary Construction
 
@@ -323,8 +318,8 @@ brief reasoning
 
 ## Known-Good Minimax Execution Template
 
-This template is embedded inside the execution prompt and is also used by the
-fallback path.
+This template is embedded inside the execution prompt as a reference skeleton.
+It is not automatically substituted after a failed execution.
 
 ```python
 import numpy as np
@@ -388,38 +383,22 @@ def run(seed=42, budget_s=1, **kwargs):
     return [float(x) for x in best_h], float(c5_bound), int(n_points)
 ```
 
-## Execution Fallback Text
+## No Automatic Execution Fallback
 
 If the execution model call fails, returns empty text, returns unparseable code,
-or produces a verifier-invalid result, the agent loop verifies the fallback text
-below instead.
+or produces a verifier-invalid result, that failure is stored directly in the
+library entry. The agent loop no longer replaces failed output with the minimax
+template.
 
-````text
-```python
-{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
-```
-
-<summary>
-Outcome hypothesis: minimax fallback supplies a verifier-valid small-n construction after execution failure.
-Reusable idea: Copy the deterministic n=19 minimax fallback, then improve it with tighter SLSQP search.
-Risk / possible failure mode: fallback_reason={fallback_reason}
-What future guidance should preserve: {guidance[:240]}
-What future guidance should change: make the execution model return parseable projected minimax code directly.
-</summary>
-
-<execution_thinking>
-Used minimax fallback because the original execution output was not verifier-valid: {fallback_reason}.
-</execution_thinking>
-````
-
-Fallback metadata:
+Failure metadata:
 
 ```json
 {
-  "execution_fallback_used": true,
-  "execution_fallback_reason": "{original verifier status or execution exception}",
-  "original_execution_text": "{execution model raw output before fallback}",
-  "execution_text": "{fallback text if fallback verification succeeds}"
+  "execution_fallback_used": false,
+  "execution_fallback_reason": null,
+  "original_execution_text": "{execution model raw output}",
+  "execution_text": "{same execution model raw output}",
+  "verifier_status": "parse_error | execution_error | invalid | valid"
 }
 ```
 
@@ -432,8 +411,5 @@ Compared with the earlier version, the prompts now push the model toward:
 - Direct minimax optimization of `max(np.correlate(h, 1-h, mode="full") * (2/n))`.
 - Strict `sum(h) == n_points / 2` repair with `project_to_box_sum`.
 - Avoiding constant 0.5, alternating 0/1, vague RL-reward advice, and unverified claims.
-- A known-good fallback path that keeps every rollout verifier-valid when the execution
-  model output is empty, malformed, or invalid.
-
-The run `erdos_gpt_oss_20b_2gpu_cpu_exec_4step_minimax_fallback_run23` produced
-16 valid entries over 4 steps, with min C5 `0.3811409354878563` at every step.
+- A no-fallback verifier path, so invalid execution outputs become real training
+  signals instead of being replaced by a fixed candidate.

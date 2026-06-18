@@ -114,7 +114,15 @@ _LOCAL_PIPELINE_CACHE_LOCK = threading.Lock()
 
 
 def _local_pipeline_cache_key(config: dict) -> str:
-    return json.dumps(config, sort_keys=True, default=str)
+    return json.dumps(_stringify_mapping_keys(config), sort_keys=True, default=str)
+
+
+def _stringify_mapping_keys(value):
+    if isinstance(value, dict):
+        return {str(key): _stringify_mapping_keys(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_stringify_mapping_keys(item) for item in value]
+    return value
 
 
 def _call_transformers_pipeline(**kwargs):

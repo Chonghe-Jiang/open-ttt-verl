@@ -8,7 +8,6 @@ from uuid import uuid4
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
-    ERDOS_MINIMAX_EXECUTION_TEMPLATE,
     build_execution_prompt,
     build_guidance_prompt,
     extract_guidance_or_format_error,
@@ -215,7 +214,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             execution_response_metadata = {}
             execution_response_usage = {}
             execution_error = str(exc)
-        execution_result = _verify_execution_with_minimax_fallback(
+        execution_result = _verify_execution_without_fallback(
             execution_text=execution_text,
             guidance=guidance,
             timeout_s=self.verifier_timeout_s,
@@ -353,7 +352,7 @@ def _config_get(config: Any, key: str, default: Any = None) -> Any:
     return getattr(config, key, default)
 
 
-def _verify_execution_with_minimax_fallback(
+def _verify_execution_without_fallback(
     *,
     execution_text: str,
     guidance: str,
@@ -365,65 +364,19 @@ def _verify_execution_with_minimax_fallback(
         verification = verify_erdos_solution_text(execution_text, timeout_s=timeout_s)
     else:
         verification = VerificationResult.execution_error(initial_error)
-    if verification.valid:
-        return ExecutionVerification(
-            execution_text=execution_text,
-            execution_thinking=extract_tag(execution_text, "execution_thinking"),
-            solution=extract_python_code(execution_text) or "",
-            summary=_execution_summary_or_fallback(execution_text=execution_text, guidance=guidance),
-            verification=verification,
-            fallback_used=False,
-            fallback_reason=None,
-            original_execution_text=original_execution_text,
-        )
-
-    fallback_reason = verification.status
-    fallback_text = _minimax_fallback_execution_text(fallback_reason=fallback_reason, guidance=guidance)
-    fallback_verification = verify_erdos_solution_text(fallback_text, timeout_s=timeout_s)
-    if fallback_verification.valid:
-        return ExecutionVerification(
-            execution_text=fallback_text,
-            execution_thinking=extract_tag(fallback_text, "execution_thinking"),
-            solution=extract_python_code(fallback_text) or "",
-            summary=_execution_summary_or_fallback(execution_text=fallback_text, guidance=guidance),
-            verification=fallback_verification,
-            fallback_used=True,
-            fallback_reason=fallback_reason,
-            original_execution_text=original_execution_text,
-        )
-
     return ExecutionVerification(
         execution_text=execution_text,
         execution_thinking=extract_tag(execution_text, "execution_thinking"),
         solution=extract_python_code(execution_text) or "",
-        summary=_execution_summary_or_fallback(execution_text=execution_text, guidance=guidance),
+        summary=_execution_summary_or_default(execution_text=execution_text, guidance=guidance),
         verification=verification,
         fallback_used=False,
-        fallback_reason=f"fallback_failed:{fallback_verification.status}",
+        fallback_reason=None,
         original_execution_text=original_execution_text,
     )
 
 
-def _minimax_fallback_execution_text(*, fallback_reason: str, guidance: str) -> str:
-    return f"""```python
-{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
-```
-
-<summary>
-Outcome hypothesis: minimax fallback supplies a verifier-valid small-n construction after execution failure.
-Reusable idea: Copy the deterministic n=19 minimax fallback, then improve it with tighter SLSQP search.
-Risk / possible failure mode: fallback_reason={fallback_reason}
-What future guidance should preserve: {guidance[:240]}
-What future guidance should change: make the execution model return parseable projected minimax code directly.
-</summary>
-
-<execution_thinking>
-Used minimax fallback because the original execution output was not verifier-valid: {fallback_reason}.
-</execution_thinking>
-"""
-
-
-def _execution_summary_or_fallback(*, execution_text: str, guidance: str) -> str:
+def _execution_summary_or_default(*, execution_text: str, guidance: str) -> str:
     summary = extract_tag(execution_text, "summary")
     if summary != execution_text.strip():
         return summary

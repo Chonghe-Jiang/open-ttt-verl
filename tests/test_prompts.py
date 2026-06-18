@@ -76,6 +76,39 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "Avoid vague RL-reward advice" in prompt.user
 
 
+def test_guidance_prompt_attaches_global_best_and_local_failure_history():
+    global_best = _entry()
+    global_best.id = "best-entry"
+    global_best.summary = "best history used mirror minimax"
+    global_best.guidance = "preserve best mirror profile"
+    global_best.reusable_idea = "reuse best projection repair"
+    local_failure = _entry()
+    local_failure.id = "failure-entry"
+    local_failure.summary = "failed because sum drifted"
+    local_failure.guidance = "bad alternating pattern"
+    local_failure.verifier_status = "invalid"
+    local_failure.failure_mode = "invalid"
+    local_failure.verifier_message = "sum(h) must equal n_points / 2"
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        global_best_entries=[global_best],
+        local_failure_entries=[local_failure],
+    )
+
+    assert "<global_best>" in prompt.user
+    assert "best-entry" in prompt.user
+    assert "best history used mirror minimax" in prompt.user
+    assert "reuse best projection repair" in prompt.user
+    assert "<local_failures>" in prompt.user
+    assert "failure-entry" in prompt.user
+    assert "failed because sum drifted" in prompt.user
+    assert "sum(h) must equal n_points / 2" in prompt.user
+    assert "Failure mode: invalid" in prompt.user
+
+
 def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidance():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",

@@ -3,7 +3,7 @@ from omegaconf import OmegaConf
 
 from guidance_ttt.agent_loop import (
     GuidanceExecutionAgentLoop,
-    _verify_execution_with_minimax_fallback,
+    _verify_execution_without_fallback,
     build_agent_loop_output,
 )
 from guidance_ttt.state import VerificationResult
@@ -34,22 +34,23 @@ def test_verification_result_for_execution_error_has_zero_reward():
     assert result.message == "api failed"
 
 
-def test_execution_fallback_supplies_valid_minimax_candidate_for_empty_output():
-    result = _verify_execution_with_minimax_fallback(
+def test_invalid_execution_is_not_replaced_by_minimax_fallback():
+    result = _verify_execution_without_fallback(
         execution_text="",
         guidance="Use deterministic minimax search.",
         timeout_s=20,
     )
 
-    assert result.fallback_used is True
+    assert result.fallback_used is False
     assert result.original_execution_text == ""
-    assert result.verification.valid is True
-    assert result.verification.raw_score < 0.382
-    assert "project_to_box_sum" in result.solution
-    assert "minimax fallback" in result.summary
+    assert result.verification.valid is False
+    assert result.verification.status in {"parse_error", "execution_error"}
+    assert result.verification.raw_score is None
+    assert result.solution == ""
+    assert "project_to_box_sum" not in result.solution
 
 
-def test_execution_fallback_does_not_replace_valid_execution():
+def test_valid_execution_is_kept_without_fallback():
     valid_text = """```python
 def run(seed=42, budget_s=1, **kwargs):
     return ([0.5, 0.5], 0.5, 2)
@@ -62,7 +63,7 @@ What future guidance should preserve: validity
 What future guidance should change: improve score
 </summary>"""
 
-    result = _verify_execution_with_minimax_fallback(
+    result = _verify_execution_without_fallback(
         execution_text=valid_text,
         guidance="Keep valid code.",
         timeout_s=20,
