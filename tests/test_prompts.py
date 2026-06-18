@@ -69,10 +69,11 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "target to beat" in prompt.user
     assert "constant h[i] = 0.5 baseline" in prompt.user
     assert "What to change to beat raw score 0.4" in prompt.user
-    assert "small-n minimax" in prompt.user
-    assert "n_points in the 9..25 range" in prompt.user
-    assert "mirror-symmetric" in prompt.user
-    assert "active correlation constraints" in prompt.user
+    assert "controlled improvement" in prompt.user
+    assert "Use the best valid h profile as the initialization" in prompt.user
+    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "mirror/complement symmetry" in prompt.user
+    assert "same verifier normalization" in prompt.user
     assert "Avoid vague RL-reward advice" in prompt.user
 
 
@@ -109,6 +110,35 @@ def test_guidance_prompt_attaches_global_best_and_local_failure_history():
     assert "Failure mode: invalid" in prompt.user
 
 
+def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
+    global_best = _entry()
+    global_best.id = "best-entry"
+    global_best.verifier_raw_score = 0.3821438682282878
+    global_best.verifier_status = "valid"
+    global_best.summary = "best valid mirror profile"
+    global_best.guidance = "preserve current best"
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        global_best_entries=[global_best],
+        local_failure_entries=[],
+    )
+
+    assert "Preserve the current best valid construction with raw_score = 0.3821438682282878" in prompt.user
+    assert "Do not restart from the constant baseline" in prompt.user
+    assert "Use the best valid h profile as the initialization" in prompt.user
+    assert "Search only small deterministic" in prompt.user
+    assert "Optimize only the independent half of the variables" in prompt.user
+    assert "Include known information directly in the guidance" in prompt.user
+    assert "best valid solution excerpt" in prompt.user
+    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "Target: strictly improve over 0.3821438682282878, not merely beat 0.5" in prompt.user
+    assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
+    assert "Do not ask the execution model to reinvent minimax from scratch" not in prompt.user
+
+
 def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidance():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
@@ -127,20 +157,41 @@ def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidan
     assert "Do not claim verifier" in prompt.user
     assert "success because the verifier has not run yet" in prompt.user
     assert "Target: produce a valid candidate with raw C5 lower than 0.4" in prompt.user
-    assert "should not be returned" in prompt.user
     assert "permits fractional, non-binary h values" in prompt.user
     assert "compute the actual c5_bound" in prompt.user
-    assert "scipy.optimize.minimize" in prompt.user
     assert "SLSQP" in prompt.user
     assert "deterministic projected local search" in prompt.user
     assert "project or adjust h" in prompt.user
-    assert "Do not return an alternating 0/1 construction" in prompt.user
-    assert "scan n_points from 9 to 25" in prompt.user
-    assert "target C5 below 0.382" in prompt.user
+    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "strict improvement over the current best raw C5" in prompt.user
     assert "box-constrained projection" in prompt.user
     assert "sum(h) == n_points / 2 to verifier tolerance" in prompt.user
     assert "project_to_box_sum" in prompt.user
     assert "return [float(x) for x in h], float(c5_bound), int(n_points)" in prompt.user
+    assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
+    assert "invent a fresh minimax construction" not in prompt.user
+
+
+def test_execution_prompt_attaches_global_best_valid_solution_excerpt():
+    global_best = _entry()
+    global_best.id = "best-entry"
+    global_best.verifier_raw_score = 0.3821438682282878
+    global_best.solution = "def run(seed=42, budget_s=1, **kwargs):\n    return ([0.4, 0.6], 0.3821438682282878, 2)"
+
+    prompt = build_execution_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=None,
+        global_best_entries=[global_best],
+        guidance="Preserve current best and perturb locally.",
+    )
+
+    assert "<global_best_valid_solution>" in prompt.user
+    assert "Entry id: best-entry" in prompt.user
+    assert "Raw score: 0.3821438682282878" in prompt.user
+    assert "def run(seed=42" in prompt.user
+    assert "return ([0.4, 0.6], 0.3821438682282878, 2)" in prompt.user
+    assert "Initialize from this global best valid solution when available" in prompt.user
 
 
 def test_execution_prompt_known_good_minimax_template_is_verifier_valid():

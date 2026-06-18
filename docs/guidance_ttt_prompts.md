@@ -54,6 +54,7 @@ run(...)
     problem_prompt=ERDOS_PROBLEM_PROMPT,
     selected_node=selected_node,
     selected_entry=selected_entry,
+    global_best_entries=global_best_entries,
     guidance=parsed_guidance,
   )
 
@@ -180,17 +181,36 @@ Visits: {selected_node.visits}
 {local failure entry summaries, or "No local failure entries yet."}
 </local_failures>
 
-The selected node's raw score is the target to beat. Lower raw C5 is better.
+The selected node's raw score is a local reference. The target to beat is the
+current best valid raw score when one is visible. Lower raw C5 is better.
 Do not recommend the constant h[i] = 0.5 baseline unless the selected node is invalid;
 it is verifier-valid but gives no training signal when copied.
 Non-binary asymmetric h values and deterministic local/numerical search are allowed.
-Prefer small-n minimax constructions over large random perturbation code. Evidence from
-local numerical checks suggests n_points in the 9..25 range with a mirror-symmetric
-profile and active correlation constraints can reach C5 near 0.381. Ask the execution
-model to minimize the maximum value of np.correlate(h, 1-h, mode="full") * (2/n)
-under 0 <= h <= 1 and sum(h) == n/2. Avoid vague RL-reward advice; request concrete
-deterministic minimax optimization steps that can be implemented inside run().
-Do not propose alternating 0/1 patterns; the verifier scores them poorly.
+Avoid vague RL-reward advice; request concrete deterministic improvement steps that
+can be implemented inside run(). Do not propose alternating 0/1 patterns; the verifier
+scores them poorly.
+
+The guidance should make the execution model do controlled improvement, not restart
+from scratch:
+- Preserve the current best valid construction with raw_score = {best_valid_target}.
+- Do not restart from the constant baseline.
+- Use the best valid h profile as the initialization.
+- Include known information directly in the guidance when useful: current best raw
+  score, best valid solution excerpt/profile, verifier constraints, verifier
+  normalization, and the strict improvement target.
+- Search only small deterministic perturbations around it while preserving:
+  1. 0 <= h[i] <= 1
+  2. sum(h) = n_points / 2
+  3. the same verifier normalization
+  4. mirror/complement symmetry if present in the current best profile
+- Optimize only the independent half of the variables.
+- Use a small local search such as coordinate perturbation, projected line search,
+  or SLSQP if available.
+- For each candidate, immediately evaluate using the official verifier and keep the
+  lowest raw C5.
+- Use n_points in {9, 11, 13, 15, 17, 21, 25}; stop if no improvement after a small
+  fixed number of trials.
+- Target: strictly improve over {best_valid_target}, not merely beat 0.5.
 
 The preferred submitted guidance is the text inside the XML block below. Thinking is allowed,
 but if the XML block is missing, only text outside any <think>...</think> block will be used
@@ -198,13 +218,20 @@ as the submitted guidance.
 
 Return exactly one block and nothing else:
 <guidance>
-Hypothesis: ...
+Preserve the current best valid construction with raw_score = {best_valid_target}.
+Do not restart from the constant baseline.
+Include known information directly in the guidance: current best raw score, best valid
+solution/profile, verifier constraints, verifier normalization, and the strict target.
+
+Hypothesis: controlled local perturbations around the current best valid h can strictly
+improve raw C5 without losing verifier validity.
 Plan:
-1. ...
-2. ...
-What to preserve: useful low-C5 nonconstant/mirror-symmetric structure from the selected entry
-What to change to beat raw score {selected_node.raw_score}: scan small n, solve a minimax correlation problem, and return the best verifier-computed candidate
-Expected verifier signal: lower raw C5 than {selected_node.raw_score}, ideally below 0.382
+1. Use the best valid h profile as initialization, not the 0.5 baseline.
+2. Search only small deterministic perturbations that preserve box, sum, verifier normalization, and symmetry constraints.
+3. Optimize only the independent half variables and immediately score each candidate with the official verifier.
+What to preserve: current best valid low-C5 structure and any mirror/complement symmetry
+What to change to beat raw score {best_valid_target}: make controlled local repairs/perturbations around the best valid profile
+Expected verifier signal: strictly lower raw C5 than {best_valid_target}
 </guidance>
 ```
 
@@ -257,17 +284,21 @@ Raw score: {selected_node.raw_score}
 {_entry_summary(selected_entry, include_solution=True)}
 </selected_library_node>
 
+<global_best_valid_solution>
+{_entry_summary(best_valid_entry, include_solution=True), or "No global best valid entry yet."}
+</global_best_valid_solution>
+
 <guidance>
 {guidance}
 </guidance>
 
-Target: produce a valid candidate with raw C5 lower than {selected_node.raw_score}.
+Target: produce a valid candidate with raw C5 lower than {target_raw_score}.
 The constant h[i] = 0.5 construction is only a baseline and should not be returned
 unchanged. If previous solution code is shown, treat it as a reference point to beat,
 not as code to copy. The verifier permits fractional, non-binary h values.
 Your code must compute the actual c5_bound for the returned h. If the computed
-c5_bound is not lower than the target, run a deterministic minimax search and return
-the best candidate found. Do not use assert as the only way to satisfy constraints;
+c5_bound is not lower than the target, run a deterministic local search around the
+best previous valid profile and return the best candidate found. Do not use assert as the only way to satisfy constraints;
 explicitly project or adjust h so sum(h) == n_points / 2 before returning. Use a
 box-constrained projection or deterministic repair step after every perturbation so
 the final returned h satisfies sum(h) == n_points / 2 to verifier tolerance.
@@ -275,19 +306,26 @@ Immediately before return, recompute h.sum() and c5_bound from the final h; do n
 return candidates with residual sum error.
 
 Implementation direction:
-- First try scipy.optimize.minimize with method="SLSQP" on variables h and t.
-- For each n, constrain sum(h) == n/2, 0 <= h <= 1, and every correlation value <= t.
-- scan n_points from 9 to 25, with several deterministic mirror-symmetric initializations.
+- Initialize from this global best valid solution when available; otherwise use the
+  selected previous solution code when it is valid and available.
+- Use previous solution code as the initialization when it is valid and available.
+- Search only small deterministic perturbations around the current best profile.
+- Use n_points in {9, 11, 13, 15, 17, 21, 25} and preserve n_points when reusing
+  a previous valid profile.
 - Define a helper named project_to_box_sum(h, target) for final box-constrained projection.
-- If scipy is unavailable or SLSQP fails, use deterministic projected local search with
-  symmetric coordinate perturbations and the same c5_bound objective.
+- Use deterministic projected local search with symmetric coordinate perturbations and
+  the same c5_bound objective; SLSQP is acceptable only as a bounded local refinement.
+- Optimize only the independent half of variables when mirror/complement symmetry is
+  present in the current best profile.
 - Prefer mirror-symmetric fractional profiles over binary patterns.
 - Do not return an alternating 0/1 construction; it looks attractive but has scored badly.
-- The desired target C5 below 0.382 is realistic for this verifier.
+- The desired target is a strict improvement over the current best raw C5, not merely
+  beating 0.5.
 - Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
   never return string-valued n_points, numpy scalar objects, or unprojected arrays.
 
-Known-good implementation skeleton. You may copy and adapt this exact structure:
+Known-good implementation skeleton for verifier-compatible scoring and projection.
+Use it as a scoring/repair reference:
 <known_good_minimax_template>
 ```python
 {ERDOS_MINIMAX_EXECUTION_TEMPLATE}
@@ -319,7 +357,8 @@ brief reasoning
 ## Known-Good Minimax Execution Template
 
 This template is embedded inside the execution prompt as a reference skeleton.
-It is not automatically substituted after a failed execution.
+It is not automatically substituted after a failed execution, and the execution
+prompt now frames it as a scoring/projection reference.
 
 ```python
 import numpy as np
@@ -406,10 +445,18 @@ Failure metadata:
 
 Compared with the earlier version, the prompts now push the model toward:
 
-- Small `n_points` in the 9..25 range instead of broad random search.
-- Fractional, non-binary, mirror-symmetric profiles.
-- Direct minimax optimization of `max(np.correlate(h, 1-h, mode="full") * (2/n))`.
-- Strict `sum(h) == n_points / 2` repair with `project_to_box_sum`.
-- Avoiding constant 0.5, alternating 0/1, vague RL-reward advice, and unverified claims.
+- Controlled local improvement around the current best valid solution instead of
+  restarting from the constant baseline.
+- Strictly improving the current best raw C5, not merely beating the root score 0.5.
+- Asking the guidance model to include known information directly in guidance:
+  current best raw score, best valid solution/profile, constraints, normalization,
+  and strict target.
+- Passing the global best valid solution excerpt into the execution prompt so the
+  executor can initialize from the actual best profile.
+- Small deterministic perturbation/search with `n_points` in
+  `{9, 11, 13, 15, 17, 21, 25}`.
+- Preserving box constraints, `sum(h) == n_points / 2`, verifier normalization, and
+  mirror/complement symmetry when present.
+- Avoiding alternating 0/1, vague RL-reward advice, and unverified claims.
 - A no-fallback verifier path, so invalid execution outputs become real training
   signals instead of being replaced by a fixed candidate.

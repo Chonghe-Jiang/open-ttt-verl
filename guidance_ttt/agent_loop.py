@@ -191,6 +191,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             problem_prompt=self.problem_prompt,
             selected_node=selected_node,
             selected_entry=selected_entry,
+            global_best_entries=context["global_best_entries"],
             guidance=guidance,
         )
         verification: VerificationResult
