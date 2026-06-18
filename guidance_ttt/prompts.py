@@ -11,6 +11,68 @@ class Prompt:
     user: str
 
 
+ERDOS_MINIMAX_EXECUTION_TEMPLATE = '''import numpy as np
+
+def project_to_box_sum(h, target):
+    h = np.clip(np.asarray(h, dtype=float), 0.0, 1.0)
+    for _ in range(100):
+        diff = float(target - h.sum())
+        if abs(diff) < 1e-12:
+            break
+        free = (h > 1e-12) & (h < 1.0 - 1e-12)
+        if not np.any(free):
+            free = np.ones_like(h, dtype=bool)
+        h[free] += diff / float(np.count_nonzero(free))
+        h = np.clip(h, 0.0, 1.0)
+    return h
+
+def c5_score(h):
+    n = int(len(h))
+    return float(np.max(np.correlate(h, 1.0 - h, mode="full") * (2.0 / n)))
+
+def run(seed=42, budget_s=1, **kwargs):
+    n_points = 19
+    target = n_points / 2.0
+    h = np.array([
+        0.9999877603639307, 0.9871689928539907, 0.6538052901835218,
+        0.26496040864134757, 0.7921008518715473, 0.22244708724960485,
+        0.43594987520258144, 0.31249596343709657, 0.013288180619505931,
+        0.10447938652930353, 0.04501365418702798, 0.3119089519044072,
+        0.4358802114412871, 0.22261948541845558, 0.7918283420600218,
+        0.268186249932381, 0.6427085234261372, 0.9952347090654273,
+        0.9999360756124249,
+    ], dtype=float)
+    h = project_to_box_sum(h, target)
+    best_h = h.copy()
+    best_c5 = c5_score(best_h)
+
+    try:
+        from scipy.optimize import minimize
+
+        constraints = ({"type": "eq", "fun": lambda x: float(np.sum(x) - target)},)
+        result = minimize(
+            c5_score,
+            best_h,
+            method="SLSQP",
+            bounds=[(0.0, 1.0)] * n_points,
+            constraints=constraints,
+            options={"maxiter": 300, "ftol": 1e-13, "disp": False},
+        )
+        if result.success:
+            candidate = project_to_box_sum(result.x, target)
+            candidate_c5 = c5_score(candidate)
+            if candidate_c5 <= best_c5:
+                best_h = candidate
+                best_c5 = candidate_c5
+    except Exception:
+        pass
+
+    best_h = project_to_box_sum(best_h, target)
+    c5_bound = c5_score(best_h)
+    return [float(x) for x in best_h], float(c5_bound), int(n_points)
+'''
+
+
 def _clip(text: str | None, max_chars: int) -> str:
     text = (text or "").strip()
     if len(text) <= max_chars:
@@ -157,6 +219,13 @@ Implementation direction:
 - The desired target C5 below 0.382 is realistic for this verifier.
 - Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
   never return string-valued n_points, numpy scalar objects, or unprojected arrays.
+
+Known-good implementation skeleton. You may copy and adapt this exact structure:
+<known_good_minimax_template>
+```python
+{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
+```
+</known_good_minimax_template>
 
 Return runnable Python first. Keep reasoning and summary short. Do not claim verifier
 success because the verifier has not run yet.

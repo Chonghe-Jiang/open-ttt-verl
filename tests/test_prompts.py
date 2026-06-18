@@ -1,3 +1,5 @@
+import re
+
 from guidance_ttt.prompts import (
     build_execution_prompt,
     build_guidance_prompt,
@@ -7,6 +9,7 @@ from guidance_ttt.prompts import (
     extract_text_outside_tag,
 )
 from guidance_ttt.state import LibraryEntry, LibraryNode
+from guidance_ttt.verifier.erdos import verify_erdos_solution_text
 
 
 def _node() -> LibraryNode:
@@ -105,6 +108,22 @@ def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidan
     assert "sum(h) == n_points / 2 to verifier tolerance" in prompt.user
     assert "project_to_box_sum" in prompt.user
     assert "return [float(x) for x in h], float(c5_bound), int(n_points)" in prompt.user
+
+
+def test_execution_prompt_known_good_minimax_template_is_verifier_valid():
+    prompt = build_execution_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        guidance="Use the minimax template.",
+    )
+    match = re.search(r"<known_good_minimax_template>\s*```python\n([\s\S]*?)\n```\s*</known_good_minimax_template>", prompt.user)
+
+    assert match is not None
+    verification = verify_erdos_solution_text(f"```python\n{match.group(1)}\n```", timeout_s=20)
+
+    assert verification.valid is True
+    assert verification.raw_score < 0.382
 
 
 def test_execution_text_contains_parseable_summary_tag():
