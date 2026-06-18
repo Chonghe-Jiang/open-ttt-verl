@@ -30,6 +30,8 @@ def _result_to_evaluation(result, runtime_s: float) -> EvaluationResult:
     metrics = {
         "combined_score": reward,
         "c5_reward": reward,
+        "c5_score": raw_score,
+        "raw_c5": raw_score,
         "c5_quality": 1.0 / (1.0 + raw_score) if result.valid else 0.0,
         "valid": 1.0 if result.valid else 0.0,
         "runtime_s": float(runtime_s),
@@ -56,6 +58,8 @@ def evaluate(program_path) -> EvaluationResult:
             metrics={
                 "combined_score": 0.0,
                 "c5_reward": 0.0,
+                "c5_score": 0.0,
+                "raw_c5": 0.0,
                 "c5_quality": 0.0,
                 "valid": 0.0,
                 "runtime_s": 0.0,
@@ -81,6 +85,8 @@ def evaluate_stage1(program_path) -> EvaluationResult:
             metrics={
                 "combined_score": 0.0,
                 "c5_reward": 0.0,
+                "c5_score": 0.0,
+                "raw_c5": 0.0,
                 "c5_quality": 0.0,
                 "valid": 0.0,
                 "runtime_s": 0.0,
@@ -94,4 +100,3 @@ def evaluate_stage1(program_path) -> EvaluationResult:
 
 def evaluate_stage2(program_path) -> EvaluationResult:
     return evaluate(program_path)
-

@@ -7,6 +7,8 @@ def test_evaluator_scores_initial_program_positive():
     result = evaluator.evaluate(Path("initial_program.py"))
 
     assert result.metrics["combined_score"] > 0
+    assert result.metrics["c5_score"] > 0
+    assert result.metrics["raw_c5"] == result.metrics["c5_score"]
     assert result.metrics["valid"] == 1.0
     assert result.artifacts["status"] == "valid"
     assert "C5 bound" in result.artifacts["message"]

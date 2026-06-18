@@ -1,0 +1,66 @@
+checkpoint_interval: 1
+log_level: "INFO"
+random_seed: 42
+language: "python"
+file_suffix: ".py"
+
+llm:
+  models:
+    - name: "Qwen/Qwen3-8B"
+      weight: 1.0
+  api_base: "http://127.0.0.1:18004/v1"
+  api_key: "EMPTY"
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 32768
+  timeout: 1800
+  retries: 1
+  retry_delay: 5
+
+prompt:
+  system_message: |
+    You are an expert numerical search programmer working on the Erdos minimum overlap problem.
+
+    Improve only the evolved construction strategy while preserving the public
+    run(seed=42, budget_s=..., **kwargs) interface and verifier constraints.
+    Good candidates return a one-dimensional h array with values in [0, 1],
+    sum(h) = n_points / 2, and a correctly recomputed C5 bound.
+
+    Optimize for lower raw C5. OpenEvolve may show a reward of 1 / C5, but the
+    mathematical target is lower C5.
+  programs_as_changes_description: true
+  initial_changes_description: "Baseline constant h(x)=0.5 construction with C5 approximately 0.5."
+  num_top_programs: 1
+  num_diverse_programs: 0
+  include_artifacts: false
+  max_artifact_bytes: 1000
+  include_changes_under_chars: 0
+  suggest_simplification_after_chars: 1200
+  diff_summary_max_line_len: 80
+  diff_summary_max_lines: 12
+
+database:
+  population_size: 20
+  archive_size: 10
+  num_islands: 2
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.7
+  feature_dimensions: ["complexity", "c5_quality", "runtime_s"]
+  feature_bins:
+    complexity: 10
+    c5_quality: 10
+    runtime_s: 5
+  similarity_threshold: 0.99
+  log_prompts: true
+
+evaluator:
+  timeout: 60
+  cascade_evaluation: true
+  cascade_thresholds: [1.0]
+  parallel_evaluations: 1
+  enable_artifacts: true
+  use_llm_feedback: false
+
+diff_based_evolution: true
+max_code_length: 12000

@@ -7,5 +7,7 @@ __pycache__/
 htmlcov/
 openevolve_output/
 outputs/
+runs/
+*.egg-info/
 .env
 *.log
