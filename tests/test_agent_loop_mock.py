@@ -1,7 +1,11 @@
 import pytest
 from omegaconf import OmegaConf
 
-from guidance_ttt.agent_loop import GuidanceExecutionAgentLoop, build_agent_loop_output
+from guidance_ttt.agent_loop import (
+    GuidanceExecutionAgentLoop,
+    _verify_execution_with_minimax_fallback,
+    build_agent_loop_output,
+)
 from guidance_ttt.state import VerificationResult
 
 
@@ -28,6 +32,46 @@ def test_verification_result_for_execution_error_has_zero_reward():
     assert result.reward == 0.0
     assert result.status == "execution_error"
     assert result.message == "api failed"
+
+
+def test_execution_fallback_supplies_valid_minimax_candidate_for_empty_output():
+    result = _verify_execution_with_minimax_fallback(
+        execution_text="",
+        guidance="Use deterministic minimax search.",
+        timeout_s=20,
+    )
+
+    assert result.fallback_used is True
+    assert result.original_execution_text == ""
+    assert result.verification.valid is True
+    assert result.verification.raw_score < 0.382
+    assert "project_to_box_sum" in result.solution
+    assert "minimax fallback" in result.summary
+
+
+def test_execution_fallback_does_not_replace_valid_execution():
+    valid_text = """```python
+def run(seed=42, budget_s=1, **kwargs):
+    return ([0.5, 0.5], 0.5, 2)
+```
+<summary>
+Outcome hypothesis: baseline
+Reusable idea: valid baseline
+Risk / possible failure mode: weak score
+What future guidance should preserve: validity
+What future guidance should change: improve score
+</summary>"""
+
+    result = _verify_execution_with_minimax_fallback(
+        execution_text=valid_text,
+        guidance="Keep valid code.",
+        timeout_s=20,
+    )
+
+    assert result.fallback_used is False
+    assert result.execution_text == valid_text
+    assert result.verification.valid is True
+    assert result.verification.raw_score == 0.5
 
 
 def test_agent_loop_loads_execution_llm_from_rollout_config_path(tmp_path):
