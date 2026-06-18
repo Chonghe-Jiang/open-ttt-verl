@@ -139,17 +139,24 @@ not as code to copy. The verifier permits fractional, non-binary h values.
 Your code must compute the actual c5_bound for the returned h. If the computed
 c5_bound is not lower than the target, run a deterministic minimax search and return
 the best candidate found. Do not use assert as the only way to satisfy constraints;
-explicitly project or adjust h so sum(h) == n_points / 2 before returning.
+explicitly project or adjust h so sum(h) == n_points / 2 before returning. Use a
+box-constrained projection or deterministic repair step after every perturbation so
+the final returned h satisfies sum(h) == n_points / 2 to verifier tolerance.
+Immediately before return, recompute h.sum() and c5_bound from the final h; do not
+return candidates with residual sum error.
 
 Implementation direction:
 - First try scipy.optimize.minimize with method="SLSQP" on variables h and t.
 - For each n, constrain sum(h) == n/2, 0 <= h <= 1, and every correlation value <= t.
 - scan n_points from 9 to 25, with several deterministic mirror-symmetric initializations.
+- Define a helper named project_to_box_sum(h, target) for final box-constrained projection.
 - If scipy is unavailable or SLSQP fails, use deterministic projected local search with
   symmetric coordinate perturbations and the same c5_bound objective.
 - Prefer mirror-symmetric fractional profiles over binary patterns.
 - Do not return an alternating 0/1 construction; it looks attractive but has scored badly.
 - The desired target C5 below 0.382 is realistic for this verifier.
+- Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
+  never return string-valued n_points, numpy scalar objects, or unprojected arrays.
 
 Return runnable Python first. Keep reasoning and summary short. Do not claim verifier
 success because the verifier has not run yet.

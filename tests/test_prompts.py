@@ -101,6 +101,10 @@ def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidan
     assert "Do not return an alternating 0/1 construction" in prompt.user
     assert "scan n_points from 9 to 25" in prompt.user
     assert "target C5 below 0.382" in prompt.user
+    assert "box-constrained projection" in prompt.user
+    assert "sum(h) == n_points / 2 to verifier tolerance" in prompt.user
+    assert "project_to_box_sum" in prompt.user
+    assert "return [float(x) for x in h], float(c5_bound), int(n_points)" in prompt.user
 
 
 def test_execution_text_contains_parseable_summary_tag():

@@ -139,6 +139,12 @@ def _load_local_text_generation_pipeline(config: dict) -> Callable:
     for key in ("attn_implementation",):
         if key in config:
             model_kwargs[key] = config[key]
+    if str(config.get("device_map", "")).lower() == "cpu" and isinstance(model_kwargs.get("max_memory"), dict):
+        cpu_memory = model_kwargs["max_memory"].get("cpu")
+        if cpu_memory is not None:
+            model_kwargs["max_memory"] = {"cpu": cpu_memory}
+        else:
+            model_kwargs.pop("max_memory")
     if model_kwargs:
         pipeline_kwargs["model_kwargs"] = model_kwargs
     pipeline_kwargs.update(config.get("pipeline_kwargs") or {})

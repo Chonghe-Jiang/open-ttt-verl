@@ -91,3 +91,15 @@ def test_recipe_verl_overrides_are_appended(tmp_path):
     overrides = build_verl_overrides(config, prepared, [])
 
     assert "actor_rollout_ref.rollout.load_format=auto" in overrides
+
+
+def test_gpt_oss_recipes_initialize_fsdp_models_in_bfloat16():
+    for recipe in [
+        "erdos_gpt_oss_20b_5step.yaml",
+        "erdos_gpt_oss_20b_8gpu_50step.yaml",
+    ]:
+        config = yaml.safe_load((Path("guidance_ttt/config") / recipe).read_text())
+        overrides = config["verl_overrides"]
+
+        assert "actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16" in overrides
+        assert "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16" in overrides

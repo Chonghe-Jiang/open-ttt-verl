@@ -219,6 +219,26 @@ def test_local_pipeline_loader_passes_model_kwargs_for_memory_limits(monkeypatch
     assert captured["model_kwargs"]["max_memory"] == {0: "8GiB", "cpu": "256GiB"}
 
 
+def test_local_pipeline_loader_strips_gpu_memory_limits_for_cpu_device_map(monkeypatch):
+    captured = {}
+
+    def fake_pipeline(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("guidance_ttt.llm_client._call_transformers_pipeline", fake_pipeline)
+
+    _load_local_text_generation_pipeline(
+        {
+            "model": "models/gpt-oss-20b",
+            "device_map": "cpu",
+            "model_kwargs": {"max_memory": {0: "8GiB", 1: "8GiB", "cpu": "256GiB"}},
+        }
+    )
+
+    assert captured["model_kwargs"]["max_memory"] == {"cpu": "256GiB"}
+
+
 def test_extract_local_generated_text_prefers_harmony_final_channel():
     text = (
         "analysisWe need to produce code."
