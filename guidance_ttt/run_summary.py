@@ -58,7 +58,7 @@ def write_run_summary(
     summary = summarize_run(output_dir, config_path=config_path)
     json_path = output_dir / json_name
     markdown_path = output_dir / markdown_name
-    json_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+    json_path.write_text(json.dumps(_stringify_mapping_keys(summary), indent=2, sort_keys=True))
     markdown_path.write_text(_to_markdown(summary))
     return {"json": str(json_path), "markdown": str(markdown_path)}
 
@@ -110,6 +110,14 @@ def _load_yaml(path: str | Path | None) -> Any:
     return yaml.safe_load(path.read_text()) or {}
 
 
+def _stringify_mapping_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _stringify_mapping_keys(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_stringify_mapping_keys(item) for item in value]
+    return value
+
+
 def _to_markdown(summary: dict[str, Any]) -> str:
     lines = ["# Guidance TTT Run Summary", ""]
     params = summary["params"]
@@ -117,7 +125,7 @@ def _to_markdown(summary: dict[str, Any]) -> str:
         [
             f"- Output dir: `{params['output_dir']}`",
             f"- Library: `{params['library_path']}`",
-            f"- Library config: `{json.dumps(params.get('library_config', {}), sort_keys=True)}`",
+            f"- Library config: `{json.dumps(_stringify_mapping_keys(params.get('library_config', {})), sort_keys=True)}`",
             "",
             "## Per-Step C5 Scores",
             "",

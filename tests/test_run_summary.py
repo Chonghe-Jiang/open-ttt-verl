@@ -78,3 +78,29 @@ def test_write_run_summary_writes_json_and_markdown(tmp_path):
     markdown = Path(paths["markdown"]).read_text()
     assert "# Guidance TTT Run Summary" in markdown
     assert "No completed execution entries" in markdown
+
+
+def test_write_run_summary_handles_mixed_int_and_string_config_keys(tmp_path):
+    output_dir = tmp_path / "run"
+    GuidanceLibrary(output_dir / "library.json", initial_nodes=[create_root_node()], rollout_n=1)
+    config_path = output_dir / "recipe.yaml"
+    mixed_key_config = {
+        "llm": {
+            "execution": {
+                "model_kwargs": {
+                    "max_memory": {
+                        0: "90GiB",
+                        1: "90GiB",
+                        "cpu": "700GiB",
+                    }
+                }
+            }
+        }
+    }
+    config_path.write_text(yaml.safe_dump(mixed_key_config))
+    (output_dir / "agent_loop.yaml").write_text(yaml.safe_dump([{"execution_llm": mixed_key_config["llm"]["execution"]}]))
+
+    paths = write_run_summary(output_dir, config_path=config_path)
+
+    assert Path(paths["json"]).exists()
+    assert Path(paths["markdown"]).exists()
