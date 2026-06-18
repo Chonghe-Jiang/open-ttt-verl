@@ -76,6 +76,13 @@ The selected node's raw score is the target to beat. Lower raw C5 is better.
 Do not recommend the constant h[i] = 0.5 baseline unless the selected node is invalid;
 it is verifier-valid but gives no training signal when copied.
 Non-binary asymmetric h values and deterministic local/numerical search are allowed.
+Prefer small-n minimax constructions over large random perturbation code. Evidence from
+local numerical checks suggests n_points in the 9..25 range with a mirror-symmetric
+profile and active correlation constraints can reach C5 near 0.381. Ask the execution
+model to minimize the maximum value of np.correlate(h, 1-h, mode="full") * (2/n)
+under 0 <= h <= 1 and sum(h) == n/2. Avoid vague RL-reward advice; request concrete
+deterministic minimax optimization steps that can be implemented inside run().
+Do not propose alternating 0/1 patterns; the verifier scores them poorly.
 
 The preferred submitted guidance is the text inside the XML block below. Thinking is allowed,
 but if the XML block is missing, only text outside any <think>...</think> block will be used
@@ -87,9 +94,9 @@ Hypothesis: ...
 Plan:
 1. ...
 2. ...
-What to preserve: ...
-What to change to beat raw score {selected_node.raw_score}: ...
-Expected verifier signal: lower raw C5 than {selected_node.raw_score}
+What to preserve: useful low-C5 nonconstant/mirror-symmetric structure from the selected entry
+What to change to beat raw score {selected_node.raw_score}: scan small n, solve a minimax correlation problem, and return the best verifier-computed candidate
+Expected verifier signal: lower raw C5 than {selected_node.raw_score}, ideally below 0.382
 </guidance>
 """
     return Prompt(
@@ -130,10 +137,19 @@ The constant h[i] = 0.5 construction is only a baseline and should not be return
 unchanged. If previous solution code is shown, treat it as a reference point to beat,
 not as code to copy. The verifier permits fractional, non-binary h values.
 Your code must compute the actual c5_bound for the returned h. If the computed
-c5_bound is not lower than the target, run a small deterministic search or
-perturbation procedure and return the best candidate found. Do not use assert as
-the only way to satisfy constraints; explicitly project or adjust h so
-sum(h) == n_points / 2 before returning.
+c5_bound is not lower than the target, run a deterministic minimax search and return
+the best candidate found. Do not use assert as the only way to satisfy constraints;
+explicitly project or adjust h so sum(h) == n_points / 2 before returning.
+
+Implementation direction:
+- First try scipy.optimize.minimize with method="SLSQP" on variables h and t.
+- For each n, constrain sum(h) == n/2, 0 <= h <= 1, and every correlation value <= t.
+- scan n_points from 9 to 25, with several deterministic mirror-symmetric initializations.
+- If scipy is unavailable or SLSQP fails, use deterministic projected local search with
+  symmetric coordinate perturbations and the same c5_bound objective.
+- Prefer mirror-symmetric fractional profiles over binary patterns.
+- Do not return an alternating 0/1 construction; it looks attractive but has scored badly.
+- The desired target C5 below 0.382 is realistic for this verifier.
 
 Return runnable Python first. Keep reasoning and summary short. Do not claim verifier
 success because the verifier has not run yet.

@@ -66,6 +66,11 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "target to beat" in prompt.user
     assert "constant h[i] = 0.5 baseline" in prompt.user
     assert "What to change to beat raw score 0.4" in prompt.user
+    assert "small-n minimax" in prompt.user
+    assert "n_points in the 9..25 range" in prompt.user
+    assert "mirror-symmetric" in prompt.user
+    assert "active correlation constraints" in prompt.user
+    assert "Avoid vague RL-reward advice" in prompt.user
 
 
 def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidance():
@@ -89,8 +94,13 @@ def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidan
     assert "should not be returned" in prompt.user
     assert "permits fractional, non-binary h values" in prompt.user
     assert "compute the actual c5_bound" in prompt.user
-    assert "run a small deterministic search" in prompt.user
+    assert "scipy.optimize.minimize" in prompt.user
+    assert "SLSQP" in prompt.user
+    assert "deterministic projected local search" in prompt.user
     assert "project or adjust h" in prompt.user
+    assert "Do not return an alternating 0/1 construction" in prompt.user
+    assert "scan n_points from 9 to 25" in prompt.user
+    assert "target C5 below 0.382" in prompt.user
 
 
 def test_execution_text_contains_parseable_summary_tag():
