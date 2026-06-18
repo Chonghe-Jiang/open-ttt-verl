@@ -48,7 +48,7 @@ def test_default_verl_config_dir_uses_local_verl_tree():
     assert _default_verl_config_dir() == expected
 
 
-def test_verl_overrides_enable_qwen_thinking_template(tmp_path):
+def test_verl_overrides_disable_qwen_thinking_template_for_guidance_actor(tmp_path):
     config = {
         "run": {
             "output_dir": str(tmp_path / "outputs" / "erdos_smoke"),
@@ -67,4 +67,27 @@ def test_verl_overrides_enable_qwen_thinking_template(tmp_path):
 
     overrides = build_verl_overrides(config, prepared, [])
 
-    assert "+data.apply_chat_template_kwargs.enable_thinking=True" in overrides
+    assert "+data.apply_chat_template_kwargs.enable_thinking=False" in overrides
+
+
+def test_recipe_verl_overrides_are_appended(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "erdos_smoke"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 1,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+        "verl_overrides": ["actor_rollout_ref.rollout.load_format=auto"],
+    }
+    prepared = prepare_run(config)
+
+    overrides = build_verl_overrides(config, prepared, [])
+
+    assert "actor_rollout_ref.rollout.load_format=auto" in overrides

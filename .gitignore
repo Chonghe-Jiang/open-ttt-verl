@@ -5,5 +5,11 @@ __pycache__/
 .ruff_cache/
 .venv/
 outputs/
+models/
+.ray_tmp/
+.hf_cache/
+.tmp/
+.triton_cache/
+pytest-of-*/
+torchinductor_*/
 *.egg-info/
-

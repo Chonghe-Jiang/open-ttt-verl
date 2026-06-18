@@ -1,4 +1,7 @@
-from guidance_ttt.agent_loop import build_agent_loop_output
+import pytest
+from omegaconf import OmegaConf
+
+from guidance_ttt.agent_loop import GuidanceExecutionAgentLoop, build_agent_loop_output
 from guidance_ttt.state import VerificationResult
 
 
@@ -26,3 +29,66 @@ def test_verification_result_for_execution_error_has_zero_reward():
     assert result.status == "execution_error"
     assert result.message == "api failed"
 
+
+def test_agent_loop_loads_execution_llm_from_rollout_config_path(tmp_path):
+    config_path = tmp_path / "agent_loop.yaml"
+    config_path.write_text(
+        """
+- name: guidance_execution_erdos
+  _target_: guidance_ttt.agent_loop.GuidanceExecutionAgentLoop
+  execution_llm:
+    provider: local
+    model: models/gpt-oss-20b
+    device_map: auto
+"""
+    )
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.rollout_config = OmegaConf.create(
+        {
+            "agent": {
+                "agent_loop_config_path": str(config_path),
+                "default_agent_loop": "guidance_execution_erdos",
+            }
+        }
+    )
+
+    execution_llm = loop._execution_llm_from_rollout_config()
+
+    assert execution_llm == {
+        "provider": "local",
+        "model": "models/gpt-oss-20b",
+        "device_map": "auto",
+    }
+
+
+@pytest.mark.anyio
+async def test_empty_guidance_generation_retries_with_min_tokens():
+    class FakeTokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            if token_ids == [0]:
+                return "" if skip_special_tokens else "<|im_end|>"
+            return "<guidance>try coordinate descent</guidance>"
+
+    class FakeServerManager:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(self, *, request_id, prompt_ids, sampling_params):
+            self.calls.append(dict(sampling_params))
+            if len(self.calls) == 1:
+                return type("Output", (), {"token_ids": [0], "log_probs": [-0.1], "stop_reason": "stop"})()
+            return type("Output", (), {"token_ids": [10, 11, 12], "log_probs": [-0.2, -0.3, -0.4], "stop_reason": "length"})()
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.server_manager = FakeServerManager()
+    loop.tokenizer = FakeTokenizer()
+    loop.response_length = 128
+
+    generation = await loop._generate_guidance_response([1, 2, 3], {"temperature": 1.0})
+
+    assert generation.text == "<guidance>try coordinate descent</guidance>"
+    assert generation.response_ids == [10, 11, 12]
+    assert generation.attempts == 2
+    assert loop.server_manager.calls[0] == {"temperature": 1.0}
+    assert loop.server_manager.calls[1]["min_tokens"] >= 16
+    assert loop.server_manager.calls[1]["max_tokens"] <= 128

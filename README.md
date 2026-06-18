@@ -18,7 +18,9 @@ PUCT library node
 ```
 
 The first target task is Erdos minimum overlap. Execution uses `MockLLMClient`
-by default so the package can be tested without a real API.
+by default so the package can be tested without a real API. Real execution can
+use either an OpenAI-compatible endpoint or a local Transformers model with
+`llm.execution.provider=local`.
 
 ## Repository Layout
 
@@ -46,6 +48,31 @@ This writes:
 outputs/guidance_ttt/erdos_smoke/library.json
 outputs/guidance_ttt/erdos_smoke/ttt_slots.parquet
 outputs/guidance_ttt/erdos_smoke/agent_loop.yaml
+```
+
+## Local gpt-oss-20b Execution
+
+Download the local execution model:
+
+```bash
+scripts/download_gpt_oss_20b.sh
+```
+
+Run the 5-step Erdos minimum-overlap recipe. The trainable guidance actor uses
+`Qwen/Qwen3-8B`; execution uses the downloaded `models/gpt-oss-20b` through the
+local Transformers client.
+
+```bash
+scripts/run_erdos_gpt_oss_20b_5step.sh
+```
+
+After a completed run, write or refresh the params, prompt/output, and per-step
+minimum C5 score summary:
+
+```bash
+python -m guidance_ttt.run_summary \
+  outputs/guidance_ttt/erdos_gpt_oss_20b_5step \
+  --config guidance_ttt/config/erdos_gpt_oss_20b_5step.yaml
 ```
 
 ## Tests

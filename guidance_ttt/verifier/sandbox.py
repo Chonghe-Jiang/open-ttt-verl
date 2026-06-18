@@ -21,6 +21,13 @@ def extract_python_code(text: str) -> str | None:
     matches = list(re.finditer(r"```python\s*([\s\S]*?)\s*```", text))
     if matches:
         return matches[-1].group(1).strip()
+    channel_matches = list(re.finditer(r"(?:assistant)?commentary\s+to=python\s+code([\s\S]*)", text))
+    if channel_matches:
+        code = channel_matches[-1].group(1).strip()
+        summary_start = code.find("<summary>")
+        if summary_start != -1:
+            code = code[:summary_start].strip()
+        return code
     stripped = text.strip()
     if stripped.startswith("def run"):
         return stripped
@@ -59,4 +66,3 @@ def evaluate_python_code(code: str, *, timeout_s: int) -> SandboxResult:
         return result_queue.get_nowait()
     except queue.Empty:
         return SandboxResult(output=None, error=f"Process exited with code {process.exitcode}")
-

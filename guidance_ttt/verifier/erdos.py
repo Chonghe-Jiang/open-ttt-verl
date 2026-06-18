@@ -30,9 +30,7 @@ def verify_c5_solution(h_values: Any, c5_achieved: float, n_points: int) -> floa
     if current_sum == 0:
         raise ErdosEvaluationError("h_values sum to zero")
     if not np.isclose(current_sum, target_sum, atol=1e-8):
-        h_array = h_array * (target_sum / current_sum)
-        if np.any(h_array < 0) or np.any(h_array > 1):
-            raise ErdosEvaluationError("After normalization, h(x) is not in [0, 1]")
+        raise ErdosEvaluationError(f"sum(h) must equal n_points / 2. Got {current_sum:.12g}, expected {target_sum:.12g}")
     dx = 2.0 / int(n_points)
     computed_c5 = float(np.max(np.correlate(h_array, 1.0 - h_array, mode="full") * dx))
     if not np.isfinite(computed_c5):
@@ -85,4 +83,3 @@ def verify_erdos_solution_text(text: str, *, timeout_s: int) -> VerificationResu
         message=f"C5 bound: {raw_score:.6f}",
         artifacts={"code": code},
     )
-

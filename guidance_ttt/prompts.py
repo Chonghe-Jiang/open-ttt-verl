@@ -11,24 +11,33 @@ class Prompt:
     user: str
 
 
+def _clip(text: str | None, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n...[truncated]"
+
+
 def _entry_summary(entry: LibraryEntry | None, *, include_solution: bool) -> str:
     if entry is None:
         return "No previous library entry is attached."
     parts = [
         f"Entry id: {entry.id}",
-        f"Summary: {entry.summary}",
-        f"Previous guidance: {entry.guidance}",
-        f"Previous execution thinking: {entry.execution_thinking}",
+        f"Summary: {_clip(entry.summary, 360)}",
+        f"Previous guidance: {_clip(entry.guidance, 360)}",
+        f"Previous execution thinking: {_clip(entry.execution_thinking, 240)}",
         f"Reward: {entry.verifier_reward}",
         f"Raw score: {entry.verifier_raw_score}",
         f"Verifier status: {entry.verifier_status}",
-        f"Verifier message: {entry.verifier_message}",
-        f"Reusable idea: {entry.reusable_idea}",
+        f"Verifier message: {_clip(entry.verifier_message, 180)}",
+        f"Reusable idea: {_clip(entry.reusable_idea, 220)}",
     ]
     if entry.failure_mode:
         parts.append(f"Failure mode: {entry.failure_mode}")
     if include_solution:
-        parts.append("Previous full solution code:\n```python\n" + entry.solution.strip() + "\n```")
+        solution = _clip(entry.solution, 1800)
+        if solution:
+            parts.append("Previous solution code excerpt:\n```python\n" + solution + "\n```")
     return "\n".join(parts)
 
 
@@ -63,6 +72,11 @@ Visits: {selected_node.visits}
 {failure_text or "No local failure entries yet."}
 </local_failures>
 
+The selected node's raw score is the target to beat. Lower raw C5 is better.
+Do not recommend the constant h[i] = 0.5 baseline unless the selected node is invalid;
+it is verifier-valid but gives no training signal when copied.
+Non-binary asymmetric h values and deterministic local/numerical search are allowed.
+
 The preferred submitted guidance is the text inside the XML block below. Thinking is allowed,
 but if the XML block is missing, only text outside any <think>...</think> block will be used
 as the submitted guidance.
@@ -74,8 +88,8 @@ Plan:
 1. ...
 2. ...
 What to preserve: ...
-What to change: ...
-Expected verifier signal: ...
+What to change to beat raw score {selected_node.raw_score}: ...
+Expected verifier signal: lower raw C5 than {selected_node.raw_score}
 </guidance>
 """
     return Prompt(
@@ -111,15 +125,23 @@ Raw score: {selected_node.raw_score}
 {guidance}
 </guidance>
 
-Return all three sections in this exact order. Do not claim verifier success because the verifier has not run yet.
+Target: produce a valid candidate with raw C5 lower than {selected_node.raw_score}.
+The constant h[i] = 0.5 construction is only a baseline and should not be returned
+unchanged. If previous solution code is shown, treat it as a reference point to beat,
+not as code to copy. The verifier permits fractional, non-binary h values.
+Your code must compute the actual c5_bound for the returned h. If the computed
+c5_bound is not lower than the target, run a small deterministic search or
+perturbation procedure and return the best candidate found. Do not use assert as
+the only way to satisfy constraints; explicitly project or adjust h so
+sum(h) == n_points / 2 before returning.
+
+Return runnable Python first. Keep reasoning and summary short. Do not claim verifier
+success because the verifier has not run yet.
 
 Return:
-<execution_thinking>
-brief reasoning
-</execution_thinking>
-
 ```python
-# final runnable solution
+def run(seed=42, budget_s=1, **kwargs):
+    # final runnable solution
 ```
 
 <summary>
@@ -129,11 +151,15 @@ Risk / possible failure mode: ...
 What future guidance should preserve: ...
 What future guidance should change: ...
 </summary>
+
+<execution_thinking>
+brief reasoning
+</execution_thinking>
 """
     return Prompt(
         system=(
-            "You are the execution model. Turn guidance into one concrete candidate solution, "
-            "and include a concise library summary of the attempt intent."
+            "You are the execution model. Turn guidance into one concrete runnable Python "
+            "candidate. Output the code block first, then concise metadata."
         ),
         user=user,
     )

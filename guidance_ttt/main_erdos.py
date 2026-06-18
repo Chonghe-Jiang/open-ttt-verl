@@ -101,6 +101,15 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     ttt_cfg = config["ttt"]
     zmq_key = f"{prepared['output_dir']}:{os.getpid()}"
     zmq_suffix = f"guidance-ttt-{hashlib.sha1(zmq_key.encode()).hexdigest()[:12]}"
+    ray_temp_dir = Path(run_cfg.get("ray_temp_dir", Path.cwd() / ".ray_tmp")).expanduser().resolve()
+    ray_temp_dir.mkdir(parents=True, exist_ok=True)
+    hf_cache_dir = Path(run_cfg.get("hf_cache_dir", Path.cwd() / ".hf_cache")).expanduser().resolve()
+    (hf_cache_dir / "datasets").mkdir(parents=True, exist_ok=True)
+    (hf_cache_dir / "hub").mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(run_cfg.get("tmp_dir", Path.cwd() / ".tmp")).expanduser().resolve()
+    triton_cache_dir = Path(run_cfg.get("triton_cache_dir", Path.cwd() / ".triton_cache")).expanduser().resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    triton_cache_dir.mkdir(parents=True, exist_ok=True)
     overrides = [
         "algorithm.adv_estimator=grpo",
         "algorithm.use_kl_in_reward=False",
@@ -113,7 +122,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         f"data.max_response_length={int(run_cfg.get('max_response_length', 2048))}",
         "data.filter_overlong_prompts=True",
         "data.truncation=error",
-        "+data.apply_chat_template_kwargs.enable_thinking=True",
+        "+data.apply_chat_template_kwargs.enable_thinking=False",
         f"actor_rollout_ref.model.path={run_cfg['model_path']}",
         "actor_rollout_ref.model.use_remove_padding=False",
         f"actor_rollout_ref.actor.optim.lr={float(run_cfg.get('learning_rate', 1e-5))}",
@@ -145,6 +154,16 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         f"trainer.val_before_train={bool(run_cfg.get('val_before_train', False))}",
         "trainer.logger=['console']",
         f"+ray_kwargs.ray_init.address={run_cfg.get('ray_address', 'local')}",
+        "+ray_kwargs.ray_init.include_dashboard=False",
+        f"+ray_kwargs.ray_init._temp_dir={ray_temp_dir}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.HF_HOME={hf_cache_dir}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.HF_DATASETS_CACHE={hf_cache_dir / 'datasets'}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.HUGGINGFACE_HUB_CACHE={hf_cache_dir / 'hub'}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.TRANSFORMERS_CACHE={hf_cache_dir / 'hub'}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.TMPDIR={tmp_dir}",
+        f"+ray_kwargs.ray_init.runtime_env.env_vars.TRITON_CACHE_DIR={triton_cache_dir}",
+        "+ray_kwargs.ray_init.runtime_env.env_vars.RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO='0'",
+        "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_NO_USAGE_STATS='1'",
         f"+ray_kwargs.ray_init.runtime_env.env_vars.VERL_VLLM_ZMQ_SUFFIX={zmq_suffix}",
     ]
     overrides.extend(config.get("verl_overrides", []))

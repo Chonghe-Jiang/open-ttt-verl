@@ -63,9 +63,12 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "final submitted guidance" in prompt.system
     assert "Thinking is allowed" in prompt.user
     assert "only text outside any <think>...</think> block" in prompt.user
+    assert "target to beat" in prompt.user
+    assert "constant h[i] = 0.5 baseline" in prompt.user
+    assert "What to change to beat raw score 0.4" in prompt.user
 
 
-def test_execution_prompt_attaches_same_library_node_full_solution_and_guidance():
+def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidance():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
@@ -75,12 +78,19 @@ def test_execution_prompt_attaches_same_library_node_full_solution_and_guidance(
 
     assert "Find better C5" in prompt.user
     assert "Try deterministic coordinate descent." in prompt.user
-    assert "Previous full solution code" in prompt.user
+    assert "Previous solution code excerpt" in prompt.user
     assert "def run(seed=42" in prompt.user
     assert "<execution_thinking>" in prompt.user
     assert "<summary>" in prompt.user
     assert "Risk / possible failure mode" in prompt.user
-    assert "Do not claim verifier success" in prompt.user
+    assert "Do not claim verifier" in prompt.user
+    assert "success because the verifier has not run yet" in prompt.user
+    assert "Target: produce a valid candidate with raw C5 lower than 0.4" in prompt.user
+    assert "should not be returned" in prompt.user
+    assert "permits fractional, non-binary h values" in prompt.user
+    assert "compute the actual c5_bound" in prompt.user
+    assert "run a small deterministic search" in prompt.user
+    assert "project or adjust h" in prompt.user
 
 
 def test_execution_text_contains_parseable_summary_tag():

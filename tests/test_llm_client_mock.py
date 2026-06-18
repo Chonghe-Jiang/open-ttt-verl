@@ -1,6 +1,15 @@
 import pytest
 
-from guidance_ttt.llm_client import LLMRequest, MockLLMClient, OpenAICompatibleLLMClient, make_llm_client
+import guidance_ttt.llm_client as llm_client_module
+from guidance_ttt.llm_client import (
+    LLMRequest,
+    LocalTransformersLLMClient,
+    MockLLMClient,
+    OpenAICompatibleLLMClient,
+    _load_local_text_generation_pipeline,
+    _extract_local_generated_text,
+    make_llm_client,
+)
 
 
 @pytest.mark.anyio
@@ -67,3 +76,154 @@ async def test_openai_compatible_client_maps_chat_completion(monkeypatch):
     assert response.text.startswith("<execution_thinking>")
     assert response.model == "api-model"
     assert response.finish_reason == "stop"
+
+
+@pytest.mark.anyio
+async def test_local_transformers_client_loads_model_lazily_and_uses_chat_messages(monkeypatch):
+    captured = {}
+
+    def fake_load_pipeline(config):
+        captured["load_config"] = config
+
+        def fake_pipeline(messages, **generation_kwargs):
+            captured["messages"] = messages
+            captured["generation_kwargs"] = generation_kwargs
+            return [
+                {
+                    "generated_text": [
+                        {"role": "system", "content": "system prompt"},
+                        {"role": "user", "content": "user prompt"},
+                        {
+                            "role": "assistant",
+                            "content": "<execution_thinking>local</execution_thinking>\n```python\npass\n```",
+                        },
+                    ]
+                }
+            ]
+
+        return fake_pipeline
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_text_generation_pipeline", fake_load_pipeline)
+    client = make_llm_client(
+        {
+            "provider": "local",
+            "model": "models/gpt-oss-20b",
+            "device_map": "auto",
+            "torch_dtype": "auto",
+            "trust_remote_code": True,
+            "reasoning_effort": "low",
+        }
+    )
+
+    assert isinstance(client, LocalTransformersLLMClient)
+    assert captured == {}
+
+    response = await client.complete(
+        LLMRequest(
+            system="system prompt",
+            user="user prompt",
+            model="models/gpt-oss-20b",
+            temperature=0.4,
+            max_tokens=256,
+            metadata={"purpose": "execution"},
+        )
+    )
+
+    assert captured["load_config"]["model"] == "models/gpt-oss-20b"
+    assert captured["load_config"]["device_map"] == "auto"
+    assert captured["messages"] == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "user prompt"},
+    ]
+    assert captured["generation_kwargs"]["max_new_tokens"] == 256
+    assert captured["generation_kwargs"]["temperature"] == 0.4
+    assert captured["generation_kwargs"]["do_sample"] is True
+    assert captured["generation_kwargs"]["tokenizer_encode_kwargs"]["reasoning_effort"] == "low"
+    assert response.text.startswith("<execution_thinking>local</execution_thinking>")
+    assert response.model == "models/gpt-oss-20b"
+    assert response.metadata["provider"] == "local_transformers"
+
+
+@pytest.mark.anyio
+async def test_local_transformers_clients_share_pipeline_cache(monkeypatch):
+    llm_client_module._LOCAL_PIPELINE_CACHE.clear()
+    load_count = 0
+
+    def fake_load_pipeline(config):
+        nonlocal load_count
+        load_count += 1
+
+        def fake_pipeline(messages, **generation_kwargs):
+            return [{"generated_text": "<execution_thinking>cached</execution_thinking>\n```python\npass\n```"}]
+
+        return fake_pipeline
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_text_generation_pipeline", fake_load_pipeline)
+    config = {"provider": "local", "model": "models/cache-test", "device_map": "auto"}
+    request = LLMRequest(
+        system="system",
+        user="user",
+        model="models/cache-test",
+        temperature=0.0,
+        max_tokens=16,
+        metadata={"purpose": "execution"},
+    )
+
+    response_one = await LocalTransformersLLMClient(config).complete(request)
+    response_two = await LocalTransformersLLMClient(config).complete(request)
+
+    assert response_one.text.startswith("<execution_thinking>cached")
+    assert response_two.text.startswith("<execution_thinking>cached")
+    assert load_count == 1
+
+
+def test_local_pipeline_loader_passes_trust_remote_code_once(monkeypatch):
+    captured = {}
+
+    def fake_pipeline(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("guidance_ttt.llm_client._call_transformers_pipeline", fake_pipeline)
+
+    _load_local_text_generation_pipeline(
+        {
+            "model": "models/gpt-oss-20b",
+            "device_map": "auto",
+            "torch_dtype": "auto",
+            "trust_remote_code": True,
+        }
+    )
+
+    assert captured["trust_remote_code"] is True
+    assert "trust_remote_code" not in captured.get("model_kwargs", {})
+
+
+def test_local_pipeline_loader_passes_model_kwargs_for_memory_limits(monkeypatch):
+    captured = {}
+
+    def fake_pipeline(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("guidance_ttt.llm_client._call_transformers_pipeline", fake_pipeline)
+
+    _load_local_text_generation_pipeline(
+        {
+            "model": "models/gpt-oss-20b",
+            "device_map": "auto",
+            "model_kwargs": {"max_memory": {0: "8GiB", "cpu": "256GiB"}},
+        }
+    )
+
+    assert captured["model_kwargs"]["max_memory"] == {0: "8GiB", "cpu": "256GiB"}
+
+
+def test_extract_local_generated_text_prefers_harmony_final_channel():
+    text = (
+        "analysisWe need to produce code."
+        "assistantfinal<execution_thinking>ok</execution_thinking>\n"
+        "```python\npass\n```\n<summary>done</summary>"
+    )
+
+    assert _extract_local_generated_text([{"generated_text": text}]).startswith("<execution_thinking>ok")
