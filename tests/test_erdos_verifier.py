@@ -24,6 +24,9 @@ def test_valid_erdos_code_receives_positive_reward():
     assert result.status == "valid"
     assert result.reward > 0
     assert result.raw_score == 0.5
+    assert result.artifacts["h_values"] == [0.5, 0.5]
+    assert result.artifacts["c5_bound"] == 0.5
+    assert result.artifacts["n_points"] == 2
 
 
 def test_valid_nonconstant_solution_can_beat_constant_baseline():

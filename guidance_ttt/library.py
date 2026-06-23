@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from guidance_ttt.puct import choose_child
+from guidance_ttt.puct import rank_archive_nodes
 from guidance_ttt.state import LibraryEntry, LibraryNode
 
 
@@ -22,15 +22,22 @@ class GuidanceLibrary:
         initial_nodes: list[LibraryNode] | None = None,
         rollout_n: int = 1,
         puct_c: float = 1.0,
+        max_buffer_size: int = 1000,
+        topk_children: int = 2,
     ) -> None:
         self.path = Path(path)
         self.rollout_n = int(rollout_n)
         self.puct_c = float(puct_c)
+        self.max_buffer_size = int(max_buffer_size)
+        self.topk_children = int(topk_children)
         self._thread_lock = threading.RLock()
         self._nodes: dict[str, LibraryNode] = {}
         self._entries: dict[str, LibraryEntry] = {}
         self._groups: dict[str, dict[str, Any]] = {}
         self._best_node_id: str | None = None
+        self._puct_n: dict[str, int] = {}
+        self._puct_m: dict[str, float] = {}
+        self._puct_T: int = 0
 
         if self.path.exists():
             self._load()
@@ -64,7 +71,10 @@ class GuidanceLibrary:
                 group = self._groups.get(group_uid)
                 if group is not None:
                     return self._nodes[group["selected_node_id"]]
-                selected = self._select_node(visible_timestep_exclusive=visible_timestep_exclusive)
+                selected = self._select_node(
+                    visible_timestep_exclusive=visible_timestep_exclusive,
+                    blocked_node_ids=self._same_step_blocked_node_ids(visible_timestep_exclusive),
+                )
                 selected.visits += 1
                 self._groups[group_uid] = {
                     "selected_node_id": selected.id,
@@ -105,7 +115,11 @@ class GuidanceLibrary:
                 group["children"].append(child.id)
                 if group["submitted"] >= self.rollout_n:
                     group["finalized"] = True
-                self._refresh_best()
+                    self._update_puct_stats_for_group(group)
+                    self._filter_archive()
+                    self._refresh_best()
+                else:
+                    self._refresh_best()
                 self._save()
                 return child
 
@@ -114,6 +128,7 @@ class GuidanceLibrary:
             with self._file_lock():
                 self._reload()
                 self._nodes[node_id].visits = int(count)
+                self._puct_n[node_id] = int(count)
                 self._save()
 
     def get_entry(self, entry_id: str | None) -> LibraryEntry | None:
@@ -165,25 +180,160 @@ class GuidanceLibrary:
                     "local_failure_entries": failures,
                 }
 
-    def _select_node(self, *, visible_timestep_exclusive: int | None = None) -> LibraryNode:
-        roots = [node for node in self._nodes.values() if node.parent_id is None]
-        if not roots:
-            raise ValueError("GuidanceLibrary requires at least one root node")
-        root = max(roots, key=lambda node: (node.value, node.id))
-        if not root.children:
-            return root
-        children = [
-            self._nodes[child_id]
-            for child_id in root.children
-            if child_id in self._nodes
-            and self._node_is_visible(
-                self._nodes[child_id],
-                visible_timestep_exclusive=visible_timestep_exclusive,
-            )
+    def _select_node(
+        self,
+        *,
+        visible_timestep_exclusive: int | None = None,
+        blocked_node_ids: set[str] | None = None,
+    ) -> LibraryNode:
+        visible_nodes = [
+            node
+            for node in self._nodes.values()
+            if self._node_is_visible(node, visible_timestep_exclusive=visible_timestep_exclusive)
         ]
-        if not children:
-            return root
-        return choose_child(root, children, puct_c=self.puct_c)
+        if not visible_nodes:
+            raise ValueError("GuidanceLibrary requires at least one root node")
+        initial_ids = {node.id for node in visible_nodes if node.parent_id is None}
+        ranked = rank_archive_nodes(
+            visible_nodes,
+            initial_ids=initial_ids,
+            visit_counts=self._puct_n,
+            best_reachable_values=self._puct_m,
+            total_visits=self._puct_T,
+            puct_c=self.puct_c,
+        )
+        blocked_node_ids = blocked_node_ids or set()
+        for _score, _value, node, _n, _q, _prior, _bonus in ranked:
+            if node.id not in blocked_node_ids:
+                return node
+        return ranked[0][2]
+
+    def _same_step_blocked_node_ids(self, visible_timestep_exclusive: int | None) -> set[str]:
+        if visible_timestep_exclusive is None:
+            return set()
+        selected_ids = {
+            str(group["selected_node_id"])
+            for group in self._groups.values()
+            if group.get("visible_timestep_exclusive") == visible_timestep_exclusive
+            and group.get("selected_node_id") in self._nodes
+        }
+        children_map = self._build_children_map()
+        blocked: set[str] = set()
+        for node_id in selected_ids:
+            blocked.update(self._full_lineage_node_ids(node_id, children_map))
+        return blocked
+
+    def _ancestor_node_ids(self, node_id: str) -> list[str]:
+        ancestors: list[str] = []
+        current = self._nodes.get(node_id)
+        while current is not None:
+            ancestors.append(current.id)
+            current = self._nodes.get(current.parent_id) if current.parent_id else None
+        return ancestors
+
+    def _build_children_map(self) -> dict[str, set[str]]:
+        children_map: dict[str, set[str]] = {}
+        for node in self._nodes.values():
+            if node.parent_id:
+                children_map.setdefault(node.parent_id, set()).add(node.id)
+        return children_map
+
+    def _full_lineage_node_ids(self, node_id: str, children_map: dict[str, set[str]]) -> set[str]:
+        lineage = set(self._ancestor_node_ids(node_id))
+        queue = [node_id]
+        seen = {node_id}
+        while queue:
+            current_id = queue.pop(0)
+            for child_id in children_map.get(current_id, set()):
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                lineage.add(child_id)
+                queue.append(child_id)
+        return lineage
+
+    def _update_puct_stats_for_group(self, group: dict[str, Any]) -> None:
+        parent_max: dict[str, float] = {}
+        for child_id in group.get("children", []):
+            child = self._nodes.get(child_id)
+            if child is None or child.parent_id is None:
+                continue
+            parent_max[child.parent_id] = max(parent_max.get(child.parent_id, float("-inf")), float(child.value))
+        for parent_id, best_child_value in parent_max.items():
+            self._puct_m[parent_id] = max(float(self._puct_m.get(parent_id, best_child_value)), best_child_value)
+            for ancestor_id in self._ancestor_node_ids(parent_id):
+                self._puct_n[ancestor_id] = int(self._puct_n.get(ancestor_id, 0)) + 1
+            self._puct_T += 1
+
+    def _node_construction_key(self, node: LibraryNode) -> str | None:
+        if not node.entry_id:
+            return None
+        entry = self._entries.get(node.entry_id)
+        if entry is None:
+            return None
+        return entry.solution or entry.summary or None
+
+    def _filter_archive(self) -> None:
+        keep_ids = self._topk_child_node_ids()
+        keep_ids = self._dedup_node_ids(keep_ids)
+        keep_ids = self._limit_buffer_node_ids(keep_ids)
+        self._prune_nodes(keep_ids)
+
+    def _topk_child_node_ids(self) -> set[str]:
+        if self.topk_children <= 0:
+            return set(self._nodes)
+        keep_ids = {node.id for node in self._nodes.values() if node.parent_id is None}
+        children_by_parent: dict[str, list[LibraryNode]] = {}
+        for node in self._nodes.values():
+            if node.parent_id is not None:
+                children_by_parent.setdefault(node.parent_id, []).append(node)
+        for children in children_by_parent.values():
+            children.sort(key=lambda node: (node.value, node.id), reverse=True)
+            keep_ids.update(child.id for child in children[: self.topk_children])
+        return keep_ids
+
+    def _dedup_node_ids(self, candidate_ids: set[str]) -> set[str]:
+        roots = {node.id for node in self._nodes.values() if node.parent_id is None}
+        sorted_nodes = sorted(
+            (self._nodes[node_id] for node_id in candidate_ids if node_id in self._nodes and node_id not in roots),
+            key=lambda node: (node.value, node.id),
+            reverse=True,
+        )
+        keep_ids = set(roots)
+        seen_keys: set[str] = set()
+        for node in sorted_nodes:
+            key = self._node_construction_key(node)
+            if key is not None and key in seen_keys:
+                continue
+            keep_ids.add(node.id)
+            if key is not None:
+                seen_keys.add(key)
+        return keep_ids
+
+    def _limit_buffer_node_ids(self, candidate_ids: set[str]) -> set[str]:
+        if self.max_buffer_size <= 0 or len(candidate_ids) <= self.max_buffer_size:
+            return candidate_ids
+        roots = {node.id for node in self._nodes.values() if node.parent_id is None}
+        keep_ids = {node_id for node_id in roots if node_id in candidate_ids}
+        sorted_nodes = sorted(
+            (self._nodes[node_id] for node_id in candidate_ids if node_id in self._nodes and node_id not in keep_ids),
+            key=lambda node: (node.value, node.id),
+            reverse=True,
+        )
+        for node in sorted_nodes:
+            if len(keep_ids) >= self.max_buffer_size:
+                break
+            keep_ids.add(node.id)
+        return keep_ids
+
+    def _prune_nodes(self, keep_ids: set[str]) -> None:
+        if len(keep_ids) == len(self._nodes):
+            return
+        self._nodes = {node_id: node for node_id, node in self._nodes.items() if node_id in keep_ids}
+        for node in self._nodes.values():
+            node.children = [child_id for child_id in node.children if child_id in self._nodes]
+        self._puct_n = {node_id: count for node_id, count in self._puct_n.items() if node_id in self._nodes}
+        self._puct_m = {node_id: value for node_id, value in self._puct_m.items() if node_id in self._nodes}
 
     def _node_is_visible(self, node: LibraryNode, *, visible_timestep_exclusive: int | None) -> bool:
         if visible_timestep_exclusive is None:
@@ -235,9 +385,14 @@ class GuidanceLibrary:
             "config": {
                 "rollout_n": self.rollout_n,
                 "puct_c": self.puct_c,
+                "max_buffer_size": self.max_buffer_size,
+                "topk_children": self.topk_children,
             },
             "rollout_n": self.rollout_n,
             "puct_c": self.puct_c,
+            "puct_n": self._puct_n,
+            "puct_m": self._puct_m,
+            "puct_T": self._puct_T,
         }
 
     def _save(self) -> None:
@@ -259,3 +414,11 @@ class GuidanceLibrary:
         config = data.get("config", {})
         self.rollout_n = int(config.get("rollout_n", data.get("rollout_n", self.rollout_n)))
         self.puct_c = float(config.get("puct_c", data.get("puct_c", self.puct_c)))
+        self.max_buffer_size = int(config.get("max_buffer_size", data.get("max_buffer_size", self.max_buffer_size)))
+        self.topk_children = int(config.get("topk_children", data.get("topk_children", self.topk_children)))
+        has_puct_n = "puct_n" in data
+        self._puct_n = {str(node_id): int(count) for node_id, count in (data.get("puct_n") or {}).items()}
+        self._puct_m = {str(node_id): float(value) for node_id, value in (data.get("puct_m") or {}).items()}
+        self._puct_T = int(data.get("puct_T", 0) or 0)
+        if not has_puct_n:
+            self._puct_n = {node_id: int(node.visits) for node_id, node in self._nodes.items() if node.visits}

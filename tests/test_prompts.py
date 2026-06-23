@@ -40,7 +40,15 @@ def _entry() -> LibraryEntry:
         verifier_raw_score=0.4,
         verifier_status="valid",
         verifier_message="C5 bound: 0.400000",
-        summary="projected gradient improved stability",
+        summary=(
+            "Execution Interpretation\n"
+            "Projected gradient improved stability.\n\n"
+            "Implemented Algorithm\n"
+            "Use n_points=19, project_to_box_sum, coordinate step 2e-4, "
+            "random walk step size 1e-3 for 2000 steps, and optional SLSQP maxiter=300.\n\n"
+            "Next Guidance Delta\n"
+            "Keep the projection repair and reduce only paired coordinates that raise C5."
+        ),
         reusable_idea="project after each perturbation",
         failure_mode=None,
         metadata={},
@@ -58,7 +66,7 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
 
     assert "Find better C5" in prompt.user
     assert "<selected_library_node>" in prompt.user
-    assert "projected gradient improved stability" in prompt.user
+    assert "Projected gradient improved stability" in prompt.user
     assert "preserve symmetry" in prompt.user
     assert "def run(seed=42" not in prompt.user
     assert "<guidance>" in prompt.user
@@ -68,13 +76,47 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "only text outside any <think>...</think> block" in prompt.user
     assert "target to beat" in prompt.user
     assert "constant h[i] = 0.5 baseline" in prompt.user
-    assert "What to change to beat raw score 0.4" in prompt.user
     assert "controlled improvement" in prompt.user
     assert "Use the best valid h profile as the initialization" in prompt.user
-    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "Preserve n_points from the inherited best profile by default" in prompt.user
     assert "mirror/complement symmetry" in prompt.user
     assert "same verifier normalization" in prompt.user
     assert "Avoid vague RL-reward advice" in prompt.user
+    assert "Previous Summary Facts to Preserve" in prompt.user
+    assert "Inherited Implementation Details" in prompt.user
+    assert "New Guidance Delta" in prompt.user
+    assert "Expected Step Improvement" in prompt.user
+    assert "Concrete Search Recipe" in prompt.user
+    assert "No-op Guard" in prompt.user
+    assert "Acceptance / Fallback" in prompt.user
+    assert "at least five concrete inherited details" in prompt.user
+    assert "coordinate step 2e-4" in prompt.user
+    assert "random walk step size 1e-3 for 2000 steps" in prompt.user
+    assert "SLSQP maxiter=300" in prompt.user
+    assert "cannot be \"reuse/copy the template\"" in prompt.user
+    assert "coordinate or pair order" in prompt.user
+    assert "Signed deltas" in prompt.user
+    assert "pairwise mass-transfer sweeps" in prompt.user
+    assert "extracted attached-solution facts contain concrete profile facts" in prompt.user
+    assert "Do not concatenate" in prompt.user
+    assert "previous verified solution/profile" in prompt.user
+    assert "deltas [5e-4, 2e-4, 1e-4, 5e-5, 1e-5]" in prompt.user
+    assert "step-to-step improvement" in prompt.user
+    assert "Parent/selected raw C5" in prompt.user
+    assert "Why this delta should lower the next step" in prompt.user
+    assert "Plateau guard" in prompt.user
+    assert "Plateau escape if equal to current best" in prompt.user
+    assert "active-lag escape" in prompt.user
+    assert "top contributing pairs" in prompt.user
+    assert "[1e-6, 5e-7, 1e-7]" in prompt.user
+    assert "known-good 63-point" in prompt.user
+    assert "raw C5 approximately 0.3810181186942784" in prompt.user
+    assert "iterative 63-point improvement ladder" in prompt.user
+    assert "Strong-seed guard" in prompt.user
+    assert "propose n_points=9" in prompt.user
+    assert "a linear ramp" in prompt.user
+    assert "Explicit step-progress requirement" in prompt.user
+    assert "0.3810190847194418 -> 0.3810181186942784" in prompt.user
 
 
 def test_guidance_prompt_attaches_global_best_and_local_failure_history():
@@ -129,14 +171,124 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
     assert "Preserve the current best valid construction with raw_score = 0.3821438682282878" in prompt.user
     assert "Do not restart from the constant baseline" in prompt.user
     assert "Use the best valid h profile as the initialization" in prompt.user
-    assert "Search only small deterministic" in prompt.user
+    assert "Search only controlled deterministic" in prompt.user
     assert "Optimize only the independent half of the variables" in prompt.user
-    assert "Include known information directly in the guidance" in prompt.user
-    assert "best valid solution excerpt" in prompt.user
-    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "Inherit concrete selected/global details" in prompt.user
+    assert "best valid profile facts" in prompt.user
+    assert "Preserve n_points from the inherited best profile by default" in prompt.user
     assert "Target: strictly improve over 0.3821438682282878, not merely beat 0.5" in prompt.user
+    assert "Aspirational target: search for a path toward raw C5 <= 0.381019" in prompt.user
+    assert "Do not collapse actual values into vague phrases" in prompt.user
+    assert "Treat the summary's Next Guidance Delta as the first candidate delta" in prompt.user
+    assert "The training signal should show step-to-step improvement" in prompt.user
+    assert "change at least two concrete" in prompt.user
+    assert "search knobs" in prompt.user
+    assert "top-K candidates passed to SLSQP" in prompt.user
+    assert "distinct deterministic family" in prompt.user
+    assert "not a newly invented small-n profile" in prompt.user
+    assert "The preferred submitted guidance" not in prompt.user
     assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
     assert "Do not ask the execution model to reinvent minimax from scratch" not in prompt.user
+
+
+def test_guidance_prompt_prefers_verified_profile_artifacts_over_summary_head_tail():
+    best = _entry()
+    best.id = "best-entry"
+    best.verifier_raw_score = 0.3812435631313583
+    best.verifier_reward = 2.6229950364447134
+    best.summary = (
+        "Empirical Outcome\n"
+        "Verified returned profile: n_points=19, c5_bound=0.3812435631313583, "
+        "h length=19, head=[1.0, 0.9872194239853203], tail=[0.9951851401967569, 0.9999965067437544]"
+    )
+    best.metadata = {
+        "verification_artifacts": {
+            "n_points": 19,
+            "c5_bound": 0.3812435631313583,
+            "h_values": [
+                1.0,
+                0.9872194239853203,
+                0.6538357213148515,
+                0.2649608397726771,
+                0.791971283002877,
+                0.22245751838093442,
+                0.43596,
+                0.31250,
+                0.01329,
+                0.10448,
+                0.04501,
+                0.31191,
+                0.43588,
+                0.22262,
+                0.79183,
+                0.2681266810637105,
+                0.6427089545574667,
+                0.9951851401967569,
+                0.9999965067437544,
+            ],
+        }
+    }
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=best,
+        global_best_entries=[best],
+        local_failure_entries=[],
+    )
+
+    assert "Verified returned profile artifacts (authoritative initialization)" in prompt.user
+    assert "If \"Verified returned profile artifacts\" are present" in prompt.user
+    assert "raw C5=0.3812435631313583" in prompt.user
+    assert "h=[1.0, 0.9872194239853203" in prompt.user
+    assert "0.9999965067437544]" in prompt.user
+    assert "actual returned profile rather than around the original seed" in prompt.user
+
+
+def test_guidance_prompt_root_defaults_to_known_good_target_and_profile_facts():
+    root_node = LibraryNode(
+        id="root",
+        problem_id="erdos",
+        timestep=0,
+        entry_id=None,
+        value=2.0,
+        raw_score=0.5,
+        visits=0,
+        parent_id=None,
+        children=[],
+        metadata={},
+    )
+    code_entry = _entry()
+    code_entry.summary = "Execution Interpretation\n" + ("long inherited context. " * 80) + """
+
+Implemented Algorithm
+```python
+import numpy as np
+n_points = 19
+h0 = np.array([0.9999934729084969, 0.9999971729084968, 0.6512429646755881,
+              0.2573433218863083, 0.7922939787622869])
+result = minimize(c5_score, h0, method="SLSQP", options={"maxiter": 300, "ftol": 1e-13})
+```
+Next Guidance Delta
+Try pairwise mass transfer around the first five coordinates.
+"""
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=root_node,
+        selected_entry=None,
+        global_best_entries=[],
+        local_failure_entries=[code_entry],
+    )
+
+    assert "Preserve the current best valid construction with raw_score = 0.3810181186942784" in prompt.user
+    assert "Target: strictly improve over 0.3810181186942784, not merely beat 0.5" in prompt.user
+    assert "Beat raw C5 0.3810181186942784" in prompt.user
+    assert "Extracted attached-solution facts" in prompt.user
+    assert "profile h=[0.9999934729084969" in prompt.user
+    assert "0.7922939787622869" in prompt.user
+    assert "SLSQP maxiter=300" in prompt.user
+    assert "SLSQP ftol=1e-13" in prompt.user
 
 
 def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidance():
@@ -153,16 +305,29 @@ def test_execution_prompt_attaches_same_library_node_solution_excerpt_and_guidan
     assert "def run(seed=42" in prompt.user
     assert "<execution_thinking>" in prompt.user
     assert "<summary>" in prompt.user
-    assert "Risk / possible failure mode" in prompt.user
+    contract = prompt.user.split("has not run yet.", 1)[1]
+    assert contract.find("<execution_thinking>") < contract.find("```python\ndef run(seed=42")
+    assert contract.find("```python\ndef run(seed=42") < contract.find("<summary>")
+    assert "Return exactly these three blocks in this order" in prompt.user
     assert "Do not claim verifier" in prompt.user
     assert "success because the verifier has not run yet" in prompt.user
+    assert "Execution Interpretation" in prompt.user
+    assert "Implemented Algorithm" in prompt.user
+    assert "New Ideas Introduced" in prompt.user
+    assert "Empirical Outcome" in prompt.user
+    assert "Failure / Bottleneck Analysis" in prompt.user
+    assert "Next Guidance Delta" in prompt.user
     assert "Target: produce a valid candidate with raw C5 lower than 0.4" in prompt.user
     assert "permits fractional, non-binary h values" in prompt.user
     assert "compute the actual c5_bound" in prompt.user
+    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" in prompt.user
+    assert "Use at least one concrete non-copy search change from the guidance" in prompt.user
+    assert "If guidance mentions active-lag search" in prompt.user
     assert "SLSQP" in prompt.user
     assert "deterministic projected local search" in prompt.user
     assert "project or adjust h" in prompt.user
-    assert "Use n_points in {9, 11, 13, 15, 17, 21, 25}" in prompt.user
+    assert "keep n_points=63" in prompt.user
+    assert "known-good 63-point lineage already showed step-to-step progress" in prompt.user
     assert "strict improvement over the current best raw C5" in prompt.user
     assert "box-constrained projection" in prompt.user
     assert "sum(h) == n_points / 2 to verifier tolerance" in prompt.user
@@ -194,6 +359,31 @@ def test_execution_prompt_attaches_global_best_valid_solution_excerpt():
     assert "Initialize from this global best valid solution when available" in prompt.user
 
 
+def test_execution_prompt_without_visible_best_targets_known_good_template():
+    root_node = LibraryNode(
+        id="root",
+        problem_id="erdos",
+        timestep=0,
+        entry_id=None,
+        value=2.0,
+        raw_score=0.5,
+        visits=0,
+        parent_id=None,
+        children=[],
+        metadata={},
+    )
+
+    prompt = build_execution_prompt(
+        problem_prompt="Find better C5",
+        selected_node=root_node,
+        selected_entry=None,
+        guidance="Use the known-good 63-point template, then perturb it.",
+    )
+
+    assert "Target: produce a valid candidate with raw C5 lower than 0.3810181186942784" in prompt.user
+    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" in prompt.user
+
+
 def test_execution_prompt_known_good_minimax_template_is_verifier_valid():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
@@ -220,14 +410,26 @@ def run(): return None
 ```
 
 <summary>
-Outcome hypothesis: test
-Reusable idea: coordinate descent
-Risk / possible failure mode: shape mismatch
-What future guidance should preserve: symmetry
-What future guidance should change: step schedule
+Execution Interpretation
+test
+
+Implemented Algorithm
+coordinate descent
+
+New Ideas Introduced
+paired perturbations
+
+Empirical Outcome
+pending
+
+Failure / Bottleneck Analysis
+shape mismatch
+
+Next Guidance Delta
+preserve symmetry and adjust step schedule
 </summary>"""
 
-    assert extract_tag(execution_text, "summary").startswith("Outcome hypothesis")
+    assert extract_tag(execution_text, "summary").startswith("Execution Interpretation")
 
 
 def test_guidance_extraction_requires_explicit_guidance_tag():

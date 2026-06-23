@@ -26,7 +26,7 @@ def _entry(parent_id: str, reward: float, suffix: str) -> LibraryEntry:
 
 def test_acquire_group_binds_same_group_to_same_node(tmp_path):
     path = tmp_path / "library.json"
-    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=0.0)
     library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2)
 
     first = library.acquire_group("0:slot-a")
@@ -53,10 +53,10 @@ def test_submit_child_adds_entry_child_and_updates_best(tmp_path):
 
 def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path):
     path = tmp_path / "library.json"
-    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=0.0)
     library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, puct_c=5.0)
     selected = library.acquire_group("0:slot-a")
-    good = library.submit_child("0:slot-a", _entry(selected.id, reward=10.0, suffix="good"))
+    good = library.submit_child("0:slot-a", _entry(selected.id, reward=1.1, suffix="good"))
     library.acquire_group("0:slot-b")
     fresh = library.submit_child("0:slot-b", _entry(selected.id, reward=1.0, suffix="fresh"))
 
@@ -70,7 +70,7 @@ def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path)
 def test_library_restores_puct_config_from_archive_config(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
-    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=4, puct_c=2.5)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=4, puct_c=2.5, max_buffer_size=17, topk_children=3)
     store = library.snapshot()
     store.pop("rollout_n")
     store.pop("puct_c")
@@ -80,7 +80,14 @@ def test_library_restores_puct_config_from_archive_config(tmp_path):
 
     assert restored.rollout_n == 4
     assert restored.puct_c == 2.5
-    assert restored.snapshot()["config"] == {"rollout_n": 4, "puct_c": 2.5}
+    assert restored.max_buffer_size == 17
+    assert restored.topk_children == 3
+    assert restored.snapshot()["config"] == {
+        "rollout_n": 4,
+        "puct_c": 2.5,
+        "max_buffer_size": 17,
+        "topk_children": 3,
+    }
 
 
 def test_same_step_selection_does_not_see_child_created_in_same_step(tmp_path):
@@ -100,3 +107,32 @@ def test_same_step_selection_does_not_see_child_created_in_same_step(tmp_path):
     assert same_step_context["global_best_entries"] == []
     assert next_step.id == child.id
     assert next_step_context["global_best_entries"][0].id == "entry-same-step"
+
+
+def test_group_finalization_updates_discover_puct_stats(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2, puct_c=1.0)
+
+    selected = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+    library.submit_child("1:slot-a", _entry(selected.id, reward=2.0, suffix="low"))
+    mid = library.snapshot()
+    library.submit_child("1:slot-a", _entry(selected.id, reward=3.0, suffix="high"))
+    snapshot = library.snapshot()
+
+    assert mid["puct_T"] == 0
+    assert snapshot["puct_T"] == 1
+    assert snapshot["puct_n"][selected.id] == 1
+    assert snapshot["puct_m"][selected.id] == 3.0
+
+
+def test_same_step_batch_blocks_selected_lineages(tmp_path):
+    path = tmp_path / "library.json"
+    root_a = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
+    root_b = make_root_node(problem_id="erdos", raw_score=0.5, reward=0.9)
+    library = GuidanceLibrary(path, initial_nodes=[root_a, root_b], rollout_n=1, puct_c=0.0)
+
+    first = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+    second = library.acquire_group("1:slot-b", visible_timestep_exclusive=1)
+
+    assert {first.id, second.id} == {root_a.id, root_b.id}

@@ -1,9 +1,13 @@
+import asyncio
+
 import pytest
+import time
 
 import guidance_ttt.llm_client as llm_client_module
 from guidance_ttt.llm_client import (
     LLMRequest,
     LocalTransformersLLMClient,
+    LocalVLLMLLMClient,
     MockLLMClient,
     OpenAICompatibleLLMClient,
     _load_local_text_generation_pipeline,
@@ -142,6 +146,188 @@ async def test_local_transformers_client_loads_model_lazily_and_uses_chat_messag
     assert response.text.startswith("<execution_thinking>local</execution_thinking>")
     assert response.model == "models/gpt-oss-20b"
     assert response.metadata["provider"] == "local_transformers"
+
+
+@pytest.mark.anyio
+async def test_local_vllm_client_passes_execution_engine_kwargs(monkeypatch):
+    llm_client_module._LOCAL_VLLM_CACHE.clear()
+    llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    captured = {}
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            captured["messages"] = messages
+            captured["chat_template_kwargs"] = kwargs
+            return "formatted prompt"
+
+    class FakeGeneration:
+        text = "assistantfinal<execution_thinking>vllm</execution_thinking>\n```python\npass\n```"
+
+    class FakeRequestOutput:
+        outputs = [FakeGeneration()]
+
+    class FakeLLM:
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, sampling_params):
+            captured["prompts"] = prompts
+            captured["sampling_params"] = sampling_params
+            return [FakeRequestOutput()]
+
+    def fake_load_vllm(config):
+        captured["load_config"] = config
+        return FakeLLM()
+
+    def fake_sampling_params(**kwargs):
+        captured["sampling_kwargs"] = kwargs
+        return kwargs
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", fake_load_vllm)
+    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", fake_sampling_params)
+
+    client = make_llm_client(
+        {
+            "provider": "local_vllm",
+            "model": "models/gpt-oss-20b",
+            "tensor_model_parallel_size": 8,
+            "gpu_memory_utilization": 0.35,
+            "max_num_seqs": 32,
+            "max_model_len": 32768,
+            "reasoning_effort": "low",
+            "top_p": 0.95,
+        }
+    )
+
+    assert isinstance(client, LocalVLLMLLMClient)
+    response = await client.complete(
+        LLMRequest(
+            system="system prompt",
+            user="user prompt",
+            model="models/gpt-oss-20b",
+            temperature=0.35,
+            max_tokens=26000,
+            metadata={"purpose": "execution"},
+        )
+    )
+
+    assert captured["load_config"]["tensor_model_parallel_size"] == 8
+    assert captured["load_config"]["gpu_memory_utilization"] == 0.35
+    assert captured["load_config"]["max_num_seqs"] == 32
+    assert captured["load_config"]["max_model_len"] == 32768
+    assert captured["chat_template_kwargs"]["reasoning_effort"] == "low"
+    assert captured["sampling_kwargs"]["max_tokens"] == 26000
+    assert captured["sampling_kwargs"]["temperature"] == 0.35
+    assert captured["sampling_kwargs"]["top_p"] == 0.95
+    assert response.text.startswith("<execution_thinking>vllm")
+    assert response.metadata["provider"] == "local_vllm"
+
+
+@pytest.mark.anyio
+async def test_local_vllm_client_uses_remaining_context_when_max_tokens_is_none(monkeypatch):
+    llm_client_module._LOCAL_VLLM_CACHE.clear()
+    llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    captured = {}
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return "formatted prompt with five tokens"
+
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+    class FakeGeneration:
+        text = "<execution_thinking>auto</execution_thinking>\n```python\npass\n```"
+
+    class FakeRequestOutput:
+        outputs = [FakeGeneration()]
+
+    class FakeLLM:
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, sampling_params):
+            captured["prompts"] = prompts
+            captured["sampling_params"] = sampling_params
+            return [FakeRequestOutput()]
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
+    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs))
+
+    client = make_llm_client(
+        {
+            "provider": "local_vllm",
+            "model": "models/gpt-oss-20b",
+            "max_model_len": 32768,
+        }
+    )
+    response = await client.complete(
+        LLMRequest(
+            system="system prompt",
+            user="user prompt",
+            model="models/gpt-oss-20b",
+            temperature=0.35,
+            max_tokens=None,
+            metadata={"purpose": "execution"},
+        )
+    )
+
+    assert captured["sampling_kwargs"]["max_tokens"] == 32763
+    assert response.text.startswith("<execution_thinking>auto")
+
+
+@pytest.mark.anyio
+async def test_local_vllm_client_serializes_concurrent_generate_calls(monkeypatch):
+    llm_client_module._LOCAL_VLLM_CACHE.clear()
+    llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    active_generate = 0
+    max_active_generate = 0
+    active_tokenizer = 0
+    max_active_tokenizer = 0
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            nonlocal active_tokenizer, max_active_tokenizer
+            active_tokenizer += 1
+            max_active_tokenizer = max(max_active_tokenizer, active_tokenizer)
+            time.sleep(0.03)
+            active_tokenizer -= 1
+            return "formatted prompt"
+
+    class FakeGeneration:
+        text = "<execution_thinking>serialized</execution_thinking>\n```python\npass\n```"
+
+    class FakeRequestOutput:
+        outputs = [FakeGeneration()]
+
+    class FakeLLM:
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, sampling_params):
+            nonlocal active_generate, max_active_generate
+            active_generate += 1
+            max_active_generate = max(max_active_generate, active_generate)
+            time.sleep(0.03)
+            active_generate -= 1
+            return [FakeRequestOutput()]
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
+    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: kwargs)
+    client = LocalVLLMLLMClient({"provider": "local_vllm", "model": "models/gpt-oss-20b"})
+    request = LLMRequest(
+        system="system prompt",
+        user="user prompt",
+        model="models/gpt-oss-20b",
+        temperature=0.0,
+        max_tokens=16,
+        metadata={"purpose": "execution"},
+    )
+
+    await asyncio.gather(client.complete(request), client.complete(request))
+
+    assert max_active_generate == 1
+    assert max_active_tokenizer == 1
 
 
 @pytest.mark.anyio

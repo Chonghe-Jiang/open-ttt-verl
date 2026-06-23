@@ -2,9 +2,11 @@ import pytest
 from omegaconf import OmegaConf
 
 from guidance_ttt.agent_loop import (
+    EXECUTION_SUMMARY_SECTIONS,
     GuidanceExecutionAgentLoop,
     _verify_execution_without_fallback,
     build_agent_loop_output,
+    build_execution_summary,
 )
 from guidance_ttt.state import VerificationResult
 
@@ -51,16 +53,32 @@ def test_invalid_execution_is_not_replaced_by_minimax_fallback():
 
 
 def test_valid_execution_is_kept_without_fallback():
-    valid_text = """```python
+    valid_text = """<execution_thinking>
+Use the baseline to confirm verifier plumbing.
+</execution_thinking>
+
+```python
 def run(seed=42, budget_s=1, **kwargs):
     return ([0.5, 0.5], 0.5, 2)
 ```
 <summary>
-Outcome hypothesis: baseline
-Reusable idea: valid baseline
-Risk / possible failure mode: weak score
-What future guidance should preserve: validity
-What future guidance should change: improve score
+Execution Interpretation
+Baseline execution.
+
+Implemented Algorithm
+Return the constant profile.
+
+New Ideas Introduced
+valid baseline
+
+Empirical Outcome
+pending
+
+Failure / Bottleneck Analysis
+weak score
+
+Next Guidance Delta
+improve score
 </summary>"""
 
     result = _verify_execution_without_fallback(
@@ -71,8 +89,82 @@ What future guidance should change: improve score
 
     assert result.fallback_used is False
     assert result.execution_text == valid_text
+    assert result.execution_thinking == "Use the baseline to confirm verifier plumbing."
     assert result.verification.valid is True
     assert result.verification.raw_score == 0.5
+    assert "Execution Interpretation" in result.summary
+    assert "Use the baseline to confirm verifier plumbing." in result.summary
+    assert "Implemented Algorithm" in result.summary
+    assert "```python\ndef run(seed=42, budget_s=1, **kwargs):" in result.summary
+    assert "Empirical Outcome\nVerifier status: valid\nRaw C5: 0.5" in result.summary
+    assert "Verified returned profile: n_points=2, c5_bound=0.5" in result.summary
+    assert "head=[0.5, 0.5]" in result.summary
+    assert "Next Guidance Delta\nimprove score" in result.summary
+
+
+def test_build_execution_summary_normalizes_all_sections_and_verifier_outcome():
+    verification = VerificationResult(
+        reward=2.5,
+        raw_score=0.4,
+        valid=True,
+        status="valid",
+        message="C5 bound: 0.400000",
+        artifacts={"h_values": [0.25, 0.75], "c5_bound": 0.4, "n_points": 2},
+    )
+
+    summary = build_execution_summary(
+        model_summary="""Execution Interpretation
+model interpretation
+
+Implemented Algorithm
+model algorithm
+
+New Ideas Introduced
+coordinate repair
+
+Empirical Outcome
+model guessed success
+
+Failure / Bottleneck Analysis
+weak local basin
+
+Next Guidance Delta
+preserve repair and shrink steps""",
+        execution_thinking="execution thought",
+        solution="def run(seed=42, budget_s=1, **kwargs):\n    return ([0.5, 0.5], 0.5, 2)",
+        guidance="try repair",
+        verification=verification,
+    )
+
+    for section in EXECUTION_SUMMARY_SECTIONS:
+        assert section in summary
+    assert "Execution Interpretation\nexecution thought" in summary
+    assert "model interpretation" in summary
+    assert "Implemented Algorithm\nmodel algorithm" in summary
+    assert "```python\ndef run(seed=42, budget_s=1, **kwargs):" in summary
+    assert "Empirical Outcome\nVerifier status: valid\nRaw C5: 0.4\nReward: 2.5" in summary
+    assert "Verified returned profile: n_points=2, c5_bound=0.4" in summary
+    assert "model guessed success" not in summary
+
+
+def test_build_execution_summary_synthesizes_missing_summary_with_code():
+    verification = VerificationResult.execution_error("missing run")
+
+    summary = build_execution_summary(
+        model_summary=None,
+        execution_thinking="I attempted a search.",
+        solution="def helper():\n    pass",
+        guidance="Use deterministic search.",
+        verification=verification,
+    )
+
+    for section in EXECUTION_SUMMARY_SECTIONS:
+        assert section in summary
+    assert "Execution Interpretation\nI attempted a search." in summary
+    assert "```python\ndef helper():" in summary
+    assert "Empirical Outcome\nVerifier status: execution_error\nRaw C5: None\nReward: 0.0" in summary
+    assert "Verifier reported execution_error: missing run" in summary
+    assert "Next Guidance Delta\nContinue from the submitted guidance: Use deterministic search." in summary
 
 
 def test_agent_loop_loads_execution_llm_from_rollout_config_path(tmp_path):

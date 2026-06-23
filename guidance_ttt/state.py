@@ -84,7 +84,7 @@ class LLMRequest:
     user: str
     model: str
     temperature: float
-    max_tokens: int
+    max_tokens: int | None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -134,4 +134,3 @@ def make_root_node(*, problem_id: str, raw_score: float | None, reward: float) -
         children=[],
         metadata={"kind": "root"},
     )
-

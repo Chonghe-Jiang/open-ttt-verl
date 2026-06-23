@@ -81,5 +81,10 @@ def verify_erdos_solution_text(text: str, *, timeout_s: int) -> VerificationResu
         valid=True,
         status="valid",
         message=f"C5 bound: {raw_score:.6f}",
-        artifacts={"code": code},
+        artifacts={
+            "code": code,
+            "h_values": np.asarray(h_values, dtype=np.float64).tolist(),
+            "c5_bound": float(c5_bound),
+            "n_points": int(n_points),
+        },
     )

@@ -17,6 +17,8 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
             "groups_per_batch": 2,
             "group_size": 3,
             "puct_c": 1.5,
+            "max_buffer_size": 123,
+            "topk_children": 4,
             "eval_timeout": 5,
         },
         "llm": {
@@ -30,11 +32,18 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     assert prepared["slot_parquet"].exists()
     assert prepared["agent_loop_config"].exists()
     library = yaml.safe_load(Path(prepared["library_path"]).read_text())
-    assert library["config"] == {"rollout_n": 3, "puct_c": 1.5}
+    assert library["config"] == {
+        "rollout_n": 3,
+        "puct_c": 1.5,
+        "max_buffer_size": 123,
+        "topk_children": 4,
+    }
     slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
     assert slots[0]["extra_info"]["rollout_n"] == 3
     assert slots[0]["extra_info"]["group_size"] == 3
     assert slots[0]["extra_info"]["puct_c"] == 1.5
+    assert slots[0]["extra_info"]["max_buffer_size"] == 123
+    assert slots[0]["extra_info"]["topk_children"] == 4
     data = yaml.safe_load(Path(prepared["agent_loop_config"]).read_text())
     assert data[0]["name"] == "guidance_execution_erdos"
     assert data[0]["verifier_timeout_s"] == 5

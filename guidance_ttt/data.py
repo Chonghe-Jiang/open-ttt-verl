@@ -12,6 +12,8 @@ def build_slot_records(
     *,
     rollout_n: int = 1,
     puct_c: float = 1.0,
+    max_buffer_size: int = 1000,
+    topk_children: int = 2,
 ) -> list[dict[str, Any]]:
     return [
         {
@@ -27,6 +29,8 @@ def build_slot_records(
                 "rollout_n": int(rollout_n),
                 "group_size": int(rollout_n),
                 "puct_c": float(puct_c),
+                "max_buffer_size": int(max_buffer_size),
+                "topk_children": int(topk_children),
             },
         }
         for slot_idx in range(int(num_slots))
@@ -40,6 +44,8 @@ def write_slot_parquet(
     library_path: str,
     rollout_n: int = 1,
     puct_c: float = 1.0,
+    max_buffer_size: int = 1000,
+    topk_children: int = 2,
 ) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +54,8 @@ def write_slot_parquet(
         library_path=library_path,
         rollout_n=rollout_n,
         puct_c=puct_c,
+        max_buffer_size=max_buffer_size,
+        topk_children=topk_children,
     )
     try:
         import pandas as pd

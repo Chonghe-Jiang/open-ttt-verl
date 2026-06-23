@@ -62,6 +62,8 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
             initial_nodes=root_nodes,
             rollout_n=int(ttt_cfg["group_size"]),
             puct_c=float(ttt_cfg.get("puct_c", 1.0)),
+            max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
+            topk_children=int(ttt_cfg.get("topk_children", 2)),
         )
 
     slot_parquet = output_dir / "ttt_slots.parquet"
@@ -71,6 +73,8 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         library_path=str(library_path),
         rollout_n=int(ttt_cfg["group_size"]),
         puct_c=float(ttt_cfg.get("puct_c", 1.0)),
+        max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
+        topk_children=int(ttt_cfg.get("topk_children", 2)),
     )
 
     agent_loop_config = output_dir / "agent_loop.yaml"

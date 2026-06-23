@@ -11,7 +11,7 @@ from guidance_ttt.prompts import (
     build_execution_prompt,
     build_guidance_prompt,
     extract_guidance_or_format_error,
-    extract_tag,
+    extract_tag_or_none,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult
 from guidance_ttt.tasks.erdos import ERDOS_PROBLEM_PROMPT
@@ -165,6 +165,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             library_path,
             rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
             puct_c=float(extra_info.get("puct_c", 1.0)),
+            max_buffer_size=int(extra_info.get("max_buffer_size", 1000)),
+            topk_children=int(extra_info.get("topk_children", 2)),
         )
         selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
         context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
@@ -204,7 +206,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                     user=execution_prompt.user,
                     model=self.execution_llm_config.get("model", "mock-exec"),
                     temperature=float(self.execution_llm_config.get("temperature", 0.2)),
-                    max_tokens=int(self.execution_llm_config.get("max_tokens", 8192)),
+                    max_tokens=_execution_max_tokens(self.execution_llm_config),
                     metadata={"purpose": "execution"},
                 )
             )
@@ -240,7 +242,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             verifier_status=verification.status,
             verifier_message=verification.message,
             summary=summary,
-            reusable_idea=_extract_summary_line(summary, "Reusable idea"),
+            reusable_idea=_extract_reusable_idea(summary),
             failure_mode=None if verification.valid else verification.status,
             metadata={
                 "group_uid": group_uid,
@@ -257,6 +259,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "execution_model": self.execution_llm_config.get("model", "mock-exec"),
                 "execution_response_metadata": execution_response_metadata,
                 "execution_response_usage": execution_response_usage,
+                "verification_artifacts": verification.artifacts,
                 "execution_fallback_used": execution_result.fallback_used,
                 "execution_fallback_reason": execution_result.fallback_reason,
                 "original_execution_text": execution_result.original_execution_text,
@@ -335,11 +338,146 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         )
 
 
+EXECUTION_SUMMARY_SECTIONS = (
+    "Execution Interpretation",
+    "Implemented Algorithm",
+    "New Ideas Introduced",
+    "Empirical Outcome",
+    "Failure / Bottleneck Analysis",
+    "Next Guidance Delta",
+)
+
+
 def _extract_summary_line(summary: str, prefix: str) -> str:
     for line in summary.splitlines():
         if line.strip().lower().startswith(prefix.lower() + ":"):
             return line.split(":", 1)[1].strip()
     return ""
+
+
+def _extract_reusable_idea(summary: str) -> str:
+    sections = _parse_execution_summary_sections(summary)
+    for section_name in ("Next Guidance Delta", "New Ideas Introduced"):
+        value = sections.get(section_name, "").strip()
+        if value:
+            return value
+    return _extract_summary_line(summary, "Reusable idea")
+
+
+def _parse_execution_summary_sections(summary: str | None) -> dict[str, str]:
+    summary = (summary or "").strip()
+    if not summary:
+        return {}
+    canonical_by_lower = {name.lower(): name for name in EXECUTION_SUMMARY_SECTIONS}
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in summary.splitlines():
+        stripped = line.strip()
+        heading = stripped.lstrip("#").strip().rstrip(":").strip()
+        canonical = canonical_by_lower.get(heading.lower())
+        if canonical is not None:
+            current = canonical
+            sections.setdefault(current, [])
+            continue
+        if current is not None:
+            sections.setdefault(current, []).append(line.rstrip())
+    return {name: "\n".join(lines).strip() for name, lines in sections.items()}
+
+
+def _format_verifier_outcome(verification: VerificationResult) -> str:
+    raw_score = "None" if verification.raw_score is None else repr(float(verification.raw_score))
+    lines = [
+        f"Verifier status: {verification.status}",
+        f"Raw C5: {raw_score}",
+        f"Reward: {float(verification.reward)!r}",
+        f"Verifier message: {verification.message}",
+    ]
+    profile = _format_verified_profile(verification)
+    if profile:
+        lines.append(profile)
+    return "\n".join(lines)
+
+
+def _format_verified_profile(verification: VerificationResult) -> str:
+    if not verification.valid:
+        return ""
+    artifacts = verification.artifacts or {}
+    h_values = artifacts.get("h_values")
+    if not isinstance(h_values, list) or not h_values:
+        return ""
+    try:
+        values = [float(value) for value in h_values]
+    except (TypeError, ValueError):
+        return ""
+    n_points = artifacts.get("n_points", len(values))
+    c5_bound = artifacts.get("c5_bound", verification.raw_score)
+    head = ", ".join(repr(value) for value in values[:6])
+    tail = ", ".join(repr(value) for value in values[-4:])
+    return (
+        "Verified returned profile: "
+        f"n_points={int(n_points)}, c5_bound={float(c5_bound)!r}, "
+        f"h length={len(values)}, head=[{head}], tail=[{tail}]"
+    )
+
+
+def _fenced_python(solution: str) -> str:
+    solution = (solution or "").strip()
+    if not solution:
+        return "No solution code was extracted."
+    return "```python\n" + solution + "\n```"
+
+
+def build_execution_summary(
+    *,
+    model_summary: str | None,
+    execution_thinking: str,
+    solution: str,
+    guidance: str,
+    verification: VerificationResult,
+) -> str:
+    parsed = _parse_execution_summary_sections(model_summary)
+    model_summary_text = (model_summary or "").strip()
+    thinking = (execution_thinking or "").strip() or "Execution thinking was not provided."
+
+    interpretation_parts = [thinking]
+    model_interpretation = parsed.get("Execution Interpretation", "").strip()
+    if model_interpretation and model_interpretation not in interpretation_parts:
+        interpretation_parts.append(model_interpretation)
+
+    implemented_parts: list[str] = []
+    model_algorithm = parsed.get("Implemented Algorithm", "").strip()
+    if model_algorithm:
+        implemented_parts.append(model_algorithm)
+    implemented_parts.append(_fenced_python(solution))
+
+    new_ideas = parsed.get("New Ideas Introduced", "").strip()
+    if not new_ideas:
+        if model_summary_text and not parsed:
+            new_ideas = model_summary_text
+        else:
+            new_ideas = "No distinct new idea was provided beyond the submitted guidance."
+
+    failure_analysis = parsed.get("Failure / Bottleneck Analysis", "").strip()
+    if not failure_analysis:
+        failure_analysis = (
+            "No verifier failure reported."
+            if verification.valid
+            else f"Verifier reported {verification.status}: {verification.message}"
+        )
+
+    next_guidance = parsed.get("Next Guidance Delta", "").strip()
+    if not next_guidance:
+        next_guidance = f"Continue from the submitted guidance: {guidance[:500].strip()}"
+
+    section_values = {
+        "Execution Interpretation": "\n\n".join(interpretation_parts).strip(),
+        "Implemented Algorithm": "\n\n".join(implemented_parts).strip(),
+        "New Ideas Introduced": new_ideas,
+        "Empirical Outcome": _format_verifier_outcome(verification),
+        "Failure / Bottleneck Analysis": failure_analysis,
+        "Next Guidance Delta": next_guidance,
+    }
+    return "\n\n".join(f"{name}\n{section_values[name]}" for name in EXECUTION_SUMMARY_SECTIONS)
 
 
 def _config_get(config: Any, key: str, default: Any = None) -> Any:
@@ -351,6 +489,18 @@ def _config_get(config: Any, key: str, default: Any = None) -> Any:
     if callable(getter):
         return getter(key, default)
     return getattr(config, key, default)
+
+
+def _execution_max_tokens(config: dict[str, Any]) -> int | None:
+    if "max_tokens" not in config:
+        return 8192
+    value = config.get("max_tokens")
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null", "auto", "context", "unlimited"}:
+        return None
+    value_int = int(value)
+    return None if value_int <= 0 else value_int
 
 
 def _verify_execution_without_fallback(
@@ -365,26 +515,22 @@ def _verify_execution_without_fallback(
         verification = verify_erdos_solution_text(execution_text, timeout_s=timeout_s)
     else:
         verification = VerificationResult.execution_error(initial_error)
+    execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
+    solution = extract_python_code(execution_text) or ""
+    summary = build_execution_summary(
+        model_summary=extract_tag_or_none(execution_text, "summary"),
+        execution_thinking=execution_thinking,
+        solution=solution,
+        guidance=guidance,
+        verification=verification,
+    )
     return ExecutionVerification(
         execution_text=execution_text,
-        execution_thinking=extract_tag(execution_text, "execution_thinking"),
-        solution=extract_python_code(execution_text) or "",
-        summary=_execution_summary_or_default(execution_text=execution_text, guidance=guidance),
+        execution_thinking=execution_thinking,
+        solution=solution,
+        summary=summary,
         verification=verification,
         fallback_used=False,
         fallback_reason=None,
         original_execution_text=original_execution_text,
-    )
-
-
-def _execution_summary_or_default(*, execution_text: str, guidance: str) -> str:
-    summary = extract_tag(execution_text, "summary")
-    if summary != execution_text.strip():
-        return summary
-    return (
-        "Outcome hypothesis: execution did not provide summary.\n"
-        f"Reusable idea: {guidance[:300]}\n"
-        "Risk / possible failure mode: missing_summary\n"
-        "What future guidance should preserve: selected library context.\n"
-        "What future guidance should change: request clearer executable plan."
     )
