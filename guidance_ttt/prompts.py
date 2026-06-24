@@ -316,26 +316,6 @@ def build_guidance_prompt(
         best_valid_target = KNOWN_GOOD_ERDOS_RAW_C5
     else:
         best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
-    aspiration_target = 0.381019
-    if best_valid is None:
-        root_default_text = f"""- If no previous valid summary/profile is visible, use the known-good 63-point
-  fractional seed as the default starting point, not a newly invented small-n profile:
-  n_points=63, raw C5 approximately {KNOWN_GOOD_ERDOS_RAW_C5}, project_to_box_sum, c5_score with
-  np.correlate(..., mode="full") * (2.0 / n), SLSQP maxiter=300, ftol=1e-13, box
-  bounds, equality sum constraint, and h=[{KNOWN_GOOD_ERDOS_H_PROFILE}]. This seed
-  came from an iterative 63-point improvement ladder with raw C5 values
-  {KNOWN_GOOD_ERDOS_PROGRESS_LADDER}. Do not
-  propose n_points=9, a linear ramp, a cosine profile, or any fresh symmetric toy
-  profile in the root/default case."""
-    else:
-        root_default_text = f"""- If no previous valid summary/profile is visible, use the known-good 63-point
-  fractional seed, not a newly invented small-n profile: n_points=63, raw C5 approximately {KNOWN_GOOD_ERDOS_RAW_C5},
-  project_to_box_sum, c5_score with np.correlate(..., mode="full") * (2.0 / n),
-  SLSQP maxiter=300, ftol=1e-13, box bounds, equality sum constraint. This seed
-  came from an iterative 63-point improvement ladder with raw C5 values
-  {KNOWN_GOOD_ERDOS_PROGRESS_LADDER}. Do not
-  propose n_points=9, a linear ramp, a cosine profile, or any fresh symmetric toy
-  profile."""
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -357,158 +337,36 @@ Visits: {selected_node.visits}
 {failure_text or "No local failure entries yet."}
 </local_failures>
 
-The selected node's raw score is a local reference. The target to beat is the
-current best valid raw score when one is visible. Lower raw C5 is better.
-Do not recommend the constant h[i] = 0.5 baseline unless the selected node is invalid;
-it is verifier-valid but gives no training signal when copied.
-Non-binary asymmetric h values and deterministic local/numerical search are allowed.
-Avoid vague RL-reward advice; request concrete deterministic improvement steps that
-can be implemented inside run(). Do not propose alternating 0/1 patterns; the verifier
-scores them poorly.
+# Objective
+Your task is to provide the next **evolutionary guidance** to beat the current best valid raw score ({best_valid_target}). Lower raw C5 is better.
 
-The guidance should make the execution model do controlled improvement, not restart
-from scratch. It must conclude the previous summary before proposing a delta:
-- Preserve the current best valid construction with raw_score = {best_valid_target}.
-- Do not restart from the constant baseline.
-- Use the best valid h profile as the initialization.
-{root_default_text}
-- Inherit concrete selected/global details: n_points, raw C5, h/profile source,
-  step sizes, iteration counts, seeds, projection helper names, optimizer choices,
-  bounds, equality constraints, symmetry assumptions, and known failure modes.
-  Do not collapse actual values into vague phrases.
-- If "Verified returned profile artifacts" are present, they are the authoritative
-  best initialization. Restate their n_points, raw C5, and exact h=[...] values in
-  Previous Summary Facts or Concrete Search Recipe, then propose a delta around that
-  actual returned profile rather than around the original seed.
-- If extracted attached-solution facts contain concrete profile facts such as h head,
-  tail, length, or h=[...], restate those profile facts in Previous Summary Facts or
-  Concrete Search Recipe. The initialization must not be reduced to "known-good seed"
-  when numeric profile facts are visible.
-- Head/tail profile facts are summaries, not a complete vector. Do not concatenate
-  head and tail values to invent a full h array. If full h is not visible, say to
-  initialize by rerunning/reusing the previous verified solution code or verified
-  returned profile, then perturb that actual profile.
-- Treat the summary's Next Guidance Delta as the first candidate delta, then sharpen it
-  into executable instructions.
-- The training signal should show step-to-step improvement. Name the parent/selected
-  raw C5 and current best valid raw C5, then propose a delta intended to lower both.
-  If the previous step did not improve, change at least two search knobs and state why.
-- Step-to-step progress is the primary objective. A rollout that returns the inherited
-  profile unchanged is a failed experiment even if it is verifier-valid. Do not frame
-  copying the current best as the safe choice; instead force the next rollout to test
-  a concrete non-copy candidate family and report which deltas were rejected.
-- Plateau guard / active-lag escape: if the selected/global best raw C5 equals a visible previous best,
-  do not return the same profile and do not say improvement is impossible. Use a
-  two-family escape: first repeat the best known coordinate/pair sweep with a smaller
-  schedule [5e-5, 2e-5, 1e-5, 5e-6, 1e-6], then compute the active lag attaining
-  max(np.correlate(h, 1-h, mode="full") * 2/n), list the top contributing pairs
-  (i, i-lag), try signed mass transfers on those pairs with deltas [1e-6, 5e-7, 1e-7],
-  project/evaluate after each move, and run SLSQP from the top distinct candidates.
-- Strong-seed guard: if the current best is at or below 0.38103, assume it came from
-  the known 63-point improvement ladder, whose verified milestones were
-  {KNOWN_GOOD_ERDOS_PROGRESS_LADDER}. Do not regress to the old 19-point 0.3811138496
-  profile or generic coordinate sweeps. If ultra-small active-lag transfers plateau,
-  switch families: run deterministic finite-difference Adam/smooth-max refinement
-  around the 63-point profile, perturbing the strong profile at scales
-  [1e-2, 3e-3, 1e-3, 3e-4] before projected active-lag polishing.
-- Explicit step-progress requirement: the next guidance must name the previous raw C5
-  and a lower target for the next step. Prefer a modest strict improvement over a
-  risky reset; the desired training trace is a descending chain, not one copied
-  incumbent repeated across steps.
-- The New Guidance Delta must be a real algorithmic change relative to the inherited
-  summary. It cannot be "reuse/copy the template", "run the same SLSQP again", "no
-  further search", or only "keep the same parameters".
-- If the previous summary says there was no distinct new idea, or if the empirical
-  outcome did not beat the current best valid raw score, change at least two concrete
-  search knobs: perturbation scale schedule, coordinate/pair order, number of trials,
-  restart seeds, top-K candidates passed to SLSQP, optimizer initialization, or
-  n_points choice.
-- Make the delta executable: state initialization/source, coordinate or pair order,
-  signed delta schedule, passes/trials, top-K refinements, and fallback next delta.
-- If the selected/global guidance already used the same coordinate sweep family, do
-  not repeat it unchanged. Choose and name a distinct deterministic family such as
-  pairwise mass-transfer sweeps, reverse-order half sweeps, two-coordinate
-  antisymmetric perturbations, deterministic seeded direction probes, or a controlled
-  n_points extension only after exploiting the current 19-point basin.
-- Prefer a deterministic non-copy search schedule such as paired/coordinate sweeps over
-  deltas [5e-4, 2e-4, 1e-4, 5e-5, 1e-5], projecting after every candidate, evaluating
-  c5_score immediately, keeping the best candidate, then running SLSQP only from the
-  top near-tie/improved candidates.
-- Include known information directly in the guidance when useful: current best raw
-  score, best valid profile facts, verifier constraints, verifier normalization, and
-  the strict improvement target.
-- Search only controlled deterministic perturbations around it while preserving:
-  0 <= h[i] <= 1, sum(h) = n_points / 2, the same verifier normalization,
-  and mirror/complement symmetry if present in the current best profile.
-- Optimize only the independent half of the variables.
-- Use a small local search such as coordinate perturbation, projected line search,
-  or SLSQP if available.
-- For each candidate, immediately evaluate using the official verifier and keep the
-  lowest raw C5.
-- Preserve n_points from the inherited best profile by default. For the known-good
-  root/default profile this means n_points=63. Only propose alternate n_points values
-  as a secondary controlled experiment after the inherited profile has been exploited,
-  and state the interpolation/initialization rule for the alternate size.
-- Target: strictly improve over {best_valid_target}, not merely beat 0.5.
-- Aspirational target: search for a path toward raw C5 <= {aspiration_target}; if this
-  is not reachable in one rollout, the guidance should still specify the smallest
-  concrete local improvement to try next.
+# Evolutionary Guidelines
+1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
+2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
+3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
+    * **The `<think>` block:** Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+    * **The `<guidance>` block:** This must contain only your final, actionable evolutionary trajectory. It should clearly outline:
+        - The **Evolutionary Mutation**: The new structural or mathematical property being explored.
+        - The **Directional Search Strategy**: The high-level algorithmic mechanism to execute the mutation.
+        - The **Progress Target**: The explicit structural change that indicates successful mutation from {selected_node.raw_score} towards {best_valid_target} or lower.
 
-Thinking is allowed, but the submitted guidance must be inside the XML block below.
-If the XML block is missing, only text outside any <think>...</think> block will be
-used as the submitted guidance.
+Provide your response exactly in the following format:
 
-Return exactly one block and nothing else. The block must use these headings and must
-contain at least five concrete inherited details when the summaries provide them:
+<think>
+</think>
+
 <guidance>
-Previous Summary Facts to Preserve:
-- ...
-
-Hypothesis:
-...
-
-Inherited Implementation Details:
-- ...
-
-New Guidance Delta:
-- ...
-
-Expected Step Improvement:
-- Parent/selected raw C5: ...
-- Current best valid raw C5: ...
-- Why this delta should lower the next step: ...
-- Plateau escape if equal to current best: include active lag, top contributing pairs,
-  tiny signed deltas, and top-K refinement.
-
-Concrete Search Recipe:
-- Initialization: include exact n_points and h=[...] values if visible; otherwise name
-  the inherited seed/profile source. If only head/tail are visible, do not reconstruct
-  the missing middle values; initialize from the previous verified solution/profile.
-- Sweep/order: ...
-- Signed deltas: ...
-- Trials/passes/top-K/SLSQP: ...
-- Fallback next delta: ...
-
-No-op Guard:
-- Returning the inherited profile unchanged, or summarizing that the safest approach
-  is to keep the current best, is not acceptable. Specify the non-copy search that
-  must run before any fallback.
-
-Execution Instructions:
-1. ...
-2. ...
-3. ...
-
-Acceptance / Fallback:
-- Beat raw C5 {best_valid_target}; aspire toward <= {aspiration_target}.
-- If no improvement appears, report the bottleneck and the next smaller delta rather than returning a copied baseline.
 </guidance>
 """
     return Prompt(
         system=(
-            "You are the trainable guidance model. Produce high level ideas, not final code. "
-            "You may think first, but the final submitted guidance should be in one "
-            "<guidance>...</guidance> block."
+            "You are the Guidance Model, acting as a strategic navigator for an open-ended scientific "
+            "discovery process.\n\n"
+            "Your primary objective is to provide **evolutionary guidance**. Do not write final code "
+            "or focus on low-level implementation details. Instead, your task is to propose high-level "
+            "directional shifts, conceptual mutations, and novel pathways to explore the search space.\n\n"
+            "Focus on how the current ideas can *evolve* to escape local optima and discover "
+            "fundamentally new mechanisms."
         ),
         user=user,
     )

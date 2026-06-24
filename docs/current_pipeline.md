@@ -235,7 +235,11 @@ guidance_ttt/prompts.py::build_guidance_prompt
 ### Guidance System Prompt 原文
 
 ```text
-You are the trainable guidance model. Produce high level ideas, not final code. You may think first, but the final submitted guidance should be in one <guidance>...</guidance> block.
+You are the Guidance Model, acting as a strategic navigator for an open-ended scientific discovery process.
+
+Your primary objective is to provide **evolutionary guidance**. Do not write final code or focus on low-level implementation details. Instead, your task is to propose high-level directional shifts, conceptual mutations, and novel pathways to explore the search space.
+
+Focus on how the current ideas can *evolve* to escape local optima and discover fundamentally new mechanisms.
 ```
 
 ### Guidance User Prompt 模板原文
@@ -264,57 +268,25 @@ Visits: {selected_node.visits}
 {failure_text or "No local failure entries yet."}
 </local_failures>
 
-The selected node's raw score is a local reference. The target to beat is the
-current best valid raw score when one is visible. Lower raw C5 is better.
-Do not recommend the constant h[i] = 0.5 baseline unless the selected node is invalid;
-it is verifier-valid but gives no training signal when copied.
-Non-binary asymmetric h values and deterministic local/numerical search are allowed.
-Avoid vague RL-reward advice; request concrete deterministic improvement steps that
-can be implemented inside run(). Do not propose alternating 0/1 patterns; the verifier
-scores them poorly.
+# Objective
+Your task is to provide the next **evolutionary guidance** to beat the current best valid raw score ({best_valid_target}). Lower raw C5 is better.
 
-The guidance should make the execution model do controlled improvement, not restart
-from scratch:
-- Preserve the current best valid construction with raw_score = {best_valid_target}.
-- Do not restart from the constant baseline.
-- Use the best valid h profile as the initialization.
-- Include known information directly in the guidance when useful: current best raw
-  score, best valid solution excerpt/profile, verifier constraints, verifier
-  normalization, and the strict improvement target.
-- Search only small deterministic perturbations around it while preserving:
-  1. 0 <= h[i] <= 1
-  2. sum(h) = n_points / 2
-  3. the same verifier normalization
-  4. mirror/complement symmetry if present in the current best profile
-- Optimize only the independent half of the variables.
-- Use a small local search such as coordinate perturbation, projected line search,
-  or SLSQP if available.
-- For each candidate, immediately evaluate using the official verifier and keep the
-  lowest raw C5.
-- Use n_points in {9, 11, 13, 15, 17, 21, 25}; stop if no improvement after a small
-  fixed number of trials.
-- Target: strictly improve over {best_valid_target}, not merely beat 0.5.
+# Evolutionary Guidelines
+1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
+2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
+3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
+    * **The `<think>` block:** Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+    * **The `<guidance>` block:** This must contain only your final, actionable evolutionary trajectory. It should clearly outline:
+        - The **Evolutionary Mutation**: The new structural or mathematical property being explored.
+        - The **Directional Search Strategy**: The high-level algorithmic mechanism to execute the mutation.
+        - The **Progress Target**: The explicit structural change that indicates successful mutation from {selected_node.raw_score} towards {best_valid_target} or lower.
 
-The preferred submitted guidance is the text inside the XML block below. Thinking is allowed,
-but if the XML block is missing, only text outside any <think>...</think> block will be used
-as the submitted guidance.
+Provide your response exactly in the following format:
 
-Return exactly one block and nothing else:
+<think>
+</think>
+
 <guidance>
-Preserve the current best valid construction with raw_score = {best_valid_target}.
-Do not restart from the constant baseline.
-Include known information directly in the guidance: current best raw score, best valid
-solution/profile, verifier constraints, verifier normalization, and the strict target.
-
-Hypothesis: controlled local perturbations around the current best valid h can strictly
-improve raw C5 without losing verifier validity.
-Plan:
-1. Use the best valid h profile as initialization, not the 0.5 baseline.
-2. Search only small deterministic perturbations that preserve box, sum, verifier normalization, and symmetry constraints.
-3. Optimize only the independent half variables and immediately score each candidate with the official verifier.
-What to preserve: current best valid low-C5 structure and any mirror/complement symmetry
-What to change to beat raw score {best_valid_target}: make controlled local repairs/perturbations around the best valid profile
-Expected verifier signal: strictly lower raw C5 than {best_valid_target}
 </guidance>
 ````
 

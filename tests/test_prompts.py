@@ -70,53 +70,29 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "preserve symmetry" in prompt.user
     assert "def run(seed=42" not in prompt.user
     assert "<guidance>" in prompt.user
-    assert "You may think first" in prompt.system
-    assert "final submitted guidance" in prompt.system
-    assert "Thinking is allowed" in prompt.user
-    assert "only text outside any <think>...</think> block" in prompt.user
-    assert "target to beat" in prompt.user
-    assert "constant h[i] = 0.5 baseline" in prompt.user
-    assert "controlled improvement" in prompt.user
-    assert "Use the best valid h profile as the initialization" in prompt.user
-    assert "Preserve n_points from the inherited best profile by default" in prompt.user
-    assert "mirror/complement symmetry" in prompt.user
-    assert "same verifier normalization" in prompt.user
-    assert "Avoid vague RL-reward advice" in prompt.user
-    assert "Previous Summary Facts to Preserve" in prompt.user
-    assert "Inherited Implementation Details" in prompt.user
-    assert "New Guidance Delta" in prompt.user
-    assert "Expected Step Improvement" in prompt.user
-    assert "Concrete Search Recipe" in prompt.user
-    assert "No-op Guard" in prompt.user
-    assert "Acceptance / Fallback" in prompt.user
-    assert "at least five concrete inherited details" in prompt.user
+    assert "You are the Guidance Model" in prompt.system
+    assert "evolutionary guidance" in prompt.system
+    assert "Do not write final code" in prompt.system
+    assert "escape local optima" in prompt.system
+    assert "# Objective" in prompt.user
+    assert "next **evolutionary guidance**" in prompt.user
+    assert "# Evolutionary Guidelines" in prompt.user
+    assert "Analyze History, Do Not Repeat It" in prompt.user
+    assert "High-Level Mutations, No Low-Level Details" in prompt.user
+    assert "Strict Separation of Thought and Action" in prompt.user
+    assert "<think>" in prompt.user
+    assert "</think>" in prompt.user
+    assert "The `<think>` block" in prompt.user
+    assert "The `<guidance>` block" in prompt.user
+    assert "Evolutionary Mutation" in prompt.user
+    assert "Directional Search Strategy" in prompt.user
+    assert "Progress Target" in prompt.user
+    assert "Do not write code or micromanage hyperparameters" in prompt.user
     assert "coordinate step 2e-4" in prompt.user
     assert "random walk step size 1e-3 for 2000 steps" in prompt.user
     assert "SLSQP maxiter=300" in prompt.user
-    assert "cannot be \"reuse/copy the template\"" in prompt.user
-    assert "coordinate or pair order" in prompt.user
-    assert "Signed deltas" in prompt.user
-    assert "pairwise mass-transfer sweeps" in prompt.user
-    assert "extracted attached-solution facts contain concrete profile facts" in prompt.user
-    assert "Do not concatenate" in prompt.user
-    assert "previous verified solution/profile" in prompt.user
-    assert "deltas [5e-4, 2e-4, 1e-4, 5e-5, 1e-5]" in prompt.user
-    assert "step-to-step improvement" in prompt.user
-    assert "Parent/selected raw C5" in prompt.user
-    assert "Why this delta should lower the next step" in prompt.user
-    assert "Plateau guard" in prompt.user
-    assert "Plateau escape if equal to current best" in prompt.user
-    assert "active-lag escape" in prompt.user
-    assert "top contributing pairs" in prompt.user
-    assert "[1e-6, 5e-7, 1e-7]" in prompt.user
-    assert "known-good 63-point" in prompt.user
-    assert "raw C5 approximately 0.3810181186942784" in prompt.user
-    assert "iterative 63-point improvement ladder" in prompt.user
-    assert "Strong-seed guard" in prompt.user
-    assert "propose n_points=9" in prompt.user
-    assert "a linear ramp" in prompt.user
-    assert "Explicit step-progress requirement" in prompt.user
-    assert "0.3810190847194418 -> 0.3810181186942784" in prompt.user
+    assert "current best valid raw score (0.4)" in prompt.user
+    assert "successful mutation from 0.4 towards 0.4 or lower" in prompt.user
 
 
 def test_guidance_prompt_attaches_global_best_and_local_failure_history():
@@ -168,25 +144,19 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
         local_failure_entries=[],
     )
 
-    assert "Preserve the current best valid construction with raw_score = 0.3821438682282878" in prompt.user
-    assert "Do not restart from the constant baseline" in prompt.user
-    assert "Use the best valid h profile as the initialization" in prompt.user
-    assert "Search only controlled deterministic" in prompt.user
-    assert "Optimize only the independent half of the variables" in prompt.user
-    assert "Inherit concrete selected/global details" in prompt.user
-    assert "best valid profile facts" in prompt.user
-    assert "Preserve n_points from the inherited best profile by default" in prompt.user
-    assert "Target: strictly improve over 0.3821438682282878, not merely beat 0.5" in prompt.user
-    assert "Aspirational target: search for a path toward raw C5 <= 0.381019" in prompt.user
-    assert "Do not collapse actual values into vague phrases" in prompt.user
-    assert "Treat the summary's Next Guidance Delta as the first candidate delta" in prompt.user
-    assert "The training signal should show step-to-step improvement" in prompt.user
-    assert "change at least two concrete" in prompt.user
-    assert "search knobs" in prompt.user
-    assert "top-K candidates passed to SLSQP" in prompt.user
-    assert "distinct deterministic family" in prompt.user
-    assert "not a newly invented small-n profile" in prompt.user
+    assert "current best valid raw score (0.3821438682282878)" in prompt.user
+    assert "Lower raw C5 is better" in prompt.user
+    assert "why the current profile plateaued" in prompt.user
+    assert "conceptual algorithmic shifts" in prompt.user
+    assert "structural relaxations" in prompt.user
+    assert "novel search topologies" in prompt.user
+    assert "introducing a new mathematical constraint" in prompt.user
+    assert "hybridizing optimization frameworks" in prompt.user
+    assert "Do not write code or micromanage hyperparameters" in prompt.user
+    assert "successful mutation from 0.4 towards 0.3821438682282878 or lower" in prompt.user
     assert "The preferred submitted guidance" not in prompt.user
+    assert "Preserve the current best valid construction" not in prompt.user
+    assert "SLSQP again" not in prompt.user
     assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
     assert "Do not ask the execution model to reinvent minimax from scratch" not in prompt.user
 
@@ -238,11 +208,10 @@ def test_guidance_prompt_prefers_verified_profile_artifacts_over_summary_head_ta
     )
 
     assert "Verified returned profile artifacts (authoritative initialization)" in prompt.user
-    assert "If \"Verified returned profile artifacts\" are present" in prompt.user
     assert "raw C5=0.3812435631313583" in prompt.user
     assert "h=[1.0, 0.9872194239853203" in prompt.user
     assert "0.9999965067437544]" in prompt.user
-    assert "actual returned profile rather than around the original seed" in prompt.user
+    assert "why the current profile plateaued" in prompt.user
 
 
 def test_guidance_prompt_root_defaults_to_known_good_target_and_profile_facts():
@@ -281,9 +250,8 @@ Try pairwise mass transfer around the first five coordinates.
         local_failure_entries=[code_entry],
     )
 
-    assert "Preserve the current best valid construction with raw_score = 0.3810181186942784" in prompt.user
-    assert "Target: strictly improve over 0.3810181186942784, not merely beat 0.5" in prompt.user
-    assert "Beat raw C5 0.3810181186942784" in prompt.user
+    assert "current best valid raw score (0.3810181186942784)" in prompt.user
+    assert "successful mutation from 0.5 towards 0.3810181186942784 or lower" in prompt.user
     assert "Extracted attached-solution facts" in prompt.user
     assert "profile h=[0.9999934729084969" in prompt.user
     assert "0.7922939787622869" in prompt.user
