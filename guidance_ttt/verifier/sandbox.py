@@ -18,6 +18,9 @@ class SandboxResult:
 
 
 def extract_python_code(text: str) -> str | None:
+    solution_match = re.search(r"<solution>\s*([\s\S]*?)\s*</solution>", text)
+    if solution_match:
+        return extract_python_code(solution_match.group(1))
     matches = list(re.finditer(r"```python\s*([\s\S]*?)\s*```", text))
     if matches:
         return matches[-1].group(1).strip()

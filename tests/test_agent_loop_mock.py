@@ -57,10 +57,12 @@ def test_valid_execution_is_kept_without_fallback():
 Use the baseline to confirm verifier plumbing.
 </execution_thinking>
 
+<solution>
 ```python
 def run(seed=42, budget_s=1, **kwargs):
     return ([0.5, 0.5], 0.5, 2)
 ```
+</solution>
 <summary>
 Execution Interpretation
 Baseline execution.
@@ -100,6 +102,52 @@ improve score
     assert "Verified returned profile: n_points=2, c5_bound=0.5" in result.summary
     assert "head=[0.5, 0.5]" in result.summary
     assert "Next Guidance Delta\nimprove score" in result.summary
+
+
+def test_solution_tag_is_preferred_when_summary_contains_python_block():
+    execution_text = """<execution_thinking>
+Use tagged solution.
+</execution_thinking>
+
+<solution>
+```python
+def run(seed=42, budget_s=1, **kwargs):
+    return ([0.5, 0.5], 0.5, 2)
+```
+</solution>
+
+<summary>
+Execution Interpretation
+The summary includes a non-solution code example.
+
+Implemented Algorithm
+```python
+def helper_only():
+    return None
+```
+
+New Ideas Introduced
+tagged extraction
+
+Empirical Outcome
+pending
+
+Failure / Bottleneck Analysis
+none
+
+Next Guidance Delta
+continue
+</summary>"""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        guidance="Use tagged solution.",
+        timeout_s=20,
+    )
+
+    assert result.verification.valid is True
+    assert "def run(seed=42" in result.solution
+    assert "helper_only" not in result.solution
 
 
 def test_build_execution_summary_normalizes_all_sections_and_verifier_outcome():

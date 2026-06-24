@@ -350,7 +350,7 @@ guidance_ttt/prompts.py::build_execution_prompt
 
 - 给冻结 execution model 一个完整任务上下文
 - 强制输出顺序为 thinking、solution code、summary
-- 要求 Python code 定义 `run(seed=42, budget_s=1, **kwargs)`
+- 具体 code interface 由 `<problem>{problem_prompt}</problem>` 定义
 - 要求 summary 包含六个 canonical sections
 
 ### Execution System Prompt 原文
@@ -384,148 +384,25 @@ Raw score: {selected_node.raw_score}
 {guidance}
 </guidance>
 
-Target: produce a valid candidate with raw C5 lower than {target_raw_score}.
-The constant h[i] = 0.5 construction is only a baseline and should not be returned
-unchanged. If previous solution code is shown, treat it as a reference point to beat,
-not as code to copy. The verifier permits fractional, non-binary h values.
-Your code must compute the actual c5_bound for the returned h. If the computed
-c5_bound is not lower than the target, run a deterministic local search around the
-best previous valid profile and return the best candidate found. Do not use assert as the only way to satisfy constraints;
-explicitly project or adjust h so sum(h) == n_points / 2 before returning. Use a
-box-constrained projection or deterministic repair step after every perturbation so
-the final returned h satisfies sum(h) == n_points / 2 to verifier tolerance.
-Immediately before return, recompute h.sum() and c5_bound from the final h; do not
-return candidates with residual sum error.
+Use the problem statement as the authoritative task specification.
+Use the attached library context as historical evidence, not as code to copy blindly.
+Implement one concrete solution that follows the guidance while satisfying the problem specification.
 
-Implementation direction:
-- Initialize from this global best valid solution when available; otherwise use the
-  selected previous solution code when it is valid and available.
-- Use previous solution code as the initialization when it is valid and available.
-- Search only small deterministic perturbations around the current best profile.
-- Use n_points in {9, 11, 13, 15, 17, 21, 25} and preserve n_points when reusing
-  a previous valid profile.
-- Define a helper named project_to_box_sum(h, target) for final box-constrained projection.
-- Use deterministic projected local search with symmetric coordinate perturbations and
-  the same c5_bound objective; SLSQP is acceptable only as a bounded local refinement.
-- Optimize only the independent half of variables when mirror/complement symmetry is
-  present in the current best profile.
-- Prefer mirror-symmetric fractional profiles over binary patterns.
-- Do not return an alternating 0/1 construction; it looks attractive but has scored badly.
-- The desired target is a strict improvement over the current best raw C5, not merely
-  beating 0.5.
-- Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
-  never return string-valued n_points, numpy scalar objects, or unprojected arrays.
-
-Known-good implementation skeleton for verifier-compatible scoring and projection.
-Use it as a scoring/repair reference:
-<known_good_minimax_template>
-```python
-{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
-```
-</known_good_minimax_template>
-
-Return exactly these three blocks in this order:
-1. <execution_thinking>...</execution_thinking>
-2. One fenced Python code block containing def run(seed=42, budget_s=1, **kwargs):
-3. <summary>...</summary>
-
-Keep reasoning and summary short. Do not claim verifier success because the verifier
-has not run yet.
+Return exactly these three blocks:
 
 <execution_thinking>
-brief reasoning
+Briefly explain how the guidance was translated into the submitted solution.
 </execution_thinking>
 
+<solution>
 ```python
-def run(seed=42, budget_s=1, **kwargs):
-    # final runnable solution
+# complete executable solution required by the problem
 ```
+</solution>
 
 <summary>
-Execution Interpretation
-...
-
-Implemented Algorithm
-...
-
-New Ideas Introduced
-...
-
-Empirical Outcome
-Pending verifier execution.
-
-Failure / Bottleneck Analysis
-...
-
-Next Guidance Delta
-...
+Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, what search or refinement strategy was used. Do not include code, hard-coded arrays, or copied profile values.
 </summary>
-````
-
-### Execution Prompt 中嵌入的 known-good skeleton 原文
-
-`{ERDOS_MINIMAX_EXECUTION_TEMPLATE}` 当前展开为：
-
-````python
-import numpy as np
-
-def project_to_box_sum(h, target):
-    h = np.clip(np.asarray(h, dtype=float), 0.0, 1.0)
-    for _ in range(100):
-        diff = float(target - h.sum())
-        if abs(diff) < 1e-12:
-            break
-        free = (h > 1e-12) & (h < 1.0 - 1e-12)
-        if not np.any(free):
-            free = np.ones_like(h, dtype=bool)
-        h[free] += diff / float(np.count_nonzero(free))
-        h = np.clip(h, 0.0, 1.0)
-    return h
-
-def c5_score(h):
-    n = int(len(h))
-    return float(np.max(np.correlate(h, 1.0 - h, mode="full") * (2.0 / n)))
-
-def run(seed=42, budget_s=1, **kwargs):
-    n_points = 19
-    target = n_points / 2.0
-    h = np.array([
-        0.9999877603639307, 0.9871689928539907, 0.6538052901835218,
-        0.26496040864134757, 0.7921008518715473, 0.22244708724960485,
-        0.43594987520258144, 0.31249596343709657, 0.013288180619505931,
-        0.10447938652930353, 0.04501365418702798, 0.3119089519044072,
-        0.4358802114412871, 0.22261948541845558, 0.7918283420600218,
-        0.268186249932381, 0.6427085234261372, 0.9952347090654273,
-        0.9999360756124249,
-    ], dtype=float)
-    h = project_to_box_sum(h, target)
-    best_h = h.copy()
-    best_c5 = c5_score(best_h)
-
-    try:
-        from scipy.optimize import minimize
-
-        constraints = ({"type": "eq", "fun": lambda x: float(np.sum(x) - target)},)
-        result = minimize(
-            c5_score,
-            best_h,
-            method="SLSQP",
-            bounds=[(0.0, 1.0)] * n_points,
-            constraints=constraints,
-            options={"maxiter": 300, "ftol": 1e-13, "disp": False},
-        )
-        if result.success:
-            candidate = project_to_box_sum(result.x, target)
-            candidate_c5 = c5_score(candidate)
-            if candidate_c5 <= best_c5:
-                best_h = candidate
-                best_c5 = candidate_c5
-    except Exception:
-        pass
-
-    best_h = project_to_box_sum(best_h, target)
-    c5_bound = c5_score(best_h)
-    return [float(x) for x in best_h], float(c5_bound), int(n_points)
 ````
 
 ## Execution 输出合同
@@ -533,7 +410,7 @@ def run(seed=42, budget_s=1, **kwargs):
 新版 execution model 必须按顺序输出：
 
 1. `<execution_thinking>...</execution_thinking>`
-2. 一个 fenced Python code block，内部定义 `run(seed=42, budget_s=1, **kwargs)`
+2. `<solution>...</solution>`，内部包含一个 fenced Python code block，code 实现 `<problem>` 要求的完整 solution
 3. `<summary>...</summary>`
 
 也就是：
@@ -543,29 +420,14 @@ def run(seed=42, budget_s=1, **kwargs):
 ...
 </execution_thinking>
 
+<solution>
 ```python
-def run(seed=42, budget_s=1, **kwargs):
-    ...
+# complete executable solution required by the problem
 ```
+</solution>
 
 <summary>
-Execution Interpretation
-...
-
-Implemented Algorithm
-...
-
-New Ideas Introduced
-...
-
-Empirical Outcome
-Pending verifier execution.
-
-Failure / Bottleneck Analysis
-...
-
-Next Guidance Delta
-...
+Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, what search or refinement strategy was used. Do not include code, hard-coded arrays, or copied profile values.
 </summary>
 ````
 

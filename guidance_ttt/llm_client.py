@@ -44,10 +44,12 @@ Try a more targeted local optimization while preserving the parent construction 
 Use the guidance to return a simple valid Erdos baseline construction.
 </execution_thinking>
 
+<solution>
 ```python
 def run(seed=42, budget_s=1, **kwargs):
     return ([0.5, 0.5], 0.5, 2)
 ```
+</solution>
 
 <summary>
 Execution Interpretation

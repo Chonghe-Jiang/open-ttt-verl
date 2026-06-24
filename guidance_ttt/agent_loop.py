@@ -503,6 +503,13 @@ def _execution_max_tokens(config: dict[str, Any]) -> int | None:
     return None if value_int <= 0 else value_int
 
 
+def _extract_solution_code(execution_text: str) -> str:
+    tagged_solution = extract_tag_or_none(execution_text, "solution")
+    if tagged_solution is not None:
+        return extract_python_code(tagged_solution) or tagged_solution.strip()
+    return extract_python_code(execution_text) or ""
+
+
 def _verify_execution_without_fallback(
     *,
     execution_text: str,
@@ -516,7 +523,7 @@ def _verify_execution_without_fallback(
     else:
         verification = VerificationResult.execution_error(initial_error)
     execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
-    solution = extract_python_code(execution_text) or ""
+    solution = _extract_solution_code(execution_text)
     summary = build_execution_summary(
         model_summary=extract_tag_or_none(execution_text, "summary"),
         execution_thinking=execution_thinking,

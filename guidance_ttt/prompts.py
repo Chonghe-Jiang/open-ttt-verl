@@ -318,11 +318,6 @@ def build_execution_prompt(
     guidance: str,
 ) -> Prompt:
     best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
-    target_raw_score = (
-        best_valid.verifier_raw_score
-        if best_valid is not None and best_valid.verifier_raw_score is not None
-        else selected_node.raw_score
-    )
     best_valid_text = _entry_summary(best_valid, include_solution=True) if best_valid else "No global best valid entry yet."
     initial_construction_text = _root_initial_construction_facts(selected_node)
     user = f"""<problem>
@@ -346,94 +341,24 @@ Raw score: {selected_node.raw_score}
 {guidance}
 </guidance>
 
-Target: produce a valid candidate with raw C5 lower than {target_raw_score}.
-The constant h[i] = 0.5 construction is only a baseline and should not be returned
-unchanged. Treat visible verifier artifacts, summaries, and root constructions as
-reference states to beat, not as code to copy. The verifier permits fractional,
-non-binary h values.
-If the previous best or current initial construction already scores approximately {target_raw_score},
-copying it or rerunning the exact same SLSQP setup is not an improvement. In that case,
-perform a real deterministic search over new projected perturbations before returning.
-Do not answer that the safest approach is to return the existing best profile; that
-creates a zero-delta training step. Implement the search, evaluate candidates, and
-let the verifier decide the score.
-Your code must compute the actual c5_bound for the returned h. If the computed
-c5_bound is not lower than the target, run a deterministic local search around the
-best previous valid profile and return the best candidate found. Do not use assert as the only way to satisfy constraints;
-explicitly project or adjust h so sum(h) == n_points / 2 before returning. Use a
-box-constrained projection or deterministic repair step after every perturbation so
-the final returned h satisfies sum(h) == n_points / 2 to verifier tolerance.
-Immediately before return, recompute h.sum() and c5_bound from the final h; do not
-return candidates with residual sum error.
+Use the problem statement as the authoritative task specification.
+Use the attached library context as historical evidence, not as code to copy blindly.
+Implement one concrete solution that follows the guidance while satisfying the problem specification.
 
-Implementation direction:
-- Initialize from verified profile artifacts when available; otherwise use the
-  current initial construction when available.
-- Search only small deterministic perturbations around the current best profile.
-- Use at least one concrete non-copy search change from the guidance, such as a
-  multi-scale coordinate/pair sweep, changed restart seeds, or SLSQP initialized from
-  top perturbed candidates instead of the unchanged profile.
-- If the guidance or previous summary says the last step plateaued, implement at least
-  two candidate families before returning: a smaller multi-scale coordinate/pair sweep
-  and an active-lag/top-contributor mass-transfer sweep. Track the best non-identical
-  feasible candidate separately from the inherited profile, and mention rejected
-  deltas in the summary.
-- If guidance mentions active-lag search, implement it concretely: compute the
-  full-correlation vector, identify the max-score lag and top contributing index
-  pairs, test tiny signed projected mass transfers on those pairs, and keep only
-  candidates with strictly lower c5_bound before optional SLSQP refinement.
-- Preserve n_points when reusing a previous valid profile or the current initial
-  construction unless the guidance explicitly gives an alternate-size experiment.
-- The returned summary must say whether the new candidate improved over the inherited
-  raw C5 and which perturbation family caused the best non-copy candidate.
-- Define a helper named project_to_box_sum(h, target) for final box-constrained projection.
-- Use deterministic projected local search with symmetric coordinate perturbations and
-  the same c5_bound objective; SLSQP is acceptable only as a bounded local refinement.
-- Optimize only the independent half of variables when mirror/complement symmetry is
-  present in the current best profile.
-- Prefer mirror-symmetric fractional profiles over binary patterns.
-- Do not return an alternating 0/1 construction; it looks attractive but has scored badly.
-- The desired target is a strict improvement over the current best raw C5, not merely
-  beating 0.5.
-- Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
-  never return string-valued n_points, numpy scalar objects, or unprojected arrays.
-
-Return exactly these three blocks in this order:
-1. <execution_thinking>...</execution_thinking>
-2. One fenced Python code block containing def run(seed=42, budget_s=1, **kwargs):
-3. <summary>...</summary>
-
-Keep reasoning and summary short. Do not claim verifier success because the verifier has not run yet.
+Return exactly these three blocks:
 
 <execution_thinking>
-brief reasoning
+Briefly explain how the guidance was translated into the submitted solution.
 </execution_thinking>
 
+<solution>
 ```python
-def run(seed=42, budget_s=1, **kwargs):
-    # final runnable solution
+# complete executable solution required by the problem
 ```
+</solution>
 
 <summary>
-Execution Interpretation
-...
-
-Implemented Algorithm
-...
-
-New Ideas Introduced
-...
-
-Empirical Outcome
-Pending verifier execution.
-
-Failure / Bottleneck Analysis
-...
-
-Next Guidance Delta
-If no strict improvement was found, name the exact perturbation families and delta
-scales that failed, then propose at least two changed knobs for the next step. Do not
-recommend copying the same profile unchanged.
+Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, what search or refinement strategy was used. Do not include code, hard-coded arrays, or copied profile values.
 </summary>
 """
     return Prompt(

@@ -270,11 +270,11 @@ Try pairwise mass transfer around the first five coordinates.
     assert "SLSQP ftol=1e-13" in prompt.user
 
 
-def test_execution_prompt_attaches_same_library_node_context_without_solution_code():
+def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_context():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
-        selected_entry=_entry(),
+        selected_entry=None,
         guidance="Try deterministic coordinate descent.",
     )
 
@@ -282,37 +282,40 @@ def test_execution_prompt_attaches_same_library_node_context_without_solution_co
     assert "Try deterministic coordinate descent." in prompt.user
     assert "Previous solution code excerpt" not in prompt.user
     assert "return ([0.5, 0.5], 0.5, 2)" not in prompt.user
-    assert "def run(seed=42" in prompt.user
     assert "<execution_thinking>" in prompt.user
+    assert "<solution>" in prompt.user
+    assert "</solution>" in prompt.user
     assert "<summary>" in prompt.user
-    contract = prompt.user.split("has not run yet.", 1)[1]
-    assert contract.find("<execution_thinking>") < contract.find("```python\ndef run(seed=42")
-    assert contract.find("```python\ndef run(seed=42") < contract.find("<summary>")
-    assert "Return exactly these three blocks in this order" in prompt.user
-    assert "Do not claim verifier" in prompt.user
-    assert "success because the verifier has not run yet" in prompt.user
-    assert "Execution Interpretation" in prompt.user
-    assert "Implemented Algorithm" in prompt.user
-    assert "New Ideas Introduced" in prompt.user
-    assert "Empirical Outcome" in prompt.user
-    assert "Failure / Bottleneck Analysis" in prompt.user
-    assert "Next Guidance Delta" in prompt.user
-    assert "Target: produce a valid candidate with raw C5 lower than 0.4" in prompt.user
-    assert "permits fractional," in prompt.user
-    assert "non-binary h values" in prompt.user
-    assert "compute the actual c5_bound" in prompt.user
-    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" in prompt.user
-    assert "Use at least one concrete non-copy search change from the guidance" in prompt.user
-    assert "If guidance mentions active-lag search" in prompt.user
-    assert "SLSQP" in prompt.user
-    assert "deterministic projected local search" in prompt.user
-    assert "project or adjust h" in prompt.user
-    assert "Preserve n_points when reusing a previous valid profile" in prompt.user
-    assert "strict improvement over the current best raw C5" in prompt.user
-    assert "box-constrained projection" in prompt.user
-    assert "sum(h) == n_points / 2 to verifier tolerance" in prompt.user
-    assert "project_to_box_sum" in prompt.user
-    assert "return [float(x) for x in h], float(c5_bound), int(n_points)" in prompt.user
+    assert "Use the problem statement as the authoritative task specification" in prompt.user
+    assert "Use the attached library context as historical evidence" in prompt.user
+    assert "Implement one concrete solution that follows the guidance" in prompt.user
+    assert "Return exactly these three blocks" in prompt.user
+    contract = prompt.user.split("Return exactly these three blocks:", 1)[1]
+    assert contract.find("<execution_thinking>") < contract.find("<solution>")
+    assert contract.find("<solution>") < contract.find("```python")
+    assert contract.find("```python") < contract.find("</solution>")
+    assert contract.find("</solution>") < contract.find("<summary>")
+    assert "Use natural language to summarize the overall idea and method of the solution" in prompt.user
+    assert "Explain how the candidate was generated, what search or refinement strategy was used" in prompt.user
+    assert "Do not include code, hard-coded arrays, or copied profile values" in prompt.user
+    assert "Execution Interpretation" not in contract
+    assert "Implemented Algorithm" not in contract
+    assert "New Ideas Introduced" not in contract
+    assert "Empirical Outcome" not in contract
+    assert "Failure / Bottleneck Analysis" not in contract
+    assert "Next Guidance Delta" not in contract
+    assert "Target: produce a valid candidate with raw C5" not in prompt.user
+    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" not in prompt.user
+    assert "Use at least one concrete non-copy search change from the guidance" not in prompt.user
+    assert "If guidance mentions active-lag search" not in prompt.user
+    assert "deterministic projected local search" not in prompt.user
+    assert "project or adjust h" not in prompt.user
+    assert "Preserve n_points when reusing a previous valid profile" not in prompt.user
+    assert "strict improvement over the current best raw C5" not in prompt.user
+    assert "box-constrained projection" not in prompt.user
+    assert "sum(h) == n_points / 2 to verifier tolerance" not in prompt.user
+    assert "project_to_box_sum" not in prompt.user
+    assert "return [float(x) for x in h], float(c5_bound), int(n_points)" not in prompt.user
     assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
     assert "invent a fresh minimax construction" not in prompt.user
 
@@ -343,12 +346,12 @@ def test_execution_prompt_attaches_global_best_valid_artifacts_without_solution_
     assert "Raw score: 0.3821438682282878" in prompt.user
     assert "Verified returned profile artifacts" in prompt.user
     assert "h=[0.4, 0.6]" in prompt.user
-    assert "def run(seed=42" in prompt.user
     assert "return ([0.4, 0.6], 0.3821438682282878, 2)" not in prompt.user
-    assert "Initialize from verified profile artifacts when available" in prompt.user
+    assert "Initialize from verified profile artifacts when available" not in prompt.user
+    assert "Use the problem statement as the authoritative task specification" in prompt.user
 
 
-def test_execution_prompt_without_visible_best_targets_selected_root_score():
+def test_execution_prompt_without_visible_best_attaches_root_but_does_not_add_task_specific_target():
     root_node = LibraryNode(
         id="root",
         problem_id="erdos",
@@ -374,10 +377,10 @@ def test_execution_prompt_without_visible_best_targets_selected_root_score():
         guidance="Perturb the current initial construction.",
     )
 
-    assert "Target: produce a valid candidate with raw C5 lower than 0.5" in prompt.user
+    assert "Target: produce a valid candidate with raw C5 lower than 0.5" not in prompt.user
     assert "Current initial construction (reference state to improve)" in prompt.user
     assert "initialization=random_perturbed_constant" in prompt.user
-    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" in prompt.user
+    assert "copying it or rerunning the exact same SLSQP setup is not an improvement" not in prompt.user
 
 
 def test_prompts_do_not_embed_removed_known_good_seed():

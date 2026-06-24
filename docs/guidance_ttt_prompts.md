@@ -27,7 +27,7 @@ build_guidance_prompt(...)
 
 build_execution_prompt(...)
   -> execution model prompt
-  -> execution model outputs <execution_thinking> + Python code + <summary>
+  -> execution model outputs <execution_thinking> + <solution> + <summary>
 
 verify_erdos_solution_text(execution_text)
   -> verifier status / raw C5 / reward / artifacts
@@ -201,7 +201,13 @@ Your task is to provide the next **evolutionary guidance** to beat the current v
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
-3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
+3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below. 
+<think>
+Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+</think>
+<guidance>
+This must contain only your final, actionable evolutionary trajectory.
+</guidance>
 
 Provide your response exactly in the following format:
 
@@ -209,14 +215,6 @@ Provide your response exactly in the following format:
 </think>
 
 <guidance>
-</guidance>
-
-The following notes explain what each block should contain:
-<think>
-Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-</think>
-<guidance>
-This must contain only your final, actionable evolutionary trajectory.
 </guidance>
 ````
 
@@ -281,19 +279,39 @@ Else:
 execution model 是冻结的执行器。它把 guidance 转成一个具体可运行的 Python candidate。
 它的 tokens 不参与 RL 更新；它的输出只通过 verifier 产生 reward，并写回 library。
 
-### System Prompt
+### Complete Execution Chat Prompt
+
+`GuidanceExecutionAgentLoop.run(...)` 调用 execution model 时，实际发送的是下面两条
+chat messages：
+
+```python
+[
+    {"role": "system", "content": execution_prompt.system},
+    {"role": "user", "content": execution_prompt.user},
+]
+```
+
+其中 `execution_prompt = build_execution_prompt(...)`。
+
+### Full Execution System Prompt
+
+这是当前代码实际发送给 execution model 的完整 system prompt：
 
 ```text
 You are the execution model. Turn guidance into one concrete runnable Python candidate. Output execution thinking first, then the code block, then the summary.
 ```
 
-### Attached Inputs
+### Full Execution User Prompt
 
-execution user prompt attach：
+下面是当前代码实际发送给 execution model 的完整 user prompt。它是一个薄 wrapper：
+`<problem>` 是权威任务定义，`<guidance>` 给出方向，library context 只提供历史证据。
+wrapper 本身不再写 Erdos/C5/SLSQP/project 等任务专用实现策略。
+
+`{...}` 是运行时由 Python f-string 插入的变量。
 
 ````text
 <problem>
-{ERDOS_PROBLEM_PROMPT}
+{problem_prompt}
 </problem>
 
 <selected_library_node>
@@ -306,74 +324,54 @@ Raw score: {selected_node.raw_score}
 </selected_library_node>
 
 <global_best_valid_entry>
-{_entry_summary(best_valid_entry, include_solution=True) or "No global best valid entry yet."}
+{best_valid_text}
 </global_best_valid_entry>
 
 <guidance>
-{parsed guidance}
+{guidance}
 </guidance>
-````
 
-然后 prompt 给出 execution constraints 和 implementation direction。
+Use the problem statement as the authoritative task specification.
+Use the attached library context as historical evidence, not as code to copy blindly.
+Implement one concrete solution that follows the guidance while satisfying the problem specification.
 
-### Execution Objective
+Return exactly these three blocks:
 
-execution prompt 要求：
-
-- 目标是 produce valid candidate with raw C5 lower than target。
-- constant `h[i] = 0.5` 只能当 baseline，不能 unchanged 返回。
-- visible verifier artifacts、summaries、root constructions 是 reference states to beat，不是 copy target。
-- 如果 current best 已接近 target，不能只 copy 或 rerun exact same SLSQP。
-- 必须 implement deterministic search，evaluate candidates，再让 verifier 判分。
-- 每次 perturbation 后显式 project/repair，保证：
-  - `0 <= h[i] <= 1`
-  - `sum(h) == n_points / 2`
-  - final `c5_bound` 由 final h 重新计算
-- guidance 或 previous summary 提到 plateau 时，至少实现两个 candidate families：
-  - smaller multi-scale coordinate/pair sweep
-  - active-lag/top-contributor mass-transfer sweep
-- 默认从 verified profile artifacts 初始化；没有 artifacts 时使用 current initial construction。
-- 默认 preserve previous valid profile 或 current initial construction 的 `n_points`，除非 guidance 明确要求 alternate-size experiment。
-- 输出 summary 必须说明是否 beat inherited raw C5，以及哪个 perturbation family 贡献最好。
-
-### Required Execution Output Format
-
-execution model 必须按顺序输出三块：
-
-````text
 <execution_thinking>
-brief reasoning
+Briefly explain how the guidance was translated into the submitted solution.
 </execution_thinking>
 
+<solution>
 ```python
-def run(seed=42, budget_s=1, **kwargs):
-    # final runnable solution
+# complete executable solution required by the problem
 ```
+</solution>
 
 <summary>
-Execution Interpretation
-...
-
-Implemented Algorithm
-...
-
-New Ideas Introduced
-...
-
-Empirical Outcome
-Pending verifier execution.
-
-Failure / Bottleneck Analysis
-...
-
-Next Guidance Delta
-If no strict improvement was found, name the exact perturbation families and delta
-scales that failed, then propose at least two changed knobs for the next step. Do not
-recommend copying the same profile unchanged.
+Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, what search or refinement strategy was used. Do not include code, hard-coded arrays, or copied profile values.
 </summary>
 ````
 
-注意：execution model 的 `<summary>` 不能声称 verifier success，因为 verifier 还没运行。
+注意：execution model 的 `<summary>` 只记录 execution model 自己的解释。verifier 真实结果会在
+后续 canonical summary 阶段写回。
+
+### Execution Prompt Runtime Variables
+
+这些变量在 `build_execution_prompt(...)` 内部生成：
+
+```python
+best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
+best_valid_text = (
+    _entry_summary(best_valid, include_solution=True)
+    if best_valid
+    else "No global best valid entry yet."
+)
+initial_construction_text = _root_initial_construction_facts(selected_node)
+```
+
+所以 execution model 看到的 library 内容和 guidance model 看到的 library 内容来自同一次
+PUCT selection；区别是 execution prompt 会 attach 更长的 selected entry summary，并额外
+attach 当前 visible best valid entry。
 
 ## Canonical Summary After Verification
 
