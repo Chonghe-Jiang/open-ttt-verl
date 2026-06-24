@@ -12,118 +12,6 @@ class Prompt:
     user: str
 
 
-ERDOS_MINIMAX_EXECUTION_TEMPLATE = '''import numpy as np
-
-def project_to_box_sum(h, target):
-    h = np.clip(np.asarray(h, dtype=float), 0.0, 1.0)
-    for _ in range(100):
-        diff = float(target - h.sum())
-        if abs(diff) < 1e-12:
-            break
-        free = (h > 1e-12) & (h < 1.0 - 1e-12)
-        if not np.any(free):
-            free = np.ones_like(h, dtype=bool)
-        h[free] += diff / float(np.count_nonzero(free))
-        h = np.clip(h, 0.0, 1.0)
-    return h
-
-def c5_score(h):
-    n = int(len(h))
-    return float(np.max(np.correlate(h, 1.0 - h, mode="full") * (2.0 / n)))
-
-def run(seed=42, budget_s=1, **kwargs):
-    n_points = 63
-    target = n_points / 2.0
-    h = np.array([
-        2.7755575615628914e-17, 2.7755575615628914e-17, 1.293663231381232e-16,
-        2.7755575615628914e-17, 0.0131852640431291, 2.7755575615628914e-17,
-        2.7755575615628914e-17, 0.26212656632295017, 0.8518260937824772,
-        0.7892316177941204, 0.5257445487871693, 0.37585906591985196,
-        0.3005418542306866, 0.1574795850486234, 0.4373323751700511,
-        0.7429601749522273, 0.7750101335843718, 0.498685678735848,
-        0.4580696661912471, 0.5793512512721171, 0.6885196496503867,
-        0.4812942335026287, 0.5538085240635235, 0.8242838767355658,
-        0.8992749542536581, 0.7465362244428376, 0.7197319122277341,
-        0.7756815030976699, 0.9999999999999998, 1.0, 0.7912613201330126,
-        0.9388727802180509, 1.0, 1.0, 0.9999999999999999,
-        0.6324778951288466, 0.7197319122277515, 0.7644975815058611,
-        0.8813135971906164, 0.8242838767355828, 0.5538085240635041,
-        0.4812942335026238, 0.6885196496503996, 0.5793512512721313,
-        0.458069666191245, 0.4986856787358537, 0.775010133584365,
-        0.7429601749522213, 0.4373323751700534, 0.1574795850486218,
-        0.30054185423067215, 0.3758590659198784, 0.5257445487871585,
-        0.7892316177941104, 0.8518260937824886, 0.26212656632293563,
-        1.6091794829207338e-16, 2.7755575615628914e-17, 0.01318526404314024,
-        7.860053295334456e-17, 2.7755575615628914e-17,
-        2.7755575615628914e-17, 2.7755575615628914e-17,
-    ], dtype=float)
-    h = project_to_box_sum(h, target)
-    best_h = h.copy()
-    best_c5 = c5_score(best_h)
-
-    try:
-        from scipy.optimize import minimize
-
-        constraints = ({"type": "eq", "fun": lambda x: float(np.sum(x) - target)},)
-        result = minimize(
-            c5_score,
-            best_h,
-            method="SLSQP",
-            bounds=[(0.0, 1.0)] * n_points,
-            constraints=constraints,
-            options={"maxiter": 300, "ftol": 1e-13, "disp": False},
-        )
-        if result.success:
-            candidate = project_to_box_sum(result.x, target)
-            candidate_c5 = c5_score(candidate)
-            if candidate_c5 <= best_c5:
-                best_h = candidate
-                best_c5 = candidate_c5
-    except Exception:
-        pass
-
-    best_h = project_to_box_sum(best_h, target)
-    c5_bound = c5_score(best_h)
-    return [float(x) for x in best_h], float(c5_bound), int(n_points)
-'''
-
-
-KNOWN_GOOD_ERDOS_RAW_C5 = 0.3810181186942784
-KNOWN_GOOD_ERDOS_H_PROFILE = (
-    "2.7755575615628914e-17, 2.7755575615628914e-17, 1.293663231381232e-16, "
-    "2.7755575615628914e-17, 0.0131852640431291, 2.7755575615628914e-17, "
-    "2.7755575615628914e-17, 0.26212656632295017, 0.8518260937824772, "
-    "0.7892316177941204, 0.5257445487871693, 0.37585906591985196, "
-    "0.3005418542306866, 0.1574795850486234, 0.4373323751700511, "
-    "0.7429601749522273, 0.7750101335843718, 0.498685678735848, "
-    "0.4580696661912471, 0.5793512512721171, 0.6885196496503867, "
-    "0.4812942335026287, 0.5538085240635235, 0.8242838767355658, "
-    "0.8992749542536581, 0.7465362244428376, 0.7197319122277341, "
-    "0.7756815030976699, 0.9999999999999998, 1.0, 0.7912613201330126, "
-    "0.9388727802180509, 1.0, 1.0, 0.9999999999999999, "
-    "0.6324778951288466, 0.7197319122277515, 0.7644975815058611, "
-    "0.8813135971906164, 0.8242838767355828, 0.5538085240635041, "
-    "0.4812942335026238, 0.6885196496503996, 0.5793512512721313, "
-    "0.458069666191245, 0.4986856787358537, 0.775010133584365, "
-    "0.7429601749522213, 0.4373323751700534, 0.1574795850486218, "
-    "0.30054185423067215, 0.3758590659198784, 0.5257445487871585, "
-    "0.7892316177941104, 0.8518260937824886, 0.26212656632293563, "
-    "1.6091794829207338e-16, 2.7755575615628914e-17, 0.01318526404314024, "
-    "7.860053295334456e-17, 2.7755575615628914e-17, "
-    "2.7755575615628914e-17, 2.7755575615628914e-17"
-)
-
-KNOWN_GOOD_ERDOS_PROGRESS_LADDER = (
-    "0.4821225382225115 -> 0.3949181335382675 -> 0.3853523965077289 -> "
-    "0.3836709166860949 -> 0.3823673633758575 -> 0.38159399612835 -> "
-    "0.3813987425845457 -> 0.3813386418994406 -> 0.3812922283535478 -> "
-    "0.38114264344042986 -> 0.3811360647897058 -> 0.3810928200855021 -> "
-    "0.38106453367736337 -> 0.3810633365287946 -> 0.3810215348642786 -> "
-    "0.3810206626281053 -> 0.3810193840681338 -> 0.3810190847194418 -> "
-    "0.3810181186942784"
-)
-
-
 def _clip(text: str | None, max_chars: int) -> str:
     text = (text or "").strip()
     if len(text) <= max_chars:
@@ -212,13 +100,13 @@ def _summary_for_guidance(summary: str | None) -> str:
 
     def replace_code(match: re.Match[str]) -> str:
         extracted_facts.append(_code_block_facts(match.group(1)))
-        return "[code omitted; see extracted attached-solution facts above]"
+        return "[code omitted; see extracted attached-code facts above]"
 
     summary_without_code = _FENCED_CODE_RE.sub(replace_code, summary)
     if not extracted_facts:
         return summary_without_code
     facts_text = "\n".join(f"- {fact}" for fact in extracted_facts)
-    return "Extracted attached-solution facts:\n" + facts_text + "\n\nSummary text:\n" + summary_without_code
+    return "Extracted attached-code facts:\n" + facts_text + "\n\nSummary text:\n" + summary_without_code
 
 
 def _verified_profile_artifact_facts(entry: LibraryEntry) -> str:
@@ -247,6 +135,40 @@ def _verified_profile_artifact_facts(entry: LibraryEntry) -> str:
         "Verified returned profile artifacts (authoritative initialization): "
         f"n_points={int(n_points)}, raw C5={float(raw_score)!r}, "
         f"c5_bound={float(c5_bound)!r}, {values_text}"
+    )
+
+
+def _h_values_facts(values: list[float]) -> str:
+    if len(values) > 32:
+        return (
+            f"h length={len(values)}, head=["
+            + ", ".join(repr(value) for value in values[:6])
+            + "], tail=["
+            + ", ".join(repr(value) for value in values[-4:])
+            + "]"
+        )
+    return "h=[" + ", ".join(repr(value) for value in values) + "]"
+
+
+def _root_initial_construction_facts(node: LibraryNode) -> str:
+    if node.parent_id is not None:
+        return ""
+    metadata = node.metadata or {}
+    h_values = metadata.get("h_values")
+    if not isinstance(h_values, list) or not h_values:
+        return ""
+    try:
+        values = [float(value) for value in h_values]
+    except (TypeError, ValueError):
+        return ""
+    n_points = metadata.get("n_points", len(values))
+    c5_bound = metadata.get("c5_bound", node.raw_score)
+    initialization = metadata.get("initialization", "initial_construction")
+    return (
+        "Current initial construction (reference state to improve): "
+        f"initialization={initialization}, n_points={int(n_points)}, "
+        f"raw C5={float(node.raw_score)!r}, c5_bound={float(c5_bound)!r}, "
+        f"{_h_values_facts(values)}"
     )
 
 
@@ -281,10 +203,6 @@ def _entry_summary(entry: LibraryEntry | None, *, include_solution: bool) -> str
     )
     if entry.failure_mode:
         parts.append(f"Failure mode: {entry.failure_mode}")
-    if include_solution and entry.solution and "```python" not in (entry.summary or ""):
-        solution = _clip(entry.solution, 1800)
-        if solution:
-            parts.append("Previous solution code excerpt (backward-compatible):\n```python\n" + solution + "\n```")
     return "\n".join(parts)
 
 
@@ -310,12 +228,8 @@ def build_guidance_prompt(
         if best_valid is not None and best_valid.verifier_raw_score is not None
         else selected_node.raw_score
     )
-    if best_valid is None and (
-        best_valid_raw_score is None or float(best_valid_raw_score) > KNOWN_GOOD_ERDOS_RAW_C5
-    ):
-        best_valid_target = KNOWN_GOOD_ERDOS_RAW_C5
-    else:
-        best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+    best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+    initial_construction_text = _root_initial_construction_facts(selected_node)
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -326,6 +240,7 @@ Timestep: {selected_node.timestep}
 Value: {selected_node.value}
 Raw score: {selected_node.raw_score}
 Visits: {selected_node.visits}
+{initial_construction_text}
 {_entry_summary(selected_entry, include_solution=False)}
 </selected_library_node>
 
@@ -338,7 +253,7 @@ Visits: {selected_node.visits}
 </local_failures>
 
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current best valid raw score ({best_valid_target}). Lower raw C5 is better.
+Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
 
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
@@ -405,9 +320,8 @@ def build_execution_prompt(
         if best_valid is not None and best_valid.verifier_raw_score is not None
         else selected_node.raw_score
     )
-    if best_valid is None and (target_raw_score is None or float(target_raw_score) > KNOWN_GOOD_ERDOS_RAW_C5):
-        target_raw_score = KNOWN_GOOD_ERDOS_RAW_C5
     best_valid_text = _entry_summary(best_valid, include_solution=True) if best_valid else "No global best valid entry yet."
+    initial_construction_text = _root_initial_construction_facts(selected_node)
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -417,12 +331,13 @@ Node id: {selected_node.id}
 Timestep: {selected_node.timestep}
 Value: {selected_node.value}
 Raw score: {selected_node.raw_score}
+{initial_construction_text}
 {_entry_summary(selected_entry, include_solution=True)}
 </selected_library_node>
 
-<global_best_valid_solution>
+<global_best_valid_entry>
 {best_valid_text}
-</global_best_valid_solution>
+</global_best_valid_entry>
 
 <guidance>
 {guidance}
@@ -430,9 +345,10 @@ Raw score: {selected_node.raw_score}
 
 Target: produce a valid candidate with raw C5 lower than {target_raw_score}.
 The constant h[i] = 0.5 construction is only a baseline and should not be returned
-unchanged. If previous solution code is shown, treat it as a reference point to beat,
-not as code to copy. The verifier permits fractional, non-binary h values.
-If the known template or previous best already scores approximately {target_raw_score},
+unchanged. Treat visible verifier artifacts, summaries, and root constructions as
+reference states to beat, not as code to copy. The verifier permits fractional,
+non-binary h values.
+If the previous best or current initial construction already scores approximately {target_raw_score},
 copying it or rerunning the exact same SLSQP setup is not an improvement. In that case,
 perform a real deterministic search over new projected perturbations before returning.
 Do not answer that the safest approach is to return the existing best profile; that
@@ -448,9 +364,8 @@ Immediately before return, recompute h.sum() and c5_bound from the final h; do n
 return candidates with residual sum error.
 
 Implementation direction:
-- Initialize from this global best valid solution when available; otherwise use the
-  selected previous solution code when it is valid and available.
-- Use previous solution code as the initialization when it is valid and available.
+- Initialize from verified profile artifacts when available; otherwise use the
+  current initial construction when available.
 - Search only small deterministic perturbations around the current best profile.
 - Use at least one concrete non-copy search change from the guidance, such as a
   multi-scale coordinate/pair sweep, changed restart seeds, or SLSQP initialized from
@@ -464,18 +379,10 @@ Implementation direction:
   full-correlation vector, identify the max-score lag and top contributing index
   pairs, test tiny signed projected mass transfers on those pairs, and keep only
   candidates with strictly lower c5_bound before optional SLSQP refinement.
-- If the inherited profile already scores at or below 0.38103, preserve that exact
-  63-point profile as the incumbent but do not restrict search to copy-only
-  refinements. First try active-lag transfers; if they do not strictly improve, run
-  deterministic finite-difference Adam/smooth-max escape around the incumbent with
-  perturbation scales [1e-2, 3e-3, 1e-3, 3e-4], then polish the best candidate.
-- Preserve n_points when reusing a previous valid profile. For the known-good template
-  this means keep n_points=63 unless the guidance explicitly gives an alternate-size
-  interpolation experiment.
-- The known-good 63-point lineage already showed step-to-step progress:
-  {KNOWN_GOOD_ERDOS_PROGRESS_LADDER}. The returned summary must say whether the new
-  candidate improved over the inherited raw C5 and which perturbation family caused
-  the best non-copy candidate.
+- Preserve n_points when reusing a previous valid profile or the current initial
+  construction unless the guidance explicitly gives an alternate-size experiment.
+- The returned summary must say whether the new candidate improved over the inherited
+  raw C5 and which perturbation family caused the best non-copy candidate.
 - Define a helper named project_to_box_sum(h, target) for final box-constrained projection.
 - Use deterministic projected local search with symmetric coordinate perturbations and
   the same c5_bound objective; SLSQP is acceptable only as a bounded local refinement.
@@ -487,14 +394,6 @@ Implementation direction:
   beating 0.5.
 - Return exactly return [float(x) for x in h], float(c5_bound), int(n_points);
   never return string-valued n_points, numpy scalar objects, or unprojected arrays.
-
-Known-good implementation skeleton for verifier-compatible scoring and projection.
-Use it as a scoring/repair reference:
-<known_good_minimax_template>
-```python
-{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
-```
-</known_good_minimax_template>
 
 Return exactly these three blocks in this order:
 1. <execution_thinking>...</execution_thinking>

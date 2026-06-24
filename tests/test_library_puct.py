@@ -109,6 +109,33 @@ def test_same_step_selection_does_not_see_child_created_in_same_step(tmp_path):
     assert next_step_context["global_best_entries"][0].id == "entry-same-step"
 
 
+def test_archive_dedup_does_not_use_solution_text_without_artifacts(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, topk_children=2)
+
+    selected = library.acquire_group("1:slot-a")
+    first = _entry(selected.id, reward=2.0, suffix="a")
+    first.solution = "same legacy solution text"
+    first.summary = "distinct summary a"
+    library.submit_child("1:slot-a", first)
+
+    selected = library.acquire_group("2:slot-a")
+    second = _entry(selected.id, reward=3.0, suffix="b")
+    second.solution = "same legacy solution text"
+    second.summary = "distinct summary b"
+    library.submit_child("2:slot-a", second)
+
+    snapshot = library.snapshot()
+
+    child_entry_ids = {
+        node["entry_id"]
+        for node in snapshot["nodes"].values()
+        if node["entry_id"] in {"entry-a", "entry-b"}
+    }
+    assert child_entry_ids == {"entry-a", "entry-b"}
+
+
 def test_group_finalization_updates_discover_puct_stats(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)

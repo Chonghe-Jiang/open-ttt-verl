@@ -1,4 +1,9 @@
-from guidance_ttt.verifier.erdos import verify_erdos_solution_text
+import math
+
+import numpy as np
+
+from guidance_ttt.tasks.erdos import create_root_node
+from guidance_ttt.verifier.erdos import verify_c5_solution, verify_erdos_solution_text
 
 
 VALID_CODE = """
@@ -100,3 +105,21 @@ def run(seed=42, budget_s=1, **kwargs):
     assert result.valid is True
     assert result.status == "valid"
     assert result.raw_score == 0.5
+
+
+def test_erdos_root_node_stores_valid_random_initial_construction():
+    root = create_root_node(seed=123)
+    h_values = np.asarray(root.metadata["h_values"], dtype=np.float64)
+    n_points = int(root.metadata["n_points"])
+    c5_bound = float(root.metadata["c5_bound"])
+
+    verified_raw_score = verify_c5_solution(h_values, c5_bound, n_points)
+
+    assert root.metadata["initialization"] == "random_perturbed_constant"
+    assert 40 <= n_points <= 99
+    assert len(h_values) == n_points
+    assert np.all(np.isfinite(h_values))
+    assert np.all((0.0 <= h_values) & (h_values <= 1.0))
+    assert math.isclose(float(np.sum(h_values)), n_points / 2.0, abs_tol=1e-8)
+    assert root.raw_score == verified_raw_score
+    assert root.value == 1.0 / (1e-8 + verified_raw_score)

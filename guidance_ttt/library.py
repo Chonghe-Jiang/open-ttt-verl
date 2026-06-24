@@ -271,7 +271,19 @@ class GuidanceLibrary:
         entry = self._entries.get(node.entry_id)
         if entry is None:
             return None
-        return entry.solution or entry.summary or None
+        artifacts = (entry.metadata or {}).get("verification_artifacts") or {}
+        h_values = artifacts.get("h_values")
+        if entry.verifier_status == "valid" and isinstance(h_values, list) and h_values:
+            return json.dumps(
+                {
+                    "n_points": artifacts.get("n_points", len(h_values)),
+                    "c5_bound": artifacts.get("c5_bound", entry.verifier_raw_score),
+                    "h_values": h_values,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return entry.summary or None
 
     def _filter_archive(self) -> None:
         keep_ids = self._topk_child_node_ids()
