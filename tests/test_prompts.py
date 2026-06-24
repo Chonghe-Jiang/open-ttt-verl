@@ -79,17 +79,21 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "Strict Separation of Thought and Action" in prompt.user
     assert "<think>" in prompt.user
     assert "</think>" in prompt.user
-    assert "The `<think>` block" in prompt.user
-    assert "The `<guidance>` block" in prompt.user
-    assert "Evolutionary Mutation" in prompt.user
-    assert "Directional Search Strategy" in prompt.user
-    assert "Progress Target" in prompt.user
+    assert "The following notes explain what each block should contain" in prompt.user
+    assert "<think>\nUse this space entirely for internal reflection" in prompt.user
+    assert "<guidance>\nThis must contain only your final, actionable evolutionary trajectory" in prompt.user
+    format_index = prompt.user.index("Provide your response exactly in the following format:")
+    notes_index = prompt.user.index("The following notes explain what each block should contain:")
+    assert format_index < notes_index
+    assert "Evolutionary Mutation" not in prompt.user
+    assert "Directional Search Strategy" not in prompt.user
+    assert "Progress Target" not in prompt.user
     assert "Do not write code or micromanage hyperparameters" in prompt.user
     assert "coordinate step 2e-4" in prompt.user
     assert "random walk step size 1e-3 for 2000 steps" in prompt.user
     assert "SLSQP maxiter=300" in prompt.user
     assert "current visible target raw score (0.4)" in prompt.user
-    assert "successful mutation from 0.4 towards 0.4 or lower" in prompt.user
+    assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
 
 
 def test_guidance_prompt_attaches_global_best_and_local_failure_history():
@@ -150,7 +154,8 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
     assert "introducing a new mathematical constraint" in prompt.user
     assert "hybridizing optimization frameworks" in prompt.user
     assert "Do not write code or micromanage hyperparameters" in prompt.user
-    assert "successful mutation from 0.4 towards 0.3821438682282878 or lower" in prompt.user
+    assert "The following notes explain what each block should contain" in prompt.user
+    assert "This must contain only your final, actionable evolutionary trajectory" in prompt.user
     assert "The preferred submitted guidance" not in prompt.user
     assert "Preserve the current best valid construction" not in prompt.user
     assert "SLSQP again" not in prompt.user
@@ -253,7 +258,8 @@ Try pairwise mass transfer around the first five coordinates.
     )
 
     assert "current visible target raw score (0.5)" in prompt.user
-    assert "successful mutation from 0.5 towards 0.5 or lower" in prompt.user
+    assert "The following notes explain what each block should contain" in prompt.user
+    assert "This must contain only your final, actionable evolutionary trajectory" in prompt.user
     assert "Current initial construction (reference state to improve)" in prompt.user
     assert "initialization=random_perturbed_constant" in prompt.user
     assert "h=[0.2, 0.4, 0.6, 0.8]" in prompt.user
@@ -292,7 +298,8 @@ def test_execution_prompt_attaches_same_library_node_context_without_solution_co
     assert "Failure / Bottleneck Analysis" in prompt.user
     assert "Next Guidance Delta" in prompt.user
     assert "Target: produce a valid candidate with raw C5 lower than 0.4" in prompt.user
-    assert "permits fractional, non-binary h values" in prompt.user
+    assert "permits fractional," in prompt.user
+    assert "non-binary h values" in prompt.user
     assert "compute the actual c5_bound" in prompt.user
     assert "copying it or rerunning the exact same SLSQP setup is not an improvement" in prompt.user
     assert "Use at least one concrete non-copy search change from the guidance" in prompt.user

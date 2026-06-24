@@ -259,11 +259,6 @@ Your task is to provide the next **evolutionary guidance** to beat the current v
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
 3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
-    * **The `<think>` block:** Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-    * **The `<guidance>` block:** This must contain only your final, actionable evolutionary trajectory. It should clearly outline:
-        - The **Evolutionary Mutation**: The new structural or mathematical property being explored.
-        - The **Directional Search Strategy**: The high-level algorithmic mechanism to execute the mutation.
-        - The **Progress Target**: The explicit structural change that indicates successful mutation from {selected_node.raw_score} towards {best_valid_target} or lower.
 
 Provide your response exactly in the following format:
 
@@ -271,6 +266,14 @@ Provide your response exactly in the following format:
 </think>
 
 <guidance>
+</guidance>
+
+The following notes explain what each block should contain:
+<think>
+Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+</think>
+<guidance>
+This must contain only your final, actionable evolutionary trajectory.
 </guidance>
 """
     return Prompt(

@@ -3,7 +3,7 @@
 This document summarizes 当前 `guidance-ttt` 中 guidance model 和 execution model
 的 prompt 构造方式。代码来源以当前仓库为准：
 
-- `guidance_ttt/prompts.py`: prompt 模板、entry summary 压缩、known-good Erdos template
+- `guidance_ttt/prompts.py`: prompt 模板、entry summary 压缩、root initial construction facts
 - `guidance_ttt/agent_loop.py`: prompt 构造、模型调用、verification、library 写回
 - `guidance_ttt/library.py`: PUCT 选 node、取 selected/global/failure context
 - `guidance_ttt/tasks/erdos.py`: Erdos problem prompt
@@ -66,9 +66,8 @@ local_failure_entries = context["local_failure_entries"]
 
 - guidance prompt 看“决策摘要”：压缩 summary、reward、raw score、verifier status、
   short guidance、reusable idea、global best、local failures。
-- execution prompt 看“可执行上下文”：selected entry 的更长 canonical summary、verified
-  profile artifacts、possible solution code excerpt、global best valid solution、current
-  guidance、known-good Erdos implementation skeleton。
+- execution prompt 看“可执行上下文”：root initial construction facts、selected entry 的更长
+  canonical summary、verified profile artifacts、global best valid entry、current guidance。
 
 ## Entry Summary Construction
 
@@ -103,18 +102,19 @@ Failure mode: {entry.failure_mode, if present}
 - clip 更短，避免 actor prompt 被历史代码占满。
 - long profile array 会被 compact。
 
+root node 如果带有初始构造 metadata，还会通过 `_root_initial_construction_facts(...)`
+注入：
+
+```text
+Current initial construction (reference state to improve): initialization=..., n_points=..., raw C5=..., c5_bound=..., h=... / h length=...
+```
+
 `include_solution=True` 时用于 execution prompt：
 
 - summary clip 更长。
 - previous guidance / verifier message / reusable idea clip 更长。
-- 如果 `entry.summary` 中没有 fenced Python code，并且 `entry.solution` 存在，会附加：
-
-````text
-Previous solution code excerpt (backward-compatible):
-```python
-{entry.solution clipped to 1800 chars}
-```
-````
+- 当前版本不再额外附加 `entry.solution` 的 backward-compatible code excerpt；可执行上下文主要来自
+  canonical summary、verified artifacts、root initial construction 和 global best valid entry。
 
 ## Guidance Model Prompt
 
@@ -148,6 +148,7 @@ Timestep: {selected_node.timestep}
 Value: {selected_node.value}
 Raw score: {selected_node.raw_score}
 Visits: {selected_node.visits}
+{initial_construction_text}
 {_entry_summary(selected_entry, include_solution=False)}
 </selected_library_node>
 
@@ -182,6 +183,7 @@ Timestep: {selected_node.timestep}
 Value: {selected_node.value}
 Raw score: {selected_node.raw_score}
 Visits: {selected_node.visits}
+{initial_construction_text}
 {_entry_summary(selected_entry, include_solution=False)}
 </selected_library_node>
 
@@ -194,17 +196,12 @@ Visits: {selected_node.visits}
 </local_failures>
 
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current best valid raw score ({best_valid_target}). Lower raw C5 is better.
+Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
 
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
 3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
-    * **The `<think>` block:** Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-    * **The `<guidance>` block:** This must contain only your final, actionable evolutionary trajectory. It should clearly outline:
-        - The **Evolutionary Mutation**: The new structural or mathematical property being explored.
-        - The **Directional Search Strategy**: The high-level algorithmic mechanism to execute the mutation.
-        - The **Progress Target**: The explicit structural change that indicates successful mutation from {selected_node.raw_score} towards {best_valid_target} or lower.
 
 Provide your response exactly in the following format:
 
@@ -213,31 +210,35 @@ Provide your response exactly in the following format:
 
 <guidance>
 </guidance>
+
+The following notes explain what each block should contain:
+<think>
+Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+</think>
+<guidance>
+This must contain only your final, actionable evolutionary trajectory.
+</guidance>
 ````
 
 ### Guidance Objective
 
 当前 guidance prompt 强调：
 
-- 目标是给出下一步 evolutionary guidance，beat 当前 best valid raw score。
+- 目标是给出下一步 evolutionary guidance，beat 当前 visible target raw score。
 - guidance 要基于 `<selected_library_node>` 和 `<local_failures>` 分析历史瓶颈，避免重复失败轨迹。
 - guidance 只提高层 conceptual / structural / mathematical mutation，不写代码，不 micromanage hyperparameters。
 - 输出必须严格分成 `<think>` 和 `<guidance>` 两块。
 - `<think>` 用于内部历史诊断和方案权衡。
-- `<guidance>` 只保留最终 actionable evolutionary trajectory，并明确：
-  - Evolutionary Mutation
-  - Directional Search Strategy
-  - Progress Target
+- `<guidance>` 只保留最终 actionable evolutionary trajectory。
 
 ### Important Runtime Targets
 
 `best_valid_target` 的来源：
 
 - 如果 selected/global context 中有 valid entry，使用 visible best valid raw C5。
-- 如果没有 valid entry，且当前 raw score 为空或弱于 `KNOWN_GOOD_ERDOS_RAW_C5`，则使用
-  `KNOWN_GOOD_ERDOS_RAW_C5 = 0.3810181186942784`。
+- 如果没有 valid entry，则使用 selected node 的 raw score。
 - 这个 target 只作为 guidance objective 中的分数目标；当前 guidance user prompt 不再
-  attach 63-point full profile 或低层优化 schedule。
+  attach hardcoded Erdos seed、63-point full profile 或低层优化 schedule。
 
 ### Required Guidance Output Format
 
@@ -252,8 +253,7 @@ guidance model 必须输出 `<think>` 和 `<guidance>` 两个 XML blocks：
 ```
 
 `<think>` 是内部历史诊断和方案权衡；`<guidance>` 只包含最终 actionable evolutionary
-trajectory，应该清楚覆盖 Evolutionary Mutation、Directional Search Strategy、Progress
-Target。
+trajectory。
 
 ### Guidance Parsing Rule
 
@@ -301,19 +301,20 @@ Node id: {selected_node.id}
 Timestep: {selected_node.timestep}
 Value: {selected_node.value}
 Raw score: {selected_node.raw_score}
+{initial_construction_text}
 {_entry_summary(selected_entry, include_solution=True)}
 </selected_library_node>
 
-<global_best_valid_solution>
+<global_best_valid_entry>
 {_entry_summary(best_valid_entry, include_solution=True) or "No global best valid entry yet."}
-</global_best_valid_solution>
+</global_best_valid_entry>
 
 <guidance>
 {parsed guidance}
 </guidance>
 ````
 
-然后 prompt 给出 execution constraints、implementation direction 和 known-good template。
+然后 prompt 给出 execution constraints 和 implementation direction。
 
 ### Execution Objective
 
@@ -321,7 +322,7 @@ execution prompt 要求：
 
 - 目标是 produce valid candidate with raw C5 lower than target。
 - constant `h[i] = 0.5` 只能当 baseline，不能 unchanged 返回。
-- previous solution code 是 reference point to beat，不是 copy target。
+- visible verifier artifacts、summaries、root constructions 是 reference states to beat，不是 copy target。
 - 如果 current best 已接近 target，不能只 copy 或 rerun exact same SLSQP。
 - 必须 implement deterministic search，evaluate candidates，再让 verifier 判分。
 - 每次 perturbation 后显式 project/repair，保证：
@@ -331,36 +332,9 @@ execution prompt 要求：
 - guidance 或 previous summary 提到 plateau 时，至少实现两个 candidate families：
   - smaller multi-scale coordinate/pair sweep
   - active-lag/top-contributor mass-transfer sweep
-- inherited profile raw C5 `<= 0.38103` 时：
-  - preserve 63-point incumbent
-  - first try active-lag transfers
-  - if no strict improvement, try deterministic finite-difference Adam / smooth-max escape
-- 默认 preserve inherited `n_points`；known-good template 对应 `n_points=63`。
+- 默认从 verified profile artifacts 初始化；没有 artifacts 时使用 current initial construction。
+- 默认 preserve previous valid profile 或 current initial construction 的 `n_points`，除非 guidance 明确要求 alternate-size experiment。
 - 输出 summary 必须说明是否 beat inherited raw C5，以及哪个 perturbation family 贡献最好。
-
-### Known-Good Template
-
-execution prompt 嵌入：
-
-````text
-<known_good_minimax_template>
-```python
-{ERDOS_MINIMAX_EXECUTION_TEMPLATE}
-```
-</known_good_minimax_template>
-````
-
-当前 template 是 verifier-compatible scoring/repair reference，核心包括：
-
-- `project_to_box_sum(h, target)`
-- `c5_score(h) = max(np.correlate(h, 1-h, mode="full") * (2.0 / n))`
-- 63-point known-good initialization
-- optional SLSQP bounded local refinement
-- final return:
-
-```python
-return [float(x) for x in best_h], float(c5_bound), int(n_points)
-```
 
 ### Required Execution Output Format
 
@@ -428,7 +402,7 @@ Verified returned profile: n_points=..., c5_bound=..., h length=..., head=[...],
 ```
 
 如果 verifier invalid，则 canonical summary 会记录 failure status/message；不会自动替换成
-known-good template。
+固定 fallback solution。
 
 ## Library Writeback Metadata
 
@@ -487,7 +461,7 @@ LibraryNode(
 
 如果 execution model call 失败、输出为空、没有 Python code、或者 verifier invalid：
 
-- 不会自动替换为 known-good template。
+- 不会自动替换为固定 fallback solution。
 - failure 会作为真实 environment outcome 写入 library。
 - reward 为 `0.0`。
 - `execution_fallback_used` 固定为 `false`。
