@@ -234,6 +234,9 @@ def build_guidance_prompt(
 {problem_prompt}
 </problem>
 
+The next sections describe the current search state for this problem. Use them
+as run-local context when deciding the next step.
+
 <selected_library_node>
 Node id: {selected_node.id}
 Timestep: {selected_node.timestep}
@@ -323,6 +326,9 @@ def build_execution_prompt(
     user = f"""<problem>
 {problem_prompt}
 </problem>
+
+The next sections describe the current search state for this problem. Use them
+as run-local context when implementing the guided candidate.
 
 <selected_library_node>
 Node id: {selected_node.id}

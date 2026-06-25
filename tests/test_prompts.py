@@ -62,6 +62,9 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     )
 
     assert "Find better C5" in prompt.user
+    assert "The next sections describe the current search state for this problem" in prompt.user
+    assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
+    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_library_node>")
     assert "<selected_library_node>" in prompt.user
     assert "Projected gradient improved stability" in prompt.user
     assert "preserve symmetry" in prompt.user
@@ -280,6 +283,10 @@ def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_co
 
     assert "Find better C5" in prompt.user
     assert "Try deterministic coordinate descent." in prompt.user
+    assert "The next sections describe the current search state for this problem" in prompt.user
+    assert "run-local context when implementing the guided candidate" in prompt.user
+    assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
+    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_library_node>")
     assert "Previous solution code excerpt" not in prompt.user
     assert "return ([0.5, 0.5], 0.5, 2)" not in prompt.user
     assert "<execution_thinking>" in prompt.user
