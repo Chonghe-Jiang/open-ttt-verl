@@ -364,7 +364,7 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
-Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, what search or refinement strategy was used. Do not include code, hard-coded arrays, or copied profile values.
+Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, including the search, refinement, or optimization strategy used. If the solution’s main contribution lies in specific implementation details, such as parameter fine-tuning, threshold adjustment, normalization choices, perturbation design, or constraint-handling tricks, explicitly emphasize those details and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 """
     return Prompt(
