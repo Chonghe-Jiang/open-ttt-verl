@@ -136,6 +136,28 @@ def test_archive_dedup_does_not_use_solution_text_without_artifacts(tmp_path):
     assert child_entry_ids == {"entry-a", "entry-b"}
 
 
+def test_archive_pruning_preserves_ancestors_of_kept_nodes(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, topk_children=1)
+
+    selected = library.acquire_group("1:mid")
+    mid = library.submit_child("1:mid", _entry(selected.id, reward=2.0, suffix="mid"))
+
+    library.acquire_group("2:grandchild")
+    grandchild = library.submit_child("2:grandchild", _entry(mid.id, reward=4.0, suffix="grandchild"))
+
+    selected = library.acquire_group("3:sibling")
+    sibling = library.submit_child("3:sibling", _entry(selected.id, reward=3.0, suffix="sibling"))
+    snapshot = library.snapshot()
+
+    assert grandchild.id in snapshot["nodes"]
+    assert mid.id in snapshot["nodes"]
+    assert sibling.id in snapshot["nodes"]
+    assert snapshot["nodes"][grandchild.id]["parent_id"] == mid.id
+    assert grandchild.id in snapshot["nodes"][mid.id]["children"]
+
+
 def test_group_finalization_updates_discover_puct_stats(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)

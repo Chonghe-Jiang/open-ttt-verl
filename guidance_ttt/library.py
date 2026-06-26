@@ -289,6 +289,7 @@ class GuidanceLibrary:
         keep_ids = self._topk_child_node_ids()
         keep_ids = self._dedup_node_ids(keep_ids)
         keep_ids = self._limit_buffer_node_ids(keep_ids)
+        keep_ids = self._with_ancestor_closure(keep_ids)
         self._prune_nodes(keep_ids)
 
     def _topk_child_node_ids(self) -> set[str]:
@@ -336,6 +337,12 @@ class GuidanceLibrary:
             if len(keep_ids) >= self.max_buffer_size:
                 break
             keep_ids.add(node.id)
+        return keep_ids
+
+    def _with_ancestor_closure(self, candidate_ids: set[str]) -> set[str]:
+        keep_ids = {node_id for node_id in candidate_ids if node_id in self._nodes}
+        for node_id in list(keep_ids):
+            keep_ids.update(self._ancestor_node_ids(node_id))
         return keep_ids
 
     def _prune_nodes(self, keep_ids: set[str]) -> None:
