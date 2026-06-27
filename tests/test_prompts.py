@@ -303,8 +303,9 @@ def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_co
     assert contract.find("```python") < contract.find("</solution>")
     assert contract.find("</solution>") < contract.find("<summary>")
     assert "Use natural language to summarize the overall idea and method of the solution" in prompt.user
-    assert "Explain how the candidate was generated, what search or refinement strategy was used" in prompt.user
-    assert "Do not include code, hard-coded arrays, or copied profile values" in prompt.user
+    assert "Explain how the candidate was generated, including the search, refinement, or optimization strategy used" in prompt.user
+    assert "parameter fine-tuning, threshold adjustment, normalization choices" in prompt.user
+    assert "Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters" in prompt.user
     assert "Execution Interpretation" not in contract
     assert "Implemented Algorithm" not in contract
     assert "New Ideas Introduced" not in contract
