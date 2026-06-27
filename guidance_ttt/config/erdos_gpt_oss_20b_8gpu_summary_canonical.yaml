@@ -7,8 +7,8 @@ run:
   num_initial_states: 4
   num_steps: 50
   total_epochs: 50
-  max_prompt_length: 4096
-  max_response_length: 1024
+  max_prompt_length: 8192
+  max_response_length: 32768
   learning_rate: 4.0e-5
   ppo_mini_batch_size: 8
   ppo_micro_batch_size_per_gpu: 1
@@ -59,9 +59,9 @@ verl_overrides:
   - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
   - actor_rollout_ref.ref.fsdp_config.param_offload=True
   - actor_rollout_ref.rollout.agent.num_workers=1
-  - actor_rollout_ref.rollout.max_model_len=4096
+  - actor_rollout_ref.rollout.max_model_len=40960
   - actor_rollout_ref.rollout.max_num_seqs=8
-  - actor_rollout_ref.rollout.max_num_batched_tokens=4096
+  - actor_rollout_ref.rollout.max_num_batched_tokens=40960
   - actor_rollout_ref.rollout.enforce_eager=True
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
