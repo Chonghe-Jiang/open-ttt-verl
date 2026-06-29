@@ -1,20 +1,71 @@
-# Guidance-TTT Prompt Framework
+# Guidance-TTT Prompt Architecture
 
-This document summarizes 当前 `guidance-ttt` 中 guidance model 和 execution model
-的 prompt 构造方式。代码来源以当前仓库为准：
+本文档按当前代码整理 `guidance-ttt` 的 prompt 架构，覆盖 guidance model、execution
+model、execution 自总结、verifier 和 library writeback 的完整信息流。
 
-- `guidance_ttt/prompts.py`: prompt 模板、entry summary 压缩、root initial construction facts
-- `guidance_ttt/agent_loop.py`: prompt 构造、模型调用、verification、library 写回
-- `guidance_ttt/library.py`: PUCT 选 node、取 selected/global/failure context
-- `guidance_ttt/tasks/erdos.py`: Erdos problem prompt
+代码来源：
 
-## One Rollout Prompt Flow
+- `guidance_ttt/prompts.py`: guidance/execution prompt 模板、summary 压缩、tag parser
+- `guidance_ttt/agent_loop.py`: verl agent loop、模型调用、verification、canonical summary、library 写回
+- `guidance_ttt/library.py`: PUCT node selection、visible context、JSON library
+- `guidance_ttt/verifier/erdos.py`: Erdos verifier、reward/raw score 计算
+- `guidance_ttt/verifier/sandbox.py`: `<solution>` / Python code 提取和 sandbox 执行
 
-每个 rollout 有两个模型调用：
+## Overall Structure
+
+```mermaid
+flowchart TD
+    A[Problem prompt / task spec] --> C[PUCT library selection]
+    B[(GuidanceLibrary JSON)] --> C
+
+    C --> D[selected_node]
+    C --> E[selected_entry / global_best_entries / local_failure_entries]
+
+    A --> F[build_guidance_prompt]
+    D --> F
+    E --> F
+    F --> G[Guidance model<br/>trainable actor]
+    G --> H[Raw guidance response<br/>&lt;think&gt; + &lt;guidance&gt;]
+    H --> I[extract_guidance_or_format_error]
+
+    A --> J[build_execution_prompt]
+    D --> J
+    E --> J
+    I --> J
+    J --> K[Execution LLM<br/>frozen executor]
+    K --> L[Execution response<br/>&lt;execution_thinking&gt; + &lt;solution&gt; + &lt;summary&gt;]
+
+    L --> M[Verifier / sandbox]
+    M --> N[reward / raw C5 / status / artifacts]
+    L --> O[build_execution_summary]
+    N --> O
+    I --> O
+
+    O --> P[LibraryEntry<br/>guidance, thinking, solution, canonical summary]
+    N --> P
+    P --> Q[LibraryNode<br/>value=reward, raw_score, status]
+    Q --> B
+
+    N --> R[verl reward_score]
+    H --> S[response_ids / response_mask]
+    R --> T[RL update on guidance tokens only]
+    S --> T
+```
+
+核心隔离规则：
 
 ```text
-GuidanceLibrary.acquire_group(...)
-  -> selected_node
+visible_timestep_exclusive = global_step
+```
+
+每个 rollout 只能看到 `timestep < global_step` 的 library 内容。同一个 training step 中刚
+产生的其它 rollout 不会进入当前 prompt。
+
+## One Rollout Flow
+
+```text
+GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)
+  -> selected_node chosen by PUCT
 
 GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=global_step)
   -> selected_entry
@@ -22,35 +73,31 @@ GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=globa
   -> local_failure_entries
 
 build_guidance_prompt(...)
-  -> guidance actor prompt
-  -> guidance actor outputs <guidance>...</guidance>
+  -> guidance chat messages
+  -> guidance model outputs <think>...</think> and <guidance>...</guidance>
+
+extract_guidance_or_format_error(...)
+  -> parsed guidance
+  -> guidance_format_ok
 
 build_execution_prompt(...)
-  -> execution model prompt
-  -> execution model outputs <execution_thinking> + <solution> + <summary>
+  -> execution chat messages
+  -> execution model outputs <execution_thinking>, <solution>, <summary>
 
 verify_erdos_solution_text(execution_text)
   -> verifier status / raw C5 / reward / artifacts
 
 build_execution_summary(...)
-  -> canonical summary with verifier result
+  -> canonical summary combining execution thinking, model summary, solution, guidance, verifier result
 
-LibraryEntry + LibraryNode written into library.json
+GuidanceLibrary.submit_child(...)
+  -> write LibraryEntry and child LibraryNode
 ```
-
-重要隔离规则：
-
-```text
-visible_timestep_exclusive = global_step
-```
-
-因此 prompt 只看 `timestep < global_step` 的 library entries。同一个 training step
-内刚产生的其它 rollout 不会泄漏进当前 prompt。
 
 ## Shared Library Context
 
-guidance model 和 execution model 的 library context 来自同一个 selected node，但
-attach 的粒度不同。
+Guidance prompt 和 execution prompt 来自同一次 PUCT selection 的同一个
+`selected_node` / `selected_entry`，但 attach 的粒度不同。
 
 共同来源：
 
@@ -64,81 +111,75 @@ local_failure_entries = context["local_failure_entries"]
 
 差异：
 
-- guidance prompt 看 summary-only context：selected/global/failure 部分只 attach
-  `entry.summary` 经 `_summary_for_guidance()` 压缩后的文本，不 attach node id、visits、
-  reward、raw score、verifier status/message、verified artifacts、previous guidance、
-  reusable idea、failure mode 或 root initial construction facts。
-- execution prompt 看“可执行上下文”：root initial construction facts、selected entry 的更长
-  canonical summary、verified profile artifacts、global best valid entry、current guidance。
+- Guidance prompt 是 summary-only context：selected/global/failure 部分只 attach
+  `entry.summary` 经 `_summary_for_guidance()` 压缩后的文本。
+- Guidance prompt 不 attach node id、visits、reward、raw score、verifier status/message、
+  verified artifacts、previous guidance、reusable idea、failure mode 或 root initial
+  construction facts。
+- Execution prompt attach 同一个 selected node 的更长 `_entry_summary(..., include_solution=True)`、
+  root initial construction facts、verified profile artifacts、current visible best valid entry
+  和 parsed guidance。
+- 当前 `lineage_entries` 会由 library context 返回，但没有直接写入 prompt。
 
-## Entry Summary Construction
+## Summary Attach Rules
 
-`_summary_only_for_guidance(entry)` 用于 guidance prompt；`_entry_summary(entry,
-include_solution=...)` 用于 execution prompt。
+Guidance prompt 使用 `_summary_only_for_guidance(entry)`。
 
-guidance prompt 没有 previous entry 时：
+没有 previous entry 时：
 
 ```text
 No previous summary is attached.
 ```
 
-guidance prompt 有 entry 时，只输出：
+有 entry 时，只输出：
 
 ```text
-{clipped _summary_for_guidance(entry.summary)}
+{_clip(_summary_for_guidance(entry.summary), 420)}
 ```
 
-因此 guidance 的 selected/global/failure library context 不包含 entry id、reward、raw
-score、verifier 状态、verified profile artifacts、previous guidance、reusable idea 或
-failure mode。`_summary_for_guidance()` 仍会移除 summary 内的大段 fenced code block，并
-提取 compact attached-code facts。
+`_summary_for_guidance()` 会：
 
-execution prompt 使用 `_entry_summary(entry, include_solution=True)`。
+- 移除 summary 内的大段 fenced code block。
+- 从 code block 中抽取 compact implementation facts，例如 `n_points`、`project_to_box_sum`、
+  `np.correlate`、`SLSQP maxiter`、loop counts 等。
+- 压缩 long profile arrays。
 
-没有 previous entry 时：
+Execution prompt 使用 `_entry_summary(entry, include_solution=True)`。
+
+如果没有 previous library entry：
 
 ```text
 No previous library entry is attached.
 ```
 
-有 entry 时，基础字段包括：
+有 entry 时，基础字段是：
 
 ```text
 Entry id: {entry.id}
 Reward: {entry.verifier_reward}
 Raw score: {entry.verifier_raw_score}
 Verifier status: {entry.verifier_status}
-Verifier message: {clipped verifier_message}
-Verified returned profile artifacts ...   # valid entry 且 verifier artifacts 中有 h_values 时
+Verifier message: {_clip(entry.verifier_message, verifier_clip)}
+Verified returned profile artifacts ...   # valid entry 且 artifacts 有 h_values 时
 Canonical summary:
-{clipped / compressed summary}
-Previous guidance: {clipped / compacted guidance}
-Reusable idea: {clipped reusable_idea}
-Failure mode: {entry.failure_mode, if present}
+{_clip(entry.summary, 2600)}
+Previous guidance: {_clip(entry.guidance, 360)}
+Reusable idea: {_clip(entry.reusable_idea, 220)}
+Failure mode: {entry.failure_mode}         # only if present
 ```
 
-root node 如果带有初始构造 metadata，还会通过 `_root_initial_construction_facts(...)`
-注入 execution prompt：
+root node 如果带有初始构造 metadata，会额外注入 execution prompt：
 
 ```text
 Current initial construction (reference state to improve): initialization=..., n_points=..., raw C5=..., c5_bound=..., h=... / h length=...
 ```
 
-`include_solution=True` 时用于 execution prompt：
-
-- summary clip 更长。
-- previous guidance / verifier message / reusable idea clip 更长。
-- 当前版本不再额外附加 `entry.solution` 的 backward-compatible code excerpt；可执行上下文主要来自
-  canonical summary、verified artifacts、root initial construction 和 global best valid entry。
-
 ## Guidance Model Prompt
 
-### Role
+Guidance model 是被 RL 训练的 actor。它不直接写最终 Python solution，而是输出下一步
+搜索方向。verl 的 reward 最终只作用在 guidance model response tokens 上。
 
-guidance model 是被 RL 训练的 actor。它不直接写最终 Python solution，而是输出下一步
-搜索/修改策略。verl 的 reward 最终只作用在 guidance model response tokens 上。
-
-### System Prompt
+### Guidance System Prompt
 
 ```text
 You are the Guidance Model, acting as a strategic navigator for an open-ended scientific discovery process.
@@ -148,37 +189,9 @@ Your primary objective is to provide **evolutionary guidance**. Do not write fin
 Focus on how the current ideas can *evolve* to escape local optima and discover fundamentally new mechanisms.
 ```
 
-### Attached Inputs
+### Guidance User Prompt
 
-guidance user prompt attach：
-
-```text
-<problem>
-{ERDOS_PROBLEM_PROMPT}
-</problem>
-
-<selected_summary>
-{_summary_only_for_guidance(selected_entry)}
-</selected_summary>
-
-<global_best>
-{summary-only global best context}
-</global_best>
-
-<local_failures>
-{summary-only local failure context}
-</local_failures>
-```
-
-`global_best` 中如果 selected entry 本身就是当前 visible global best，会写：
-
-```text
-The selected summary is also the current global best visible summary.
-```
-
-### Complete Guidance User Prompt Template
-
-下面是 `build_guidance_prompt()` 当前构造的完整 user prompt。`{...}` 是运行时
+下面是 `build_guidance_prompt(...)` 当前构造的完整 user prompt。`{...}` 是运行时
 Python f-string 插入的变量。
 
 ````text
@@ -207,13 +220,7 @@ Your task is to provide the next **evolutionary guidance** to beat the current v
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
-3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below. 
-<think>
-Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-</think>
-<guidance>
-This must contain only your final, actionable evolutionary trajectory.
-</guidance>
+3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
 
 Provide your response exactly in the following format:
 
@@ -222,52 +229,64 @@ Provide your response exactly in the following format:
 
 <guidance>
 </guidance>
+
+The following notes explain what each block should contain:
+<think>
+Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+</think>
+<guidance>
+This must contain only your final, actionable evolutionary trajectory.
+</guidance>
 ````
 
-### Guidance Objective
+### Guidance Runtime Variables
 
-当前 guidance prompt 强调：
+`best_text`:
 
-- 目标是给出下一步 evolutionary guidance，beat 当前 visible target raw score。
-- guidance 要基于 `<selected_summary>` 和 `<local_failures>` 分析历史瓶颈，避免重复失败轨迹。
-- guidance 只提高层 conceptual / structural / mathematical mutation，不写代码，不 micromanage hyperparameters。
-- 输出必须严格分成 `<think>` 和 `<guidance>` 两块。
-- `<think>` 用于内部历史诊断和方案权衡。
-- `<guidance>` 只保留最终 actionable evolutionary trajectory。
-
-### Important Runtime Targets
-
-`best_valid_target` 的来源：
-
-- 如果 selected/global context 中有 valid entry，使用 visible best valid raw C5。
-- 如果没有 valid entry，则使用 selected node 的 raw score。
-- 这个 target 只作为 guidance objective 中的分数目标；当前 guidance user prompt 不再
-  attach hardcoded Erdos seed、63-point full profile 或低层优化 schedule。
-
-### Required Guidance Output Format
-
-guidance model 必须输出 `<think>` 和 `<guidance>` 两个 XML blocks：
-
-```text
-<think>
-</think>
-
-<guidance>
-</guidance>
+```python
+best_entries_for_prompt = [
+    entry for entry in global_best_entries
+    if entry is not None and entry.id != selected_entry_id
+]
+best_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in best_entries_for_prompt)
 ```
 
-`<think>` 是内部历史诊断和方案权衡；`<guidance>` 只包含最终 actionable evolutionary
-trajectory。
+如果 selected entry 本身就是当前 visible global best：
 
-### Guidance Parsing Rule
+```text
+The selected summary is also the current global best visible summary.
+```
 
-`extract_guidance_or_format_error()` 的规则：
+`failure_text`:
+
+```python
+failure_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in local_failure_entries)
+```
+
+`best_valid_target`:
+
+```python
+best_valid = _best_valid_entry(global_best_entries, selected_entry)
+best_valid_raw_score = (
+    best_valid.verifier_raw_score
+    if best_valid is not None and best_valid.verifier_raw_score is not None
+    else selected_node.raw_score
+)
+best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+```
+
+所以 guidance prompt 的历史内容是 summary-only，但 objective 中的 target score 仍来自
+visible best valid entry 或 selected node 的 raw score。
+
+### Guidance Parsing
+
+`extract_guidance_or_format_error(...)` 的规则：
 
 ```text
 If raw output has <guidance>...</guidance>:
-  submitted guidance = text inside that tag
+  submitted guidance = text inside <guidance>
   guidance_format_ok = true
-Else if raw output has text outside <think>...</think>:
+Else if raw output has non-empty text outside <think>...</think>:
   submitted guidance = outside-think text
   guidance_format_ok = false
 Else:
@@ -280,15 +299,11 @@ Else:
 
 ## Execution Model Prompt
 
-### Role
+Execution model 是冻结的执行器。它把 parsed guidance 和 library context 转成一个具体
+可运行的 Python candidate。execution tokens 不参与 RL 更新；它的输出只通过 verifier 产生
+reward，并写回 library。
 
-execution model 是冻结的执行器。它把 guidance 转成一个具体可运行的 Python candidate。
-它的 tokens 不参与 RL 更新；它的输出只通过 verifier 产生 reward，并写回 library。
-
-### Complete Execution Chat Prompt
-
-`GuidanceExecutionAgentLoop.run(...)` 调用 execution model 时，实际发送的是下面两条
-chat messages：
+实际发送给 execution model 的 chat messages：
 
 ```python
 [
@@ -297,28 +312,36 @@ chat messages：
 ]
 ```
 
-其中 `execution_prompt = build_execution_prompt(...)`。
+其中：
 
-### Full Execution System Prompt
+```python
+execution_prompt = build_execution_prompt(
+    problem_prompt=self.problem_prompt,
+    selected_node=selected_node,
+    selected_entry=selected_entry,
+    global_best_entries=context["global_best_entries"],
+    guidance=guidance,
+)
+```
 
-这是当前代码实际发送给 execution model 的完整 system prompt：
+### Execution System Prompt
 
 ```text
 You are the execution model. Turn guidance into one concrete runnable Python candidate. Output execution thinking first, then the code block, then the summary.
 ```
 
-### Full Execution User Prompt
+### Execution User Prompt
 
-下面是当前代码实际发送给 execution model 的完整 user prompt。它是一个薄 wrapper：
-`<problem>` 是权威任务定义，`<guidance>` 给出方向，library context 只提供历史证据。
-wrapper 本身不再写 Erdos/C5/SLSQP/project 等任务专用实现策略。
-
-`{...}` 是运行时由 Python f-string 插入的变量。
+下面是 `build_execution_prompt(...)` 当前构造的完整 user prompt。`<problem>` 是权威任务
+定义，library context 是历史证据，`<guidance>` 是当前要执行的方向。
 
 ````text
 <problem>
 {problem_prompt}
 </problem>
+
+The next sections describe the current search state for this problem. Use them
+as run-local context when implementing the guided candidate.
 
 <selected_library_node>
 Node id: {selected_node.id}
@@ -358,12 +381,9 @@ Use natural language to summarize the overall idea and method of the solution. E
 </summary>
 ````
 
-注意：execution model 的 `<summary>` 只记录 execution model 自己的解释。verifier 真实结果会在
-后续 canonical summary 阶段写回。
+### Execution Runtime Variables
 
-### Execution Prompt Runtime Variables
-
-这些变量在 `build_execution_prompt(...)` 内部生成：
+`best_valid_text`:
 
 ```python
 best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
@@ -372,19 +392,72 @@ best_valid_text = (
     if best_valid
     else "No global best valid entry yet."
 )
+```
+
+`initial_construction_text`:
+
+```python
 initial_construction_text = _root_initial_construction_facts(selected_node)
 ```
 
-所以 execution model 看到的 library 内容和 guidance model 看到的 library 内容来自同一次
-PUCT selection；区别是 execution prompt 会 attach 更长的 selected entry summary，并额外
-attach 当前 visible best valid entry。
+因此 execution model 和 guidance model 使用相同 PUCT-selected node，但 execution prompt
+会给 selected entry 更长的 context，并额外给出当前 visible best valid entry。
 
-## Canonical Summary After Verification
+### Execution Parsing
 
-execution model 输出的 `<summary>` 不是最终直接写入 library 的唯一依据。
+Execution response 预期包含三个 blocks：
 
-agent loop 会在 verifier 之后调用 `build_execution_summary(...)`，生成 canonical summary。
-固定 section：
+```text
+<execution_thinking>...</execution_thinking>
+<solution>```python ... ```</solution>
+<summary>...</summary>
+```
+
+解析方式：
+
+- `execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""`
+- `solution = _extract_solution_code(execution_text)`
+- `model_summary = extract_tag_or_none(execution_text, "summary")`
+
+`_extract_solution_code(...)` 优先读取 `<solution>...</solution>` 内的 Python fenced code；
+如果没有 `<solution>`，则 fallback 到 response 中最后一个 ```python fenced block。
+
+Verifier 直接对完整 `execution_text` 调用：
+
+```python
+verification = verify_erdos_solution_text(execution_text, timeout_s=timeout_s)
+```
+
+Erdos verifier 要求 candidate code 定义 `run()`，并返回：
+
+```python
+h_values, c5_bound, n_points
+```
+
+valid 时：
+
+```text
+raw_score = verified C5
+reward = 1.0 / (1e-8 + raw_score)
+status = "valid"
+artifacts = code, h_values, c5_bound, n_points
+```
+
+invalid/parse error/timeout 时：
+
+```text
+reward = 0.0
+raw_score = None
+status = "parse_error" / "invalid" / "timeout"
+```
+
+## Canonical Summary
+
+Execution model 的 `<summary>` 不是最终直接写入 library 的唯一 summary。agent loop 会在
+verification 之后调用 `build_execution_summary(...)`，把 model summary、execution thinking、
+solution、guidance 和 verifier 真实结果合成 canonical summary。
+
+固定 sections：
 
 ```text
 Execution Interpretation
@@ -395,7 +468,7 @@ Failure / Bottleneck Analysis
 Next Guidance Delta
 ```
 
-其中 `Empirical Outcome` 由 verifier 真实结果填充：
+`Empirical Outcome` 由 verifier 填充：
 
 ```text
 Verifier status: {verification.status}
@@ -405,17 +478,19 @@ Verifier message: {verification.message}
 Verified returned profile: n_points=..., c5_bound=..., h length=..., head=[...], tail=[...]
 ```
 
-如果 verifier invalid，则 canonical summary 会记录 failure status/message；不会自动替换成
-固定 fallback solution。
+如果 model summary 没有可解析 section，原始 `<summary>` 会作为 `New Ideas Introduced`。
+如果 verifier invalid，`Failure / Bottleneck Analysis` 会记录真实 failure status/message。
 
-## Library Writeback Metadata
+## Library Writeback
 
 每个 rollout 写入一个 `LibraryEntry`：
 
 ```python
 LibraryEntry(
+    id=str(uuid4()),
     parent_id=selected_node.id,
-    timestep=global_step,
+    problem_id=selected_node.problem_id,
+    timestep=int(global_step),
     guidance=guidance,
     execution_thinking=execution_thinking,
     solution=solution,
@@ -423,51 +498,67 @@ LibraryEntry(
     verifier_raw_score=verification.raw_score,
     verifier_status=verification.status,
     verifier_message=verification.message,
-    summary=canonical_summary,
-    reusable_idea=extract_from_summary(summary),
-    failure_mode=None if valid else verification.status,
+    summary=summary,  # canonical summary returned by build_execution_summary(...)
+    reusable_idea=_extract_reusable_idea(summary),
+    failure_mode=None if verification.valid else verification.status,
     metadata={
-        "guidance_prompt": {"system": ..., "user": ...},
-        "execution_prompt": {"system": ..., "user": ...},
-        "raw_guidance_text": ...,
-        "raw_guidance_with_specials": ...,
-        "guidance_format_ok": ...,
-        "execution_text": ...,
-        "execution_provider": ...,
-        "execution_model": ...,
-        "execution_response_metadata": ...,
-        "execution_response_usage": ...,
-        "verification_artifacts": ...,
-        "execution_fallback_used": false,
-        "execution_fallback_reason": null,
-        "original_execution_text": ...,
+        "group_uid": group_uid,
+        "selected_node_id": selected_node.id,
+        "guidance_format_ok": guidance_format_ok,
+        "guidance_generation_attempts": guidance_generation.attempts,
+        "raw_guidance_with_specials": guidance_generation.raw_text,
+        "guidance_stop_reason": guidance_generation.stop_reason,
+        "raw_guidance_text": guidance_text,
+        "guidance_prompt": {"system": guidance_prompt.system, "user": guidance_prompt.user},
+        "execution_prompt": {"system": execution_prompt.system, "user": execution_prompt.user},
+        "execution_text": execution_text,
+        "execution_provider": self.execution_llm_config.get("provider", "mock"),
+        "execution_model": self.execution_llm_config.get("model", "mock-exec"),
+        "execution_response_metadata": execution_response_metadata,
+        "execution_response_usage": execution_response_usage,
+        "verification_artifacts": verification.artifacts,
+        "execution_fallback_used": execution_result.fallback_used,
+        "execution_fallback_reason": execution_result.fallback_reason,
+        "original_execution_text": execution_result.original_execution_text,
     },
 )
 ```
 
-同时写入一个 lightweight `LibraryNode`：
+同时写入一个 child `LibraryNode`：
 
 ```python
 LibraryNode(
+    problem_id=entry.problem_id,
+    timestep=entry.timestep,
     entry_id=entry.id,
-    value=verification.reward,
-    raw_score=verification.raw_score,
+    value=entry.verifier_reward,
+    raw_score=entry.verifier_raw_score,
+    visits=0,
     parent_id=selected_node.id,
-    metadata={"verifier_status": verification.status},
+    children=[],
+    metadata={"verifier_status": entry.verifier_status},
 )
 ```
 
-之后的 prompt 主要从 `LibraryEntry.summary`、`verification_artifacts`、
-`guidance`、`solution` 中抽取上下文；PUCT 选择主要看 `LibraryNode.value`、
-`raw_score`、`puct_n`、`puct_m`、`puct_T`。
+`submit_child(...)` 在 group 完成后更新 PUCT stats，并可能过滤 archive：
 
-## No Automatic Execution Fallback
+```text
+puct_n: visit counts
+puct_m: best reachable values
+puct_T: total completed group visits
+```
 
-如果 execution model call 失败、输出为空、没有 Python code、或者 verifier invalid：
+## Training Signal
 
-- 不会自动替换为固定 fallback solution。
-- failure 会作为真实 environment outcome 写入 library。
-- reward 为 `0.0`。
-- `execution_fallback_used` 固定为 `false`。
+Guidance model 是唯一被训练的模型：
 
-这保证失败本身也成为 guidance actor 的训练信号。
+```text
+prompt_ids = guidance system + guidance user
+response_ids = guidance model response tokens
+response_mask = [1] * len(response_ids)
+reward_score = verification.reward
+```
+
+Execution model、verifier、summary canonicalizer 都只提供 environment feedback。execution
+失败不会被固定 fallback solution 替换；失败会以 reward `0.0` 和对应 status 写入 library，
+成为后续 guidance prompt 的历史信号。
