@@ -230,7 +230,11 @@ guidance_ttt/prompts.py::build_guidance_prompt
 
 - 让 actor 输出高层 guidance，不输出最终代码
 - actor 的输出 token 是唯一进入训练梯度路径的部分
-- prompt 会包含 problem、selected node、selected entry、global best、local failures、约束和推荐搜索策略
+- prompt 会包含 problem、selected/global/failure summary-only context、目标 raw score、
+  输出格式和推荐搜索策略
+- selected/global/failure context 只来自 `entry.summary` 经 `_summary_for_guidance()`
+  压缩后的文本；不 attach node id、visits、reward、raw score、verifier 状态、
+  verified artifacts、previous guidance、reusable idea、failure mode 或 root 初始构造 facts
 
 ### Guidance System Prompt 原文
 
@@ -251,35 +255,28 @@ Focus on how the current ideas can *evolve* to escape local optima and discover 
 {problem_prompt}
 </problem>
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-Visits: {selected_node.visits}
-{_entry_summary(selected_entry, include_solution=False)}
-</selected_library_node>
+The next sections describe the current search state for this problem. Use them
+as run-local context when deciding the next step.
+
+<selected_summary>
+{_summary_only_for_guidance(selected_entry)}
+</selected_summary>
 
 <global_best>
-{best_text or "No global best entry yet."}
+{best_text or "No global best summary yet."}
 </global_best>
 
 <local_failures>
-{failure_text or "No local failure entries yet."}
+{failure_text or "No local failure summaries yet."}
 </local_failures>
 
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current best valid raw score ({best_valid_target}). Lower raw C5 is better.
+Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
 
 # Evolutionary Guidelines
-1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
+1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
 3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
-    * **The `<think>` block:** Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-    * **The `<guidance>` block:** This must contain only your final, actionable evolutionary trajectory. It should clearly outline:
-        - The **Evolutionary Mutation**: The new structural or mathematical property being explored.
-        - The **Directional Search Strategy**: The high-level algorithmic mechanism to execute the mutation.
-        - The **Progress Target**: The explicit structural change that indicates successful mutation from {selected_node.raw_score} towards {best_valid_target} or lower.
 
 Provide your response exactly in the following format:
 
@@ -287,6 +284,14 @@ Provide your response exactly in the following format:
 </think>
 
 <guidance>
+</guidance>
+
+The following notes explain what each block should contain:
+<think>
+Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
+</think>
+<guidance>
+This must contain only your final, actionable evolutionary trajectory.
 </guidance>
 ````
 
@@ -311,32 +316,24 @@ guidance_ttt/prompts.py::extract_guidance_or_format_error
 位置：
 
 ```text
+guidance_ttt/prompts.py::_summary_only_for_guidance
+```
+
+guidance prompt 行为：
+
+- `entry is None` 时输出 `No previous summary is attached.`
+- 有 entry 时只输出 `_summary_for_guidance(entry.summary)` 的 clipped 文本
+- 不输出 `Entry id`、reward、raw score、verifier status/message、verified artifacts、
+  previous guidance、reusable idea 或 failure mode
+
+execution prompt 仍使用：
+
+```text
 guidance_ttt/prompts.py::_entry_summary
 ```
 
-新版行为：
-
-- prompt context 主要依赖 `entry.summary`
-- `summary` 被称为 `Canonical summary`
-- `execution_thinking` 和 `solution` 字段仍保留在 `LibraryEntry`，但主要用于 backward compatibility
-- 如果 `include_solution=True` 且 canonical summary 里没有 fenced Python code，才额外附上旧字段 `entry.solution`
-
-当前 `_entry_summary(...)` 输出字段顺序：
-
-```text
-Entry id
-Canonical summary
-Previous guidance
-Reward
-Raw score
-Verifier status
-Verifier message
-Reusable idea
-Failure mode, if present
-Previous solution code excerpt, only as backward-compatible fallback
-```
-
-这次 summary-canonical 改动的核心是：未来 prompt context 应该优先从 `summary` 读信息，而不是分别拼 `execution_thinking` 和 `solution`。
+它保留更完整的可执行上下文，包括 canonical summary、verified artifacts、previous
+guidance、reusable idea 和 root initial construction facts。
 
 ## Execution Prompt 构建
 

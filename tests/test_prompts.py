@@ -52,7 +52,7 @@ def _entry() -> LibraryEntry:
     )
 
 
-def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
+def test_guidance_prompt_attaches_selected_summary_but_not_library_details():
     prompt = build_guidance_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
@@ -64,11 +64,18 @@ def test_guidance_prompt_attaches_selected_library_node_but_not_full_solution():
     assert "Find better C5" in prompt.user
     assert "The next sections describe the current search state for this problem" in prompt.user
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
-    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_library_node>")
-    assert "<selected_library_node>" in prompt.user
+    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
+    assert "<selected_summary>" in prompt.user
     assert "Projected gradient improved stability" in prompt.user
-    assert "preserve symmetry" in prompt.user
     assert "def run(seed=42" not in prompt.user
+    assert "Entry id:" not in prompt.user
+    assert "Reward:" not in prompt.user
+    assert "Raw score:" not in prompt.user
+    assert "Verifier status:" not in prompt.user
+    assert "Verifier message:" not in prompt.user
+    assert "Previous guidance:" not in prompt.user
+    assert "Reusable idea:" not in prompt.user
+    assert "preserve symmetry" not in prompt.user
     assert "<guidance>" in prompt.user
     assert "You are the Guidance Model" in prompt.system
     assert "evolutionary guidance" in prompt.system
@@ -122,14 +129,14 @@ def test_guidance_prompt_attaches_global_best_and_local_failure_history():
     )
 
     assert "<global_best>" in prompt.user
-    assert "best-entry" in prompt.user
     assert "best history used mirror minimax" in prompt.user
-    assert "reuse best projection repair" in prompt.user
     assert "<local_failures>" in prompt.user
-    assert "failure-entry" in prompt.user
     assert "failed because sum drifted" in prompt.user
-    assert "sum(h) must equal n_points / 2" in prompt.user
-    assert "Failure mode: invalid" in prompt.user
+    assert "best-entry" not in prompt.user
+    assert "failure-entry" not in prompt.user
+    assert "reuse best projection repair" not in prompt.user
+    assert "sum(h) must equal n_points / 2" not in prompt.user
+    assert "Failure mode: invalid" not in prompt.user
 
 
 def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
@@ -166,7 +173,7 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
     assert "Do not ask the execution model to reinvent minimax from scratch" not in prompt.user
 
 
-def test_guidance_prompt_prefers_verified_profile_artifacts_over_summary_head_tail():
+def test_guidance_prompt_uses_only_summary_not_verified_profile_artifacts():
     best = _entry()
     best.id = "best-entry"
     best.verifier_raw_score = 0.3812435631313583
@@ -212,14 +219,15 @@ def test_guidance_prompt_prefers_verified_profile_artifacts_over_summary_head_ta
         local_failure_entries=[],
     )
 
-    assert "Verified returned profile artifacts (authoritative initialization)" in prompt.user
-    assert "raw C5=0.3812435631313583" in prompt.user
-    assert "h=[1.0, 0.9872194239853203" in prompt.user
-    assert "0.9999965067437544]" in prompt.user
+    assert "Verified returned profile artifacts (authoritative initialization)" not in prompt.user
+    assert "raw C5=0.3812435631313583" not in prompt.user
+    assert "Empirical Outcome" in prompt.user
+    assert "Verified returned profile: n_points=19, c5_bound=0.3812435631313583" in prompt.user
+    assert "The selected summary is also the current global best visible summary." in prompt.user
     assert "why the current profile plateaued" in prompt.user
 
 
-def test_guidance_prompt_root_uses_selected_raw_score_and_initial_construction_facts():
+def test_guidance_prompt_root_uses_selected_raw_score_without_initial_construction_facts():
     root_node = LibraryNode(
         id="root",
         problem_id="erdos",
@@ -263,9 +271,9 @@ Try pairwise mass transfer around the first five coordinates.
     assert "current visible target raw score (0.5)" in prompt.user
     assert "The following notes explain what each block should contain" in prompt.user
     assert "This must contain only your final, actionable evolutionary trajectory" in prompt.user
-    assert "Current initial construction (reference state to improve)" in prompt.user
-    assert "initialization=random_perturbed_constant" in prompt.user
-    assert "h=[0.2, 0.4, 0.6, 0.8]" in prompt.user
+    assert "Current initial construction (reference state to improve)" not in prompt.user
+    assert "initialization=random_perturbed_constant" not in prompt.user
+    assert "h=[0.2, 0.4, 0.6, 0.8]" not in prompt.user
     assert "Extracted attached-code facts" in prompt.user
     assert "profile h=[0.9999934729084969" in prompt.user
     assert "0.7922939787622869" in prompt.user

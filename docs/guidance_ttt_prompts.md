@@ -64,15 +64,36 @@ local_failure_entries = context["local_failure_entries"]
 
 差异：
 
-- guidance prompt 看“决策摘要”：压缩 summary、reward、raw score、verifier status、
-  short guidance、reusable idea、global best、local failures。
+- guidance prompt 看 summary-only context：selected/global/failure 部分只 attach
+  `entry.summary` 经 `_summary_for_guidance()` 压缩后的文本，不 attach node id、visits、
+  reward、raw score、verifier status/message、verified artifacts、previous guidance、
+  reusable idea、failure mode 或 root initial construction facts。
 - execution prompt 看“可执行上下文”：root initial construction facts、selected entry 的更长
   canonical summary、verified profile artifacts、global best valid entry、current guidance。
 
 ## Entry Summary Construction
 
-`_entry_summary(entry, include_solution=...)` 被同时用于 guidance prompt 和 execution
-prompt。
+`_summary_only_for_guidance(entry)` 用于 guidance prompt；`_entry_summary(entry,
+include_solution=...)` 用于 execution prompt。
+
+guidance prompt 没有 previous entry 时：
+
+```text
+No previous summary is attached.
+```
+
+guidance prompt 有 entry 时，只输出：
+
+```text
+{clipped _summary_for_guidance(entry.summary)}
+```
+
+因此 guidance 的 selected/global/failure library context 不包含 entry id、reward、raw
+score、verifier 状态、verified profile artifacts、previous guidance、reusable idea 或
+failure mode。`_summary_for_guidance()` 仍会移除 summary 内的大段 fenced code block，并
+提取 compact attached-code facts。
+
+execution prompt 使用 `_entry_summary(entry, include_solution=True)`。
 
 没有 previous entry 时：
 
@@ -96,14 +117,8 @@ Reusable idea: {clipped reusable_idea}
 Failure mode: {entry.failure_mode, if present}
 ```
 
-`include_solution=False` 时用于 guidance prompt：
-
-- summary 会通过 `_summary_for_guidance()` 去掉大段 code block，并提取实现 facts。
-- clip 更短，避免 actor prompt 被历史代码占满。
-- long profile array 会被 compact。
-
 root node 如果带有初始构造 metadata，还会通过 `_root_initial_construction_facts(...)`
-注入：
+注入 execution prompt：
 
 ```text
 Current initial construction (reference state to improve): initialization=..., n_points=..., raw C5=..., c5_bound=..., h=... / h length=...
@@ -142,29 +157,23 @@ guidance user prompt attach：
 {ERDOS_PROBLEM_PROMPT}
 </problem>
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-Visits: {selected_node.visits}
-{initial_construction_text}
-{_entry_summary(selected_entry, include_solution=False)}
-</selected_library_node>
+<selected_summary>
+{_summary_only_for_guidance(selected_entry)}
+</selected_summary>
 
 <global_best>
-{compressed global best summaries}
+{summary-only global best context}
 </global_best>
 
 <local_failures>
-{compressed local failure summaries}
+{summary-only local failure context}
 </local_failures>
 ```
 
 `global_best` 中如果 selected entry 本身就是当前 visible global best，会写：
 
 ```text
-The selected library node is also the current global best visible entry; use its summary above.
+The selected summary is also the current global best visible summary.
 ```
 
 ### Complete Guidance User Prompt Template
@@ -177,29 +186,26 @@ Python f-string 插入的变量。
 {problem_prompt}
 </problem>
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-Visits: {selected_node.visits}
-{initial_construction_text}
-{_entry_summary(selected_entry, include_solution=False)}
-</selected_library_node>
+The next sections describe the current search state for this problem. Use them
+as run-local context when deciding the next step.
+
+<selected_summary>
+{_summary_only_for_guidance(selected_entry)}
+</selected_summary>
 
 <global_best>
-{best_text or "No global best entry yet."}
+{best_text or "No global best summary yet."}
 </global_best>
 
 <local_failures>
-{failure_text or "No local failure entries yet."}
+{failure_text or "No local failure summaries yet."}
 </local_failures>
 
 # Objective
 Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
 
 # Evolutionary Guidelines
-1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
+1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
 3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below. 
 <think>
@@ -223,7 +229,7 @@ Provide your response exactly in the following format:
 当前 guidance prompt 强调：
 
 - 目标是给出下一步 evolutionary guidance，beat 当前 visible target raw score。
-- guidance 要基于 `<selected_library_node>` 和 `<local_failures>` 分析历史瓶颈，避免重复失败轨迹。
+- guidance 要基于 `<selected_summary>` 和 `<local_failures>` 分析历史瓶颈，避免重复失败轨迹。
 - guidance 只提高层 conceptual / structural / mathematical mutation，不写代码，不 micromanage hyperparameters。
 - 输出必须严格分成 `<think>` 和 `<guidance>` 两块。
 - `<think>` 用于内部历史诊断和方案权衡。

@@ -206,6 +206,12 @@ def _entry_summary(entry: LibraryEntry | None, *, include_solution: bool) -> str
     return "\n".join(parts)
 
 
+def _summary_only_for_guidance(entry: LibraryEntry | None) -> str:
+    if entry is None:
+        return "No previous summary is attached."
+    return _clip(_summary_for_guidance(entry.summary), 420) or "No previous summary is attached."
+
+
 def build_guidance_prompt(
     *,
     problem_prompt: str,
@@ -218,10 +224,10 @@ def build_guidance_prompt(
     best_entries_for_prompt = [
         entry for entry in global_best_entries if entry is not None and entry.id != selected_entry_id
     ]
-    best_text = "\n\n".join(_entry_summary(entry, include_solution=False) for entry in best_entries_for_prompt)
+    best_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in best_entries_for_prompt)
     if not best_text and global_best_entries and selected_entry_id:
-        best_text = "The selected library node is also the current global best visible entry; use its summary above."
-    failure_text = "\n\n".join(_entry_summary(entry, include_solution=False) for entry in local_failure_entries)
+        best_text = "The selected summary is also the current global best visible summary."
+    failure_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in local_failure_entries)
     best_valid = _best_valid_entry(global_best_entries, selected_entry)
     best_valid_raw_score = (
         best_valid.verifier_raw_score
@@ -229,7 +235,6 @@ def build_guidance_prompt(
         else selected_node.raw_score
     )
     best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
-    initial_construction_text = _root_initial_construction_facts(selected_node)
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -237,29 +242,23 @@ def build_guidance_prompt(
 The next sections describe the current search state for this problem. Use them
 as run-local context when deciding the next step.
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-Visits: {selected_node.visits}
-{initial_construction_text}
-{_entry_summary(selected_entry, include_solution=False)}
-</selected_library_node>
+<selected_summary>
+{_summary_only_for_guidance(selected_entry)}
+</selected_summary>
 
 <global_best>
-{best_text or "No global best entry yet."}
+{best_text or "No global best summary yet."}
 </global_best>
 
 <local_failures>
-{failure_text or "No local failure entries yet."}
+{failure_text or "No local failure summaries yet."}
 </local_failures>
 
 # Objective
 Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
 
 # Evolutionary Guidelines
-1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_library_node>` and `<local_failures>`.
+1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
 2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
 3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
 
