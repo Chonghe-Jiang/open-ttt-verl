@@ -5,7 +5,7 @@ model、execution 自总结、verifier 和 library writeback 的完整信息流�
 
 代码来源：
 
-- `guidance_ttt/prompts.py`: guidance/execution prompt 模板、summary 压缩、tag parser
+- `guidance_ttt/prompts.py`: guidance/execution prompt 模板、raw summary attach、tag parser
 - `guidance_ttt/agent_loop.py`: verl agent loop、模型调用、verification、canonical summary、library 写回
 - `guidance_ttt/library.py`: PUCT node selection、visible context、JSON library
 - `guidance_ttt/verifier/erdos.py`: Erdos verifier、reward/raw score 计算
@@ -109,70 +109,32 @@ global_best_entries = context["global_best_entries"]
 local_failure_entries = context["local_failure_entries"]
 ```
 
-差异：
-
-- Guidance prompt 是 summary-only context：selected/global/failure 部分只 attach
-  `entry.summary` 经 `_summary_for_guidance()` 压缩后的文本。
-- Guidance prompt 不 attach node id、visits、reward、raw score、verifier status/message、
+- Guidance prompt 和 execution prompt 都只 attach raw `entry.summary`，不做 clipping、
+  code removal、implementation fact extraction 或 profile compaction。
+- 两个 prompt 都不 attach node id、visits、reward、raw score、verifier status/message、
   verified artifacts、previous guidance、reusable idea、failure mode 或 root initial
   construction facts。
-- Execution prompt attach 同一个 selected node 的更长 `_entry_summary(..., include_solution=True)`、
-  root initial construction facts、verified profile artifacts、current visible best valid entry
-  和 parsed guidance。
+- Execution prompt 额外 attach 当前 parsed `<guidance>`，用于把 guidance 落成具体代码。
 - 当前 `lineage_entries` 会由 library context 返回，但没有直接写入 prompt。
 
 ## Summary Attach Rules
 
-Guidance prompt 使用 `_summary_only_for_guidance(entry)`。
+Guidance 和 execution prompt 都使用 `_raw_summary_for_prompt(entry, fallback=...)`。
 
-没有 previous entry 时：
+没有 previous entry、summary 为 `None` 或 summary 为空字符串时：
 
 ```text
 No previous summary is attached.
 ```
 
-有 entry 时，只输出：
+有 entry 且 summary 非空字符串时，直接输出原始 `entry.summary`：
 
 ```text
-{_clip(_summary_for_guidance(entry.summary), 420)}
+{entry.summary}
 ```
 
-`_summary_for_guidance()` 会：
-
-- 移除 summary 内的大段 fenced code block。
-- 从 code block 中抽取 compact implementation facts，例如 `n_points`、`project_to_box_sum`、
-  `np.correlate`、`SLSQP maxiter`、loop counts 等。
-- 压缩 long profile arrays。
-
-Execution prompt 使用 `_entry_summary(entry, include_solution=True)`。
-
-如果没有 previous library entry：
-
-```text
-No previous library entry is attached.
-```
-
-有 entry 时，基础字段是：
-
-```text
-Entry id: {entry.id}
-Reward: {entry.verifier_reward}
-Raw score: {entry.verifier_raw_score}
-Verifier status: {entry.verifier_status}
-Verifier message: {_clip(entry.verifier_message, verifier_clip)}
-Verified returned profile artifacts ...   # valid entry 且 artifacts 有 h_values 时
-Canonical summary:
-{_clip(entry.summary, 2600)}
-Previous guidance: {_clip(entry.guidance, 360)}
-Reusable idea: {_clip(entry.reusable_idea, 220)}
-Failure mode: {entry.failure_mode}         # only if present
-```
-
-root node 如果带有初始构造 metadata，会额外注入 execution prompt：
-
-```text
-Current initial construction (reference state to improve): initialization=..., n_points=..., raw C5=..., c5_bound=..., h=... / h length=...
-```
+该 helper 不调用 `.strip()`、`_clip()` 或任何 summary processing helper；summary 中的
+fenced code、硬编码数组、空白和换行都会原样进入 prompt。
 
 ## Guidance Model Prompt
 
@@ -203,7 +165,7 @@ The next sections describe the current search state for this problem. Use them
 as run-local context when deciding the next step.
 
 <selected_summary>
-{_summary_only_for_guidance(selected_entry)}
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
 
 <global_best>
@@ -248,7 +210,10 @@ best_entries_for_prompt = [
     entry for entry in global_best_entries
     if entry is not None and entry.id != selected_entry_id
 ]
-best_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in best_entries_for_prompt)
+best_text = "\n\n".join(
+    _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
+    for entry in best_entries_for_prompt
+)
 ```
 
 如果 selected entry 本身就是当前 visible global best：
@@ -260,7 +225,10 @@ The selected summary is also the current global best visible summary.
 `failure_text`:
 
 ```python
-failure_text = "\n\n".join(_summary_only_for_guidance(entry) for entry in local_failure_entries)
+failure_text = "\n\n".join(
+    _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
+    for entry in local_failure_entries
+)
 ```
 
 `best_valid_target`:
@@ -275,7 +243,7 @@ best_valid_raw_score = (
 best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
 ```
 
-所以 guidance prompt 的历史内容是 summary-only，但 objective 中的 target score 仍来自
+所以 guidance prompt 的历史内容是 raw summary-only，但 objective 中的 target score 仍来自
 visible best valid entry 或 selected node 的 raw score。
 
 ### Guidance Parsing
@@ -343,18 +311,13 @@ You are the execution model. Turn guidance into one concrete runnable Python can
 The next sections describe the current search state for this problem. Use them
 as run-local context when implementing the guided candidate.
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-{initial_construction_text}
-{_entry_summary(selected_entry, include_solution=True)}
-</selected_library_node>
+<selected_summary>
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
+</selected_summary>
 
-<global_best_valid_entry>
+<global_best_valid_summary>
 {best_valid_text}
-</global_best_valid_entry>
+</global_best_valid_summary>
 
 <guidance>
 {guidance}
@@ -387,21 +350,14 @@ Use natural language to summarize the overall idea and method of the solution. E
 
 ```python
 best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
-best_valid_text = (
-    _entry_summary(best_valid, include_solution=True)
-    if best_valid
-    else "No global best valid entry yet."
+best_valid_text = _raw_summary_for_prompt(
+    best_valid,
+    fallback="No global best valid summary yet.",
 )
 ```
 
-`initial_construction_text`:
-
-```python
-initial_construction_text = _root_initial_construction_facts(selected_node)
-```
-
-因此 execution model 和 guidance model 使用相同 PUCT-selected node，但 execution prompt
-会给 selected entry 更长的 context，并额外给出当前 visible best valid entry。
+因此 execution model 和 guidance model 使用相同 PUCT-selected context，但 execution prompt
+只额外给出当前 visible best valid summary 和 parsed guidance。
 
 ### Execution Parsing
 

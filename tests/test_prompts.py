@@ -52,11 +52,23 @@ def _entry() -> LibraryEntry:
     )
 
 
-def test_guidance_prompt_attaches_selected_summary_but_not_library_details():
+def test_guidance_prompt_attaches_selected_raw_summary_but_not_library_details():
+    entry = _entry()
+    entry.summary = """  Raw summary with intentional leading spaces.
+
+Implemented Algorithm
+```python
+def run(seed=42, budget_s=1, **kwargs):
+    h_values = [0.1, 0.2, 0.7]
+    return (h_values, 0.4, 3)
+```
+
+Next Guidance Delta
+Preserve this exact raw text."""
     prompt = build_guidance_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
-        selected_entry=_entry(),
+        selected_entry=entry,
         global_best_entries=[],
         local_failure_entries=[],
     )
@@ -66,8 +78,13 @@ def test_guidance_prompt_attaches_selected_summary_but_not_library_details():
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
     assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
     assert "<selected_summary>" in prompt.user
-    assert "Projected gradient improved stability" in prompt.user
-    assert "def run(seed=42" not in prompt.user
+    assert "  Raw summary with intentional leading spaces." in prompt.user
+    assert "```python\ndef run(seed=42, budget_s=1, **kwargs):" in prompt.user
+    assert "h_values = [0.1, 0.2, 0.7]" in prompt.user
+    assert "Preserve this exact raw text." in prompt.user
+    assert "[code omitted" not in prompt.user
+    assert "Extracted attached-code facts" not in prompt.user
+    assert "[truncated]" not in prompt.user
     assert "Entry id:" not in prompt.user
     assert "Reward:" not in prompt.user
     assert "Raw score:" not in prompt.user
@@ -99,9 +116,6 @@ def test_guidance_prompt_attaches_selected_summary_but_not_library_details():
     assert "Directional Search Strategy" not in prompt.user
     assert "Progress Target" not in prompt.user
     assert "Do not write code or micromanage hyperparameters" in prompt.user
-    assert "coordinate step 2e-4" in prompt.user
-    assert "random walk step size 1e-3 for 2000 steps" in prompt.user
-    assert "SLSQP maxiter=300" in prompt.user
     assert "current visible target raw score (0.4)" in prompt.user
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
 
@@ -274,18 +288,26 @@ Try pairwise mass transfer around the first five coordinates.
     assert "Current initial construction (reference state to improve)" not in prompt.user
     assert "initialization=random_perturbed_constant" not in prompt.user
     assert "h=[0.2, 0.4, 0.6, 0.8]" not in prompt.user
-    assert "Extracted attached-code facts" in prompt.user
-    assert "profile h=[0.9999934729084969" in prompt.user
-    assert "0.7922939787622869" in prompt.user
-    assert "SLSQP maxiter=300" in prompt.user
-    assert "SLSQP ftol=1e-13" in prompt.user
+    assert "Extracted attached-code facts" not in prompt.user
+    assert "[code omitted" not in prompt.user
+    assert "```python" in prompt.user
+    assert "result = minimize(c5_score, h0, method=\"SLSQP\", options={\"maxiter\": 300, \"ftol\": 1e-13})" in prompt.user
+    assert "Try pairwise mass transfer around the first five coordinates." in prompt.user
 
 
-def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_context():
+def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_raw_summaries():
+    selected_entry = _entry()
+    selected_entry.summary = """Selected raw summary.
+
+```python
+def selected_candidate():
+    return "keep this code visible"
+```
+"""
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
-        selected_entry=None,
+        selected_entry=selected_entry,
         guidance="Try deterministic coordinate descent.",
     )
 
@@ -294,7 +316,18 @@ def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_co
     assert "The next sections describe the current search state for this problem" in prompt.user
     assert "run-local context when implementing the guided candidate" in prompt.user
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
-    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_library_node>")
+    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
+    assert "<selected_summary>" in prompt.user
+    assert "Selected raw summary." in prompt.user
+    assert "def selected_candidate()" in prompt.user
+    assert "Node id:" not in prompt.user
+    assert "Timestep:" not in prompt.user
+    assert "Value:" not in prompt.user
+    assert "Raw score:" not in prompt.user
+    assert "Entry id:" not in prompt.user
+    assert "Verifier status:" not in prompt.user
+    assert "Previous guidance:" not in prompt.user
+    assert "Reusable idea:" not in prompt.user
     assert "Previous solution code excerpt" not in prompt.user
     assert "return ([0.5, 0.5], 0.5, 2)" not in prompt.user
     assert "<execution_thinking>" in prompt.user
@@ -336,10 +369,17 @@ def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_library_co
     assert "invent a fresh minimax construction" not in prompt.user
 
 
-def test_execution_prompt_attaches_global_best_valid_artifacts_without_solution_code():
+def test_execution_prompt_attaches_global_best_valid_raw_summary_only():
     global_best = _entry()
     global_best.id = "best-entry"
     global_best.verifier_raw_score = 0.3821438682282878
+    global_best.summary = """Best valid raw summary.
+
+```python
+def best_candidate():
+    return ([0.4, 0.6], 0.3821438682282878, 2)
+```
+"""
     global_best.solution = "def run(seed=42, budget_s=1, **kwargs):\n    return ([0.4, 0.6], 0.3821438682282878, 2)"
     global_best.metadata = {
         "verification_artifacts": {
@@ -357,17 +397,19 @@ def test_execution_prompt_attaches_global_best_valid_artifacts_without_solution_
         guidance="Preserve current best and perturb locally.",
     )
 
-    assert "<global_best_valid_entry>" in prompt.user
-    assert "Entry id: best-entry" in prompt.user
-    assert "Raw score: 0.3821438682282878" in prompt.user
-    assert "Verified returned profile artifacts" in prompt.user
-    assert "h=[0.4, 0.6]" in prompt.user
-    assert "return ([0.4, 0.6], 0.3821438682282878, 2)" not in prompt.user
+    assert "<global_best_valid_summary>" in prompt.user
+    assert "Best valid raw summary." in prompt.user
+    assert "def best_candidate()" in prompt.user
+    assert "Entry id: best-entry" not in prompt.user
+    assert "Raw score: 0.3821438682282878" not in prompt.user
+    assert "Verified returned profile artifacts" not in prompt.user
+    assert "h=[0.4, 0.6]" not in prompt.user
+    assert "def run(seed=42, budget_s=1, **kwargs)" not in prompt.user
     assert "Initialize from verified profile artifacts when available" not in prompt.user
     assert "Use the problem statement as the authoritative task specification" in prompt.user
 
 
-def test_execution_prompt_without_visible_best_attaches_root_but_does_not_add_task_specific_target():
+def test_execution_prompt_without_visible_best_omits_root_metadata_and_task_specific_target():
     root_node = LibraryNode(
         id="root",
         problem_id="erdos",
@@ -394,8 +436,9 @@ def test_execution_prompt_without_visible_best_attaches_root_but_does_not_add_ta
     )
 
     assert "Target: produce a valid candidate with raw C5 lower than 0.5" not in prompt.user
-    assert "Current initial construction (reference state to improve)" in prompt.user
-    assert "initialization=random_perturbed_constant" in prompt.user
+    assert "Current initial construction (reference state to improve)" not in prompt.user
+    assert "initialization=random_perturbed_constant" not in prompt.user
+    assert "h=[0.2, 0.4, 0.6, 0.8]" not in prompt.user
     assert "copying it or rerunning the exact same SLSQP setup is not an improvement" not in prompt.user
 
 

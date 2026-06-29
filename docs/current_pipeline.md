@@ -230,10 +230,10 @@ guidance_ttt/prompts.py::build_guidance_prompt
 
 - 让 actor 输出高层 guidance，不输出最终代码
 - actor 的输出 token 是唯一进入训练梯度路径的部分
-- prompt 会包含 problem、selected/global/failure summary-only context、目标 raw score、
+- prompt 会包含 problem、selected/global/failure raw summary-only context、目标 raw score、
   输出格式和推荐搜索策略
-- selected/global/failure context 只来自 `entry.summary` 经 `_summary_for_guidance()`
-  压缩后的文本；不 attach node id、visits、reward、raw score、verifier 状态、
+- selected/global/failure context 只来自 raw `entry.summary`；不做 clipping、
+  code removal、fact extraction 或 profile compaction；不 attach node id、visits、reward、raw score、verifier 状态、
   verified artifacts、previous guidance、reusable idea、failure mode 或 root 初始构造 facts
 
 ### Guidance System Prompt 原文
@@ -259,7 +259,7 @@ The next sections describe the current search state for this problem. Use them
 as run-local context when deciding the next step.
 
 <selected_summary>
-{_summary_only_for_guidance(selected_entry)}
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
 
 <global_best>
@@ -311,29 +311,27 @@ guidance_ttt/prompts.py::extract_guidance_or_format_error
 
 这保证 actor 即使格式不完美，也能产生一个可训练的 rollout；但 metadata 会记录格式失败。
 
-## Entry Summary Context 构建
+## Raw Summary Context 构建
 
 位置：
 
 ```text
-guidance_ttt/prompts.py::_summary_only_for_guidance
+guidance_ttt/prompts.py::_raw_summary_for_prompt
 ```
 
-guidance prompt 行为：
+guidance 和 execution prompt 行为：
 
 - `entry is None` 时输出 `No previous summary is attached.`
-- 有 entry 时只输出 `_summary_for_guidance(entry.summary)` 的 clipped 文本
+- `entry.summary is None` 时输出 fallback 文本
+- `entry.summary == ""` 时输出 fallback 文本
+- 有 entry 且 summary 非空时直接输出 raw `entry.summary`
+- 不调用 `.strip()`、`_clip()`、code block removal、implementation fact extraction 或 profile compaction
 - 不输出 `Entry id`、reward、raw score、verifier status/message、verified artifacts、
   previous guidance、reusable idea 或 failure mode
 
-execution prompt 仍使用：
-
-```text
-guidance_ttt/prompts.py::_entry_summary
-```
-
-它保留更完整的可执行上下文，包括 canonical summary、verified artifacts、previous
-guidance、reusable idea 和 root initial construction facts。
+execution prompt 额外 attach parsed `<guidance>`，并 attach visible best valid entry 的
+raw summary；不再 attach selected node metadata、root initial construction facts 或
+verified artifacts。
 
 ## Execution Prompt 构建
 
@@ -348,7 +346,7 @@ guidance_ttt/prompts.py::build_execution_prompt
 - 给冻结 execution model 一个完整任务上下文
 - 强制输出顺序为 thinking、solution code、summary
 - 具体 code interface 由 `<problem>{problem_prompt}</problem>` 定义
-- 要求 summary 包含六个 canonical sections
+- 要求模型输出自然语言 `<summary>`；verifier 后再规范化为 canonical sections 写回 library
 
 ### Execution System Prompt 原文
 
@@ -365,17 +363,16 @@ You are the execution model. Turn guidance into one concrete runnable Python can
 {problem_prompt}
 </problem>
 
-<selected_library_node>
-Node id: {selected_node.id}
-Timestep: {selected_node.timestep}
-Value: {selected_node.value}
-Raw score: {selected_node.raw_score}
-{_entry_summary(selected_entry, include_solution=True)}
-</selected_library_node>
+The next sections describe the current search state for this problem. Use them
+as run-local context when implementing the guided candidate.
 
-<global_best_valid_solution>
+<selected_summary>
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
+</selected_summary>
+
+<global_best_valid_summary>
 {best_valid_text}
-</global_best_valid_solution>
+</global_best_valid_summary>
 
 <guidance>
 {guidance}
