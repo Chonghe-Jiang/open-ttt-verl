@@ -6,10 +6,12 @@ model、execution 自总结、verifier 和 library writeback 的完整信息流�
 代码来源：
 
 - `guidance_ttt/prompts.py`: guidance/execution prompt 模板、raw summary attach、tag parser
+- `guidance_ttt/tasks/__init__.py`: task registry、task-specific prompt/verifier/objective 配置
 - `guidance_ttt/agent_loop.py`: verl agent loop、模型调用、verification、canonical summary、library 写回
 - `guidance_ttt/library.py`: PUCT node selection、visible context、JSON library
 - `guidance_ttt/verifier/erdos.py`: Erdos verifier、reward/raw score 计算
-- `guidance_ttt/verifier/sandbox.py`: `<solution>` / Python code 提取和 sandbox 执行
+- `guidance_ttt/verifier/polyomino.py`: Polyomino C++ `<solution>` 提取和 FrontierCS result mapping
+- `guidance_ttt/verifier/frontiercs_adapter.py`: 外部 FrontierCS/go-judge/Docker evaluator adapter
 
 ## Overall Structure
 
@@ -35,8 +37,8 @@ flowchart TD
     J --> K[Execution LLM<br/>frozen executor]
     K --> L[Execution response<br/>&lt;execution_thinking&gt; + &lt;solution&gt; + &lt;summary&gt;]
 
-    L --> M[Verifier / sandbox]
-    M --> N[reward / raw C5 / status / artifacts]
+    L --> M[Task verifier]
+    M --> N[reward / raw score / status / artifacts]
     L --> O[build_execution_summary]
     N --> O
     I --> O
@@ -84,8 +86,8 @@ build_execution_prompt(...)
   -> execution chat messages
   -> execution model outputs <execution_thinking>, <solution>, <summary>
 
-verify_erdos_solution_text(execution_text)
-  -> verifier status / raw C5 / reward / artifacts
+task_spec.verify_execution_text(execution_text)
+  -> verifier status / task raw score / reward / artifacts
 
 build_execution_summary(...)
   -> canonical summary combining execution thinking, model summary, solution, guidance, verifier result
@@ -136,9 +138,36 @@ No previous summary is attached.
 该 helper 不调用 `.strip()`、`_clip()` 或任何 summary processing helper；summary 中的
 fenced code、硬编码数组、空白和换行都会原样进入 prompt。
 
+## Task Registry
+
+当前 loop 通过 `task.id` 获取 `TaskSpec`。Erdos 和 Polyomino 共用同一个
+guidance/execution/library/PUCT 流程，差异只放在 task spec 中。
+
+```python
+TaskSpec(
+    task_id=...,
+    problem_prompt=...,
+    solution_language=...,          # "python" or "cpp"
+    execution_solution_contract=...,
+    score_direction=...,            # "min" or "max"
+    raw_score_label=...,            # e.g. "Raw C5" or "FrontierCS score"
+    create_root_node=...,
+    verifier=...,
+    solution_extractor=...,
+    guidance_objective=...,
+)
+```
+
+Configured tasks:
+
+- `erdos_min_overlap`: execution outputs Python `run()`, lower raw C5 is better,
+  reward is `1 / (1e-8 + C5)`.
+- `polyomino_packing`: execution outputs a full C++17 program, evaluation always
+  goes through external FrontierCS/go-judge/Docker, higher FrontierCS score is better.
+
 ## Guidance Model Prompt
 
-Guidance model 是被 RL 训练的 actor。它不直接写最终 Python solution，而是输出下一步
+Guidance model 是被 RL 训练的 actor。它不直接写最终 solution，而是输出下一步
 搜索方向。verl 的 reward 最终只作用在 guidance model response tokens 上。
 
 ### Guidance System Prompt
@@ -177,7 +206,7 @@ as run-local context when deciding the next step.
 </local_failures>
 
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
+{objective_text}
 
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
@@ -231,20 +260,16 @@ failure_text = "\n\n".join(
 )
 ```
 
-`best_valid_target`:
+`best_valid_target` / `objective_text`:
 
 ```python
-best_valid = _best_valid_entry(global_best_entries, selected_entry)
-best_valid_raw_score = (
-    best_valid.verifier_raw_score
-    if best_valid is not None and best_valid.verifier_raw_score is not None
-    else selected_node.raw_score
-)
-best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+target = task_spec.best_target(selected_node, selected_entry, global_best_entries)
+objective_text = task_spec.guidance_objective(target)
 ```
 
-所以 guidance prompt 的历史内容是 raw summary-only，但 objective 中的 target score 仍来自
-visible best valid entry 或 selected node 的 raw score。
+所以 guidance prompt 的历史内容是 raw summary-only，但 objective 文案和 score 方向由
+task spec 控制。Erdos 使用 “Lower raw C5 is better”；Polyomino 使用 “Higher FrontierCS
+score is better”。
 
 ### Guidance Parsing
 
@@ -268,7 +293,7 @@ Else:
 ## Execution Model Prompt
 
 Execution model 是冻结的执行器。它把 parsed guidance 和 library context 转成一个具体
-可运行的 Python candidate。execution tokens 不参与 RL 更新；它的输出只通过 verifier 产生
+可运行的 task-specific candidate。Erdos 输出 Python，Polyomino 输出 C++17。execution tokens 不参与 RL 更新；它的输出只通过 verifier 产生
 reward，并写回 library。
 
 实际发送给 execution model 的 chat messages：
@@ -284,18 +309,21 @@ reward，并写回 library。
 
 ```python
 execution_prompt = build_execution_prompt(
-    problem_prompt=self.problem_prompt,
+    problem_prompt=problem_prompt,
     selected_node=selected_node,
     selected_entry=selected_entry,
     global_best_entries=context["global_best_entries"],
     guidance=guidance,
+    solution_language=task_spec.solution_language,
+    solution_contract=task_spec.execution_solution_contract,
+    score_direction=task_spec.score_direction,
 )
 ```
 
 ### Execution System Prompt
 
 ```text
-You are the execution model. Turn guidance into one concrete runnable Python candidate. Output execution thinking first, then the code block, then the summary.
+You are the execution model. Turn guidance into one concrete runnable {Python|C++17} candidate. Output execution thinking first, then the code block, then the summary.
 ```
 
 ### Execution User Prompt
@@ -326,6 +354,7 @@ as run-local context when implementing the guided candidate.
 Use the problem statement as the authoritative task specification.
 Use the attached library context as historical evidence, not as code to copy blindly.
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
+{solution_contract}
 
 Return exactly these three blocks:
 
@@ -334,8 +363,8 @@ Briefly explain how the guidance was translated into the submitted solution.
 </execution_thinking>
 
 <solution>
-```python
-# complete executable solution required by the problem
+```{python_or_cpp}
+{placeholder}
 ```
 </solution>
 
@@ -349,7 +378,11 @@ Use natural language to summarize the overall idea and method of the solution. E
 `best_valid_text`:
 
 ```python
-best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
+best_valid = _best_valid_entry(
+    global_best_entries or [],
+    selected_entry,
+    score_direction=task_spec.score_direction,
+)
 best_valid_text = _raw_summary_for_prompt(
     best_valid,
     fallback="No global best valid summary yet.",
@@ -365,23 +398,28 @@ Execution response 预期包含三个 blocks：
 
 ```text
 <execution_thinking>...</execution_thinking>
-<solution>```python ... ```</solution>
+<solution>```python ... ```</solution>    # Erdos
+<solution>```cpp ... ```</solution>       # Polyomino
 <summary>...</summary>
 ```
 
 解析方式：
 
 - `execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""`
-- `solution = _extract_solution_code(execution_text)`
+- `solution = _extract_solution_code(execution_text, task_spec=task_spec)`
 - `model_summary = extract_tag_or_none(execution_text, "summary")`
 
-`_extract_solution_code(...)` 优先读取 `<solution>...</solution>` 内的 Python fenced code；
-如果没有 `<solution>`，则 fallback 到 response 中最后一个 ```python fenced block。
+`_extract_solution_code(...)` 优先读取 `<solution>...</solution>`，再调用 task-specific
+extractor。Erdos 接受 Python fenced code；Polyomino 只接受 `cpp` / `c++` / `C++` fenced code。
 
-Verifier 直接对完整 `execution_text` 调用：
+Verifier 通过 task spec 对完整 `execution_text` 调用：
 
 ```python
-verification = verify_erdos_solution_text(execution_text, timeout_s=timeout_s)
+verification = task_spec.verify_execution_text(
+    execution_text,
+    timeout_s=timeout_s,
+    config=task_verifier_config,
+)
 ```
 
 Erdos verifier 要求 candidate code 定义 `run()`，并返回：
@@ -407,6 +445,28 @@ raw_score = None
 status = "parse_error" / "invalid" / "timeout"
 ```
 
+Polyomino verifier 要求 `<solution>` 中存在 C++17 fenced block，并把 C++ code 交给外部
+FrontierCS evaluator：
+
+```text
+valid:
+  raw_score = FrontierCS score
+  reward = FrontierCS score
+  status = "valid"
+
+invalid:
+  reward = 0.0
+  raw_score = None
+  status = "invalid"
+
+environment unavailable:
+  reward = 0.0
+  raw_score = None
+  status = "environment_error"
+```
+
+没有本地 smoke evaluator；FrontierCS 不 vendored 到 `guidance/`。
+
 ## Canonical Summary
 
 Execution model 的 `<summary>` 不是最终直接写入 library 的唯一 summary。agent loop 会在
@@ -428,7 +488,7 @@ Next Guidance Delta
 
 ```text
 Verifier status: {verification.status}
-Raw C5: {verification.raw_score}
+{task_spec.raw_score_label}: {verification.raw_score}
 Reward: {verification.reward}
 Verifier message: {verification.message}
 Verified returned profile: n_points=..., c5_bound=..., h length=..., head=[...], tail=[...]
@@ -467,6 +527,7 @@ LibraryEntry(
         "raw_guidance_text": guidance_text,
         "guidance_prompt": {"system": guidance_prompt.system, "user": guidance_prompt.user},
         "execution_prompt": {"system": execution_prompt.system, "user": execution_prompt.user},
+        "task": task_config,
         "execution_text": execution_text,
         "execution_provider": self.execution_llm_config.get("provider", "mock"),
         "execution_model": self.execution_llm_config.get("model", "mock-exec"),

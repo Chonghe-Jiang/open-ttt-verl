@@ -14,9 +14,7 @@ from guidance_ttt.prompts import (
     extract_tag_or_none,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult
-from guidance_ttt.tasks.erdos import ERDOS_PROBLEM_PROMPT
-from guidance_ttt.verifier.erdos import verify_erdos_solution_text
-from guidance_ttt.verifier.sandbox import extract_python_code
+from guidance_ttt.tasks import TaskSpec, get_task_spec
 
 
 @dataclass
@@ -105,6 +103,7 @@ def _decode_response_with_specials(tokenizer: Any, response_ids: list[int]) -> s
 
 
 @register("guidance_execution_erdos")
+@register("guidance_execution_task")
 class GuidanceExecutionAgentLoop(AgentLoopBase):
     """verl agent loop: train guidance tokens, execute/summarize with external LLMs."""
 
@@ -113,17 +112,21 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         *args,
         execution_llm: dict[str, Any] | None = None,
         verifier_timeout_s: int = 60,
-        problem_prompt: str = ERDOS_PROBLEM_PROMPT,
+        problem_prompt: str | None = None,
+        task: dict[str, Any] | str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.task_config = _normalize_task_config(task)
+        self.task_spec = get_task_spec(str(self.task_config.get("id", "erdos_min_overlap")))
         self.execution_llm_config = execution_llm or self._execution_llm_from_rollout_config() or {
             "provider": "mock",
             "model": "mock-exec",
         }
         self.execution_client = make_llm_client(self.execution_llm_config)
         self.verifier_timeout_s = int(verifier_timeout_s)
-        self.problem_prompt = problem_prompt
+        self.problem_prompt_override = problem_prompt
+        self.problem_prompt = problem_prompt or self.task_spec.problem_prompt
         if hasattr(self, "rollout_config"):
             self.response_length = self.rollout_config.response_length
 
@@ -133,13 +136,14 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         agent_loop_config_path = _config_get(agent_config, "agent_loop_config_path")
         if not agent_loop_config_path:
             return None
-        default_agent_loop = _config_get(agent_config, "default_agent_loop") or "guidance_execution_erdos"
+        default_agent_loop = _config_get(agent_config, "default_agent_loop") or "guidance_execution_task"
+        candidate_names = list(dict.fromkeys([default_agent_loop, "guidance_execution_task", "guidance_execution_erdos"]))
         try:
             from omegaconf import OmegaConf
 
             loaded = OmegaConf.load(Path(str(agent_loop_config_path)).expanduser())
             for agent_loop_config in loaded:
-                if _config_get(agent_loop_config, "name") != default_agent_loop:
+                if _config_get(agent_loop_config, "name") not in candidate_names:
                     continue
                 execution_llm = _config_get(agent_loop_config, "execution_llm")
                 if execution_llm:
@@ -153,6 +157,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             raise RuntimeError("verl dependencies are required to run GuidanceExecutionAgentLoop")
 
         extra_info = dict(kwargs.get("extra_info") or {})
+        task_spec = self._task_spec_for_extra_info(extra_info)
+        task_config = self._task_config_for_spec(task_spec)
+        problem_prompt = self.problem_prompt_override or task_spec.problem_prompt
         library_path = extra_info.get("library_path") or extra_info.get("archive_path")
         if not library_path:
             raise ValueError("extra_info must include library_path")
@@ -172,11 +179,18 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
         selected_entry = context["selected_entry"]
         guidance_prompt = build_guidance_prompt(
-            problem_prompt=self.problem_prompt,
+            problem_prompt=problem_prompt,
             selected_node=selected_node,
             selected_entry=selected_entry,
             global_best_entries=context["global_best_entries"],
             local_failure_entries=context["local_failure_entries"],
+            objective_text=task_spec.guidance_objective(
+                task_spec.best_target(
+                    selected_node,
+                    selected_entry,
+                    context["global_best_entries"],
+                )
+            ),
         )
         prompt_ids = await self.apply_chat_template(
             [
@@ -190,11 +204,14 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         guidance, guidance_format_ok = extract_guidance_or_format_error(guidance_text)
 
         execution_prompt = build_execution_prompt(
-            problem_prompt=self.problem_prompt,
+            problem_prompt=problem_prompt,
             selected_node=selected_node,
             selected_entry=selected_entry,
             global_best_entries=context["global_best_entries"],
             guidance=guidance,
+            solution_language=task_spec.solution_language,
+            solution_contract=task_spec.execution_solution_contract,
+            score_direction=task_spec.score_direction,
         )
         verification: VerificationResult
         execution_text = ""
@@ -221,6 +238,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             execution_text=execution_text,
             guidance=guidance,
             timeout_s=self.verifier_timeout_s,
+            task_spec=task_spec,
+            verifier_config=_verifier_config_from_task_config(task_config),
             initial_error=execution_error,
         )
         execution_text = execution_result.execution_text
@@ -254,6 +273,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "raw_guidance_text": guidance_text,
                 "guidance_prompt": {"system": guidance_prompt.system, "user": guidance_prompt.user},
                 "execution_prompt": {"system": execution_prompt.system, "user": execution_prompt.user},
+                "task": task_config,
                 "execution_text": execution_text,
                 "execution_provider": self.execution_llm_config.get("provider", "mock"),
                 "execution_model": self.execution_llm_config.get("model", "mock-exec"),
@@ -291,8 +311,20 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "verification": verification.to_dict(),
                 "summary": summary,
                 "library_entry_id": entry.id,
+                "task": task_config,
             },
         )
+
+    def _task_spec_for_extra_info(self, extra_info: dict[str, Any]) -> TaskSpec:
+        task_id = str(extra_info.get("task") or self.task_config.get("id") or self.task_spec.task_id)
+        if task_id == self.task_spec.task_id:
+            return self.task_spec
+        return get_task_spec(task_id)
+
+    def _task_config_for_spec(self, task_spec: TaskSpec) -> dict[str, Any]:
+        task_config = dict(self.task_config)
+        task_config.setdefault("id", task_spec.task_id)
+        return task_config
 
     async def _generate_guidance_response(self, prompt_ids: list[int], sampling_params: dict[str, Any]) -> GuidanceGeneration:
         first = await self.server_manager.generate(
@@ -384,11 +416,11 @@ def _parse_execution_summary_sections(summary: str | None) -> dict[str, str]:
     return {name: "\n".join(lines).strip() for name, lines in sections.items()}
 
 
-def _format_verifier_outcome(verification: VerificationResult) -> str:
+def _format_verifier_outcome(verification: VerificationResult, *, raw_score_label: str = "Raw C5") -> str:
     raw_score = "None" if verification.raw_score is None else repr(float(verification.raw_score))
     lines = [
         f"Verifier status: {verification.status}",
-        f"Raw C5: {raw_score}",
+        f"{raw_score_label}: {raw_score}",
         f"Reward: {float(verification.reward)!r}",
         f"Verifier message: {verification.message}",
     ]
@@ -420,11 +452,12 @@ def _format_verified_profile(verification: VerificationResult) -> str:
     )
 
 
-def _fenced_python(solution: str) -> str:
+def _fenced_solution(solution: str, *, solution_language: str = "python") -> str:
     solution = (solution or "").strip()
     if not solution:
         return "No solution code was extracted."
-    return "```python\n" + solution + "\n```"
+    fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
+    return f"```{fenced_language}\n" + solution + "\n```"
 
 
 def build_execution_summary(
@@ -434,6 +467,8 @@ def build_execution_summary(
     solution: str,
     guidance: str,
     verification: VerificationResult,
+    solution_language: str = "python",
+    raw_score_label: str = "Raw C5",
 ) -> str:
     parsed = _parse_execution_summary_sections(model_summary)
     model_summary_text = (model_summary or "").strip()
@@ -448,7 +483,7 @@ def build_execution_summary(
     model_algorithm = parsed.get("Implemented Algorithm", "").strip()
     if model_algorithm:
         implemented_parts.append(model_algorithm)
-    implemented_parts.append(_fenced_python(solution))
+    implemented_parts.append(_fenced_solution(solution, solution_language=solution_language))
 
     new_ideas = parsed.get("New Ideas Introduced", "").strip()
     if not new_ideas:
@@ -473,7 +508,7 @@ def build_execution_summary(
         "Execution Interpretation": "\n\n".join(interpretation_parts).strip(),
         "Implemented Algorithm": "\n\n".join(implemented_parts).strip(),
         "New Ideas Introduced": new_ideas,
-        "Empirical Outcome": _format_verifier_outcome(verification),
+        "Empirical Outcome": _format_verifier_outcome(verification, raw_score_label=raw_score_label),
         "Failure / Bottleneck Analysis": failure_analysis,
         "Next Guidance Delta": next_guidance,
     }
@@ -503,11 +538,24 @@ def _execution_max_tokens(config: dict[str, Any]) -> int | None:
     return None if value_int <= 0 else value_int
 
 
-def _extract_solution_code(execution_text: str) -> str:
+def _normalize_task_config(task: dict[str, Any] | str | None) -> dict[str, Any]:
+    if task is None:
+        return {"id": "erdos_min_overlap"}
+    if isinstance(task, str):
+        return {"id": task}
+    return dict(task)
+
+
+def _verifier_config_from_task_config(task_config: dict[str, Any]) -> dict[str, Any]:
+    return dict(task_config.get("frontiercs") or {})
+
+
+def _extract_solution_code(execution_text: str, *, task_spec: TaskSpec | None = None) -> str:
+    task_spec = task_spec or get_task_spec("erdos_min_overlap")
     tagged_solution = extract_tag_or_none(execution_text, "solution")
     if tagged_solution is not None:
-        return extract_python_code(tagged_solution) or tagged_solution.strip()
-    return extract_python_code(execution_text) or ""
+        return task_spec.solution_extractor(tagged_solution) or tagged_solution.strip()
+    return task_spec.solution_extractor(execution_text) or ""
 
 
 def _verify_execution_without_fallback(
@@ -515,21 +563,30 @@ def _verify_execution_without_fallback(
     execution_text: str,
     guidance: str,
     timeout_s: int,
+    task_spec: TaskSpec | None = None,
+    verifier_config: dict[str, Any] | None = None,
     initial_error: str | None = None,
 ) -> ExecutionVerification:
+    task_spec = task_spec or get_task_spec("erdos_min_overlap")
     original_execution_text = execution_text
     if initial_error is None:
-        verification = verify_erdos_solution_text(execution_text, timeout_s=timeout_s)
+        verification = task_spec.verify_execution_text(
+            execution_text,
+            timeout_s=timeout_s,
+            config=verifier_config or {},
+        )
     else:
         verification = VerificationResult.execution_error(initial_error)
     execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
-    solution = _extract_solution_code(execution_text)
+    solution = _extract_solution_code(execution_text, task_spec=task_spec)
     summary = build_execution_summary(
         model_summary=extract_tag_or_none(execution_text, "summary"),
         execution_thinking=execution_thinking,
         solution=solution,
         guidance=guidance,
         verification=verification,
+        solution_language=task_spec.solution_language,
+        raw_score_label=task_spec.raw_score_label,
     )
     return ExecutionVerification(
         execution_text=execution_text,

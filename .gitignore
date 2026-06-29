@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 outputs/
 models/
+reference/
 .ray_tmp/
 .hf_cache/
 .tmp/

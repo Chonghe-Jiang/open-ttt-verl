@@ -24,6 +24,7 @@ def build_guidance_prompt(
     selected_entry: LibraryEntry | None,
     global_best_entries: list[LibraryEntry],
     local_failure_entries: list[LibraryEntry],
+    objective_text: str | None = None,
 ) -> Prompt:
     selected_entry_id = selected_entry.id if selected_entry is not None else None
     best_entries_for_prompt = [
@@ -46,6 +47,10 @@ def build_guidance_prompt(
         else selected_node.raw_score
     )
     best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+    objective = objective_text or (
+        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
+        f"target raw score ({best_valid_target}). Lower raw C5 is better."
+    )
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -66,7 +71,7 @@ as run-local context when deciding the next step.
 </local_failures>
 
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
+{objective}
 
 # Evolutionary Guidelines
 1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
@@ -103,7 +108,10 @@ This must contain only your final, actionable evolutionary trajectory.
     )
 
 
-def _best_valid_entry(*entry_groups: list[LibraryEntry] | LibraryEntry | None) -> LibraryEntry | None:
+def _best_valid_entry(
+    *entry_groups: list[LibraryEntry] | LibraryEntry | None,
+    score_direction: str = "min",
+) -> LibraryEntry | None:
     entries: list[LibraryEntry] = []
     for group in entry_groups:
         if group is None:
@@ -119,7 +127,10 @@ def _best_valid_entry(*entry_groups: list[LibraryEntry] | LibraryEntry | None) -
     ]
     if not valid_entries:
         return None
-    return min(valid_entries, key=lambda entry: float(entry.verifier_raw_score))
+    key = lambda entry: float(entry.verifier_raw_score)
+    if score_direction == "max":
+        return max(valid_entries, key=key)
+    return min(valid_entries, key=key)
 
 
 def build_execution_prompt(
@@ -129,9 +140,22 @@ def build_execution_prompt(
     selected_entry: LibraryEntry | None,
     global_best_entries: list[LibraryEntry] | None = None,
     guidance: str,
+    solution_language: str = "python",
+    solution_contract: str | None = None,
+    score_direction: str = "min",
 ) -> Prompt:
-    best_valid = _best_valid_entry(global_best_entries or [], selected_entry)
+    best_valid = _best_valid_entry(global_best_entries or [], selected_entry, score_direction=score_direction)
     best_valid_text = _raw_summary_for_prompt(best_valid, fallback="No global best valid summary yet.")
+    fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
+    language_name = "C++17" if fenced_language == "cpp" else "Python"
+    placeholder = (
+        "// complete executable solution required by the problem"
+        if fenced_language == "cpp"
+        else "# complete executable solution required by the problem"
+    )
+    contract = solution_contract or (
+        "The <solution> block must contain one complete executable Python candidate in a ```python fenced block."
+    )
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -154,6 +178,7 @@ as run-local context when implementing the guided candidate.
 Use the problem statement as the authoritative task specification.
 Use the attached library context as historical evidence, not as code to copy blindly.
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
+{contract}
 
 Return exactly these three blocks:
 
@@ -162,8 +187,8 @@ Briefly explain how the guidance was translated into the submitted solution.
 </execution_thinking>
 
 <solution>
-```python
-# complete executable solution required by the problem
+```{fenced_language}
+{placeholder}
 ```
 </solution>
 
@@ -173,7 +198,7 @@ Use natural language to summarize the overall idea and method of the solution. E
 """
     return Prompt(
         system=(
-            "You are the execution model. Turn guidance into one concrete runnable Python "
+            f"You are the execution model. Turn guidance into one concrete runnable {language_name} "
             "candidate. Output execution thinking first, then the code block, then the summary."
         ),
         user=user,

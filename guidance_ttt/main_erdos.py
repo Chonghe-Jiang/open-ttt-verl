@@ -10,7 +10,7 @@ import yaml
 
 from guidance_ttt.data import write_slot_parquet
 from guidance_ttt.library import GuidanceLibrary
-from guidance_ttt.tasks.erdos import create_root_node
+from guidance_ttt.tasks import get_task_spec
 
 
 class GuidanceTTTTaskRunner:
@@ -32,7 +32,7 @@ def load_recipe_config(path: str | Path) -> dict[str, Any]:
 def split_overrides(overrides: list[str]) -> tuple[list[str], list[str]]:
     recipe_overrides, verl_overrides = [], []
     for override in overrides:
-        if override.startswith(("run.", "ttt.", "llm.")):
+        if override.startswith(("run.", "ttt.", "llm.", "task.")):
             recipe_overrides.append(override)
         else:
             verl_overrides.append(override)
@@ -51,12 +51,14 @@ def apply_recipe_overrides(config: dict[str, Any], overrides: list[str]) -> dict
 def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     run_cfg = config["run"]
     ttt_cfg = config["ttt"]
+    task_cfg = dict(config.get("task") or {"id": "erdos_min_overlap"})
+    task_spec = get_task_spec(str(task_cfg.get("id", "erdos_min_overlap")))
     output_dir = Path(run_cfg["output_dir"]).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     library_path = output_dir / "library.json"
     if not library_path.exists():
-        root_nodes = [create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
+        root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
         GuidanceLibrary(
             library_path,
             initial_nodes=root_nodes,
@@ -71,6 +73,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         slot_parquet,
         num_slots=int(ttt_cfg["groups_per_batch"]),
         library_path=str(library_path),
+        task=task_spec.task_id,
         rollout_n=int(ttt_cfg["group_size"]),
         puct_c=float(ttt_cfg.get("puct_c", 1.0)),
         max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
@@ -82,8 +85,9 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         yaml.safe_dump(
             [
                 {
-                    "name": "guidance_execution_erdos",
+                    "name": "guidance_execution_task",
                     "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
+                    "task": task_cfg,
                     "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
                     "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
                     "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
@@ -143,7 +147,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         "actor_rollout_ref.rollout.calculate_log_probs=True",
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={int(run_cfg.get('tensor_model_parallel_size', 1))}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={float(run_cfg.get('gpu_memory_utilization', 0.5))}",
-        "actor_rollout_ref.rollout.agent.default_agent_loop=guidance_execution_erdos",
+        "actor_rollout_ref.rollout.agent.default_agent_loop=guidance_execution_task",
         f"actor_rollout_ref.rollout.agent.agent_loop_config_path={prepared['agent_loop_config']}",
         "actor_rollout_ref.model.external_lib=guidance_ttt.verl_ext",
         f"trainer.project_name={run_cfg.get('project_name', 'guidance_ttt')}",
@@ -180,7 +184,7 @@ def _default_verl_config_dir() -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Guidance + Execution TTT on Erdos with verl.")
+    parser = argparse.ArgumentParser(description="Run Guidance + Execution TTT with verl.")
     parser.add_argument("--config", default="guidance_ttt/config/erdos_smoke.yaml")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("overrides", nargs="*")

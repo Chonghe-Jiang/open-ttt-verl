@@ -9,6 +9,8 @@ from guidance_ttt.agent_loop import (
     build_execution_summary,
 )
 from guidance_ttt.state import VerificationResult
+from guidance_ttt.tasks import get_task_spec
+from guidance_ttt.verifier.frontiercs_adapter import FrontierCSResult
 
 
 def test_agent_loop_output_trains_only_guidance_tokens():
@@ -150,6 +152,46 @@ continue
     assert "helper_only" not in result.solution
 
 
+def test_polyomino_execution_verification_uses_cpp_task_spec(monkeypatch):
+    def fake_evaluate_cpp_solution(code, *, problem_id, config=None):
+        assert problem_id == "0"
+        assert config == {"n_cases": 70}
+        assert "int main()" in code
+        return FrontierCSResult(valid=True, score=12.5, message="Score: 12.50/100", artifacts={})
+
+    monkeypatch.setattr("guidance_ttt.verifier.polyomino.evaluate_cpp_solution", fake_evaluate_cpp_solution)
+
+    execution_text = """<execution_thinking>
+Use a simple shelf placement baseline.
+</execution_thinking>
+
+<solution>
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+int main() { return 0; }
+```
+</solution>
+
+<summary>
+Use shelf packing with normalized offsets.
+</summary>"""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        guidance="Try a shelf packing baseline.",
+        timeout_s=340,
+        task_spec=get_task_spec("polyomino_packing"),
+        verifier_config={"problem_id": "0", "n_cases": 70},
+    )
+
+    assert result.verification.valid is True
+    assert result.verification.raw_score == 12.5
+    assert result.solution.startswith("#include <bits/stdc++.h>")
+    assert "```cpp\n#include <bits/stdc++.h>" in result.summary
+    assert "Empirical Outcome\nVerifier status: valid\nFrontierCS score: 12.5\nReward: 12.5" in result.summary
+
+
 def test_build_execution_summary_normalizes_all_sections_and_verifier_outcome():
     verification = VerificationResult(
         reward=2.5,
@@ -243,6 +285,34 @@ def test_agent_loop_loads_execution_llm_from_rollout_config_path(tmp_path):
         "provider": "local",
         "model": "models/gpt-oss-20b",
         "device_map": "auto",
+    }
+
+
+def test_agent_loop_loads_execution_llm_from_legacy_erdos_config_without_default_name(tmp_path):
+    config_path = tmp_path / "agent_loop.yaml"
+    config_path.write_text(
+        """
+- name: guidance_execution_erdos
+  _target_: guidance_ttt.agent_loop.GuidanceExecutionAgentLoop
+  execution_llm:
+    provider: local
+    model: legacy-exec
+"""
+    )
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.rollout_config = OmegaConf.create(
+        {
+            "agent": {
+                "agent_loop_config_path": str(config_path),
+            }
+        }
+    )
+
+    execution_llm = loop._execution_llm_from_rollout_config()
+
+    assert execution_llm == {
+        "provider": "local",
+        "model": "legacy-exec",
     }
 
 

@@ -187,6 +187,33 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
     assert "Do not ask the execution model to reinvent minimax from scratch" not in prompt.user
 
 
+def test_guidance_prompt_accepts_task_specific_objective_text():
+    prompt = build_guidance_prompt(
+        problem_prompt="Pack the Polyominoes",
+        selected_node=LibraryNode(
+            id="poly-root",
+            problem_id="polyomino_packing",
+            timestep=0,
+            entry_id=None,
+            value=0.0,
+            raw_score=0.0,
+            visits=0,
+            parent_id=None,
+            children=[],
+            metadata={},
+        ),
+        selected_entry=None,
+        global_best_entries=[],
+        local_failure_entries=[],
+        objective_text="Beat the current visible FrontierCS score target (0.0). Higher FrontierCS score is better.",
+    )
+
+    assert "Pack the Polyominoes" in prompt.user
+    assert "Beat the current visible FrontierCS score target (0.0)" in prompt.user
+    assert "Higher FrontierCS score is better" in prompt.user
+    assert "Lower raw C5 is better" not in prompt.user
+
+
 def test_guidance_prompt_uses_only_summary_not_verified_profile_artifacts():
     best = _entry()
     best.id = "best-entry"
@@ -367,6 +394,37 @@ def selected_candidate():
     assert "return [float(x) for x in h], float(c5_bound), int(n_points)" not in prompt.user
     assert "Avoid GPU tensors, large correlation matrices, or unbounded minimax solvers" not in prompt.user
     assert "invent a fresh minimax construction" not in prompt.user
+
+
+def test_execution_prompt_accepts_cpp_solution_contract():
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes from stdin.",
+        selected_node=LibraryNode(
+            id="poly-root",
+            problem_id="polyomino_packing",
+            timestep=0,
+            entry_id=None,
+            value=0.0,
+            raw_score=0.0,
+            visits=0,
+            parent_id=None,
+            children=[],
+            metadata={},
+        ),
+        selected_entry=None,
+        guidance="Use skyline placement with rotations.",
+        solution_language="cpp",
+        solution_contract=(
+            "The <solution> block must contain one complete C++17 program in a ```cpp fenced block."
+        ),
+    )
+
+    assert "Pack polyominoes from stdin." in prompt.user
+    assert "Use skyline placement with rotations." in prompt.user
+    assert "complete C++17 program" in prompt.user
+    assert "```cpp" in prompt.user
+    assert "```python" not in prompt.user
+    assert "Turn guidance into one concrete runnable C++17 candidate" in prompt.system
 
 
 def test_execution_prompt_attaches_global_best_valid_raw_summary_only():

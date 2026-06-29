@@ -42,6 +42,7 @@ def write_slot_parquet(
     *,
     num_slots: int,
     library_path: str,
+    task: str = "erdos_min_overlap",
     rollout_n: int = 1,
     puct_c: float = 1.0,
     max_buffer_size: int = 1000,
@@ -52,6 +53,7 @@ def write_slot_parquet(
     records = build_slot_records(
         num_slots=num_slots,
         library_path=library_path,
+        task=task,
         rollout_n=rollout_n,
         puct_c=puct_c,
         max_buffer_size=max_buffer_size,

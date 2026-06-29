@@ -1,0 +1,57 @@
+run:
+  output_dir: outputs/guidance_ttt/polyomino_frontiercs
+  project_name: guidance_ttt
+  experiment_name: polyomino_frontiercs
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  num_steps: 1
+  total_epochs: 1
+  max_prompt_length: 8192
+  max_response_length: 2048
+  learning_rate: 1.0e-5
+  ppo_mini_batch_size: 1
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0.05
+  rollout_engine: vllm
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.5
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: true
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: ../reference/Frontier-CS
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 340
+
+ttt:
+  groups_per_batch: 1
+  group_size: 2
+  eval_timeout: 340
+  puct_c: 1.0
+
+llm:
+  execution:
+    provider: mock
+    model: mock-exec
+    temperature: 0.2
+    max_tokens: 16384
+
+verl_overrides:
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=12288
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
