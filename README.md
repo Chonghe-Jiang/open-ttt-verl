@@ -147,10 +147,10 @@ python -m compileall -q guidance_ttt verl
 ## Design Notes
 
 - PUCT selects one library node before prompt assembly.
-- Guidance and execution prompts attach raw library summaries selected by PUCT,
-  not node metadata or verifier artifacts.
-- Execution prompt also attaches the parsed `<guidance>` and the current visible
-  best valid summary.
+- Guidance and execution prompts attach raw execution-model summaries plus
+  verifier score/status for the PUCT-selected entry, not the full canonical
+  summary or global best summary.
+- Execution prompt also attaches the parsed `<guidance>`.
 - Execution LLM returns `<execution_thinking>`, one task-specific `<solution>`
   code block, and `<summary>` in a single response.
 - The verifier reward is assigned only to guidance model response tokens.

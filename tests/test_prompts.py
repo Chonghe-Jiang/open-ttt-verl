@@ -52,6 +52,74 @@ def _entry() -> LibraryEntry:
     )
 
 
+def test_prompt_context_prefers_raw_model_summary_plus_score_over_canonical_summary():
+    entry = _entry()
+    entry.summary = """Execution Interpretation
+canonical thinking should not be attached
+
+Implemented Algorithm
+```python
+def canonical_solution_code_should_not_be_attached():
+    pass
+```
+
+Empirical Outcome
+Raw C5: 0.4
+"""
+    entry.metadata = {
+        "raw_model_summary": "Raw model summary: projected coordinate descent with mass repair.",
+    }
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=entry,
+        global_best_entries=[],
+        local_failure_entries=[],
+        raw_score_label="Raw C5",
+    )
+
+    assert "Raw model summary: projected coordinate descent with mass repair." in prompt.user
+    assert "Raw C5: 0.4" in prompt.user
+    assert "Reward: 2.5" in prompt.user
+    assert "Verifier status: valid" in prompt.user
+    assert "Verifier message: C5 bound: 0.400000" in prompt.user
+    assert "canonical thinking should not be attached" not in prompt.user
+    assert "canonical_solution_code_should_not_be_attached" not in prompt.user
+
+
+def test_prompt_context_can_recover_raw_summary_from_execution_text_metadata():
+    entry = _entry()
+    entry.summary = "Canonical summary should not be attached when execution_text is available."
+    entry.metadata = {
+        "execution_text": """<execution_thinking>
+think
+</execution_thinking>
+<solution>
+```python
+def run(): return None
+```
+</solution>
+<summary>
+Recovered raw summary from the execution response.
+</summary>""",
+    }
+
+    prompt = build_execution_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=entry,
+        guidance="Try deterministic coordinate descent.",
+        raw_score_label="Raw C5",
+    )
+
+    assert "Recovered raw summary from the execution response." in prompt.user
+    assert "Raw C5: 0.4" in prompt.user
+    assert "Reward: 2.5" in prompt.user
+    assert "Canonical summary should not be attached" not in prompt.user
+    assert "def run(): return None" not in prompt.user
+
+
 def test_guidance_prompt_attaches_selected_raw_summary_but_not_library_details():
     entry = _entry()
     entry.summary = """  Raw summary with intentional leading spaces.
@@ -86,10 +154,11 @@ Preserve this exact raw text."""
     assert "Extracted attached-code facts" not in prompt.user
     assert "[truncated]" not in prompt.user
     assert "Entry id:" not in prompt.user
-    assert "Reward:" not in prompt.user
+    assert "Reward: 2.5" in prompt.user
     assert "Raw score:" not in prompt.user
-    assert "Verifier status:" not in prompt.user
-    assert "Verifier message:" not in prompt.user
+    assert "Score: 0.4" in prompt.user
+    assert "Verifier status: valid" in prompt.user
+    assert "Verifier message: C5 bound: 0.400000" in prompt.user
     assert "Previous guidance:" not in prompt.user
     assert "Reusable idea:" not in prompt.user
     assert "preserve symmetry" not in prompt.user
@@ -120,7 +189,7 @@ Preserve this exact raw text."""
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
 
 
-def test_guidance_prompt_attaches_global_best_and_local_failure_history():
+def test_guidance_prompt_omits_global_best_and_keeps_local_failure_history():
     global_best = _entry()
     global_best.id = "best-entry"
     global_best.summary = "best history used mirror minimax"
@@ -142,14 +211,14 @@ def test_guidance_prompt_attaches_global_best_and_local_failure_history():
         local_failure_entries=[local_failure],
     )
 
-    assert "<global_best>" in prompt.user
-    assert "best history used mirror minimax" in prompt.user
+    assert "<global_best>" not in prompt.user
+    assert "best history used mirror minimax" not in prompt.user
     assert "<local_failures>" in prompt.user
     assert "failed because sum drifted" in prompt.user
     assert "best-entry" not in prompt.user
     assert "failure-entry" not in prompt.user
     assert "reuse best projection repair" not in prompt.user
-    assert "sum(h) must equal n_points / 2" not in prompt.user
+    assert "sum(h) must equal n_points / 2" in prompt.user
     assert "Failure mode: invalid" not in prompt.user
 
 
@@ -264,7 +333,10 @@ def test_guidance_prompt_uses_only_summary_not_verified_profile_artifacts():
     assert "raw C5=0.3812435631313583" not in prompt.user
     assert "Empirical Outcome" in prompt.user
     assert "Verified returned profile: n_points=19, c5_bound=0.3812435631313583" in prompt.user
-    assert "The selected summary is also the current global best visible summary." in prompt.user
+    assert "Score: 0.3812435631313583" in prompt.user
+    assert "Reward: 2.6229950364447134" in prompt.user
+    assert "The selected summary is also the current global best visible summary." not in prompt.user
+    assert "<global_best>" not in prompt.user
     assert "why the current profile plateaued" in prompt.user
 
 
@@ -341,7 +413,7 @@ def selected_candidate():
     assert "Find better C5" in prompt.user
     assert "Try deterministic coordinate descent." in prompt.user
     assert "The next sections describe the current search state for this problem" in prompt.user
-    assert "run-local context when implementing the guided candidate" in prompt.user
+    assert "run-local context when implementing the guided candidate" not in prompt.user
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
     assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
     assert "<selected_summary>" in prompt.user
@@ -352,7 +424,7 @@ def selected_candidate():
     assert "Value:" not in prompt.user
     assert "Raw score:" not in prompt.user
     assert "Entry id:" not in prompt.user
-    assert "Verifier status:" not in prompt.user
+    assert "Verifier status: valid" in prompt.user
     assert "Previous guidance:" not in prompt.user
     assert "Reusable idea:" not in prompt.user
     assert "Previous solution code excerpt" not in prompt.user
@@ -370,9 +442,10 @@ def selected_candidate():
     assert contract.find("<solution>") < contract.find("```python")
     assert contract.find("```python") < contract.find("</solution>")
     assert contract.find("</solution>") < contract.find("<summary>")
-    assert "Use natural language to summarize the overall idea and method of the solution" in prompt.user
+    assert "Summarize the solution and its guidance-driven diff from the previous idea" in prompt.user
     assert "Explain how the candidate was generated, including the search, refinement, or optimization strategy used" in prompt.user
-    assert "parameter fine-tuning, threshold adjustment, normalization choices" in prompt.user
+    assert "what specific changes were made based on the guidance" in prompt.user
+    assert "parameter tuning, threshold choices, normalization" in prompt.user
     assert "Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters" in prompt.user
     assert "Execution Interpretation" not in contract
     assert "Implemented Algorithm" not in contract
@@ -427,7 +500,7 @@ def test_execution_prompt_accepts_cpp_solution_contract():
     assert "Turn guidance into one concrete runnable C++17 candidate" in prompt.system
 
 
-def test_execution_prompt_attaches_global_best_valid_raw_summary_only():
+def test_execution_prompt_omits_global_best_valid_summary():
     global_best = _entry()
     global_best.id = "best-entry"
     global_best.verifier_raw_score = 0.3821438682282878
@@ -455,11 +528,12 @@ def best_candidate():
         guidance="Preserve current best and perturb locally.",
     )
 
-    assert "<global_best_valid_summary>" in prompt.user
-    assert "Best valid raw summary." in prompt.user
-    assert "def best_candidate()" in prompt.user
+    assert "<global_best_valid_summary>" not in prompt.user
+    assert "Best valid raw summary." not in prompt.user
+    assert "def best_candidate()" not in prompt.user
     assert "Entry id: best-entry" not in prompt.user
-    assert "Raw score: 0.3821438682282878" not in prompt.user
+    assert "Score: 0.3821438682282878" not in prompt.user
+    assert "Reward: 2.5" not in prompt.user
     assert "Verified returned profile artifacts" not in prompt.user
     assert "h=[0.4, 0.6]" not in prompt.user
     assert "def run(seed=42, budget_s=1, **kwargs)" not in prompt.user

@@ -150,6 +150,8 @@ continue
     assert result.verification.valid is True
     assert "def run(seed=42" in result.solution
     assert "helper_only" not in result.solution
+    assert result.model_summary is not None
+    assert "The summary includes a non-solution code example." in result.model_summary
 
 
 def test_polyomino_execution_verification_uses_cpp_task_spec(monkeypatch):

@@ -122,7 +122,7 @@ actor_rollout_ref.rollout.max_num_seqs=8
 actor_rollout_ref.rollout.max_num_batched_tokens=4096
 ```
 
-execution model 使用更长上下文，原因是 execution prompt 会嵌入 selected node、global best、summary、可选历史代码片段和 known-good scoring skeleton。新版 unlimited 配置不再设置固定 completion token 上限；本地 vLLM client 会根据 tokenizer 计算 prompt tokens，并把 `max_model_len - prompt_tokens` 作为生成上限。因此它仍受模型 context window 限制，但不再受人为的 `26000` 输出长度限制。
+execution model 使用更长上下文，原因是 execution prompt 会嵌入 problem、PUCT-selected summary、parsed guidance 和 solution contract。新版 unlimited 配置不再设置固定 completion token 上限；本地 vLLM client 会根据 tokenizer 计算 prompt tokens，并把 `max_model_len - prompt_tokens` 作为生成上限。因此它仍受模型 context window 限制，但不再受人为的 `26000` 输出长度限制。
 
 ## 准备阶段
 
@@ -181,7 +181,7 @@ actor_rollout_ref.rollout.agent.agent_loop_config_path=<run>/agent_loop.yaml
 3. 打开 `library.json`。
 4. 调用 `GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)`。
 5. 选中一个 parent node；同一 group 的 32 个 rollouts 共用这个 parent node。
-6. 读取 selected entry、global best entries、local failure entries。
+6. 读取 selected entry 和 local failure entries；global best entries 只可用于目标分数计算，不作为 prompt summary attach。
 7. 调用 `build_guidance_prompt(...)` 构造 actor prompt。
 8. actor 生成 guidance tokens。
 9. 用 `extract_guidance_or_format_error(...)` 提取 `<guidance>...</guidance>`。
@@ -230,11 +230,13 @@ guidance_ttt/prompts.py::build_guidance_prompt
 
 - 让 actor 输出高层 guidance，不输出最终代码
 - actor 的输出 token 是唯一进入训练梯度路径的部分
-- prompt 会包含 problem、selected/global/failure raw summary-only context、目标 raw score、
+- prompt 会包含 problem、selected/failure raw model summary + verifier score context、目标 raw score、
   输出格式和推荐搜索策略
-- selected/global/failure context 只来自 raw `entry.summary`；不做 clipping、
-  code removal、fact extraction 或 profile compaction；不 attach node id、visits、reward、raw score、verifier 状态、
-  verified artifacts、previous guidance、reusable idea、failure mode 或 root 初始构造 facts
+- selected/failure context 优先来自 `entry.metadata["raw_model_summary"]`，
+  其次从 `entry.metadata["execution_text"]` 解析 `<summary>`，最后才 fallback 到
+  `entry.summary`；随后追加 verifier status、task raw score label、reward 和 verifier message。
+- 不 attach node id、visits、verified artifacts、previous guidance、reusable idea、failure mode
+  或 root 初始构造 facts。
 
 ### Guidance System Prompt 原文
 
@@ -261,10 +263,6 @@ as run-local context when deciding the next step.
 <selected_summary>
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
-
-<global_best>
-{best_text or "No global best summary yet."}
-</global_best>
 
 <local_failures>
 {failure_text or "No local failure summaries yet."}
@@ -322,16 +320,16 @@ guidance_ttt/prompts.py::_raw_summary_for_prompt
 guidance 和 execution prompt 行为：
 
 - `entry is None` 时输出 `No previous summary is attached.`
-- `entry.summary is None` 时输出 fallback 文本
-- `entry.summary == ""` 时输出 fallback 文本
-- 有 entry 且 summary 非空时直接输出 raw `entry.summary`
-- 不调用 `.strip()`、`_clip()`、code block removal、implementation fact extraction 或 profile compaction
-- 不输出 `Entry id`、reward、raw score、verifier status/message、verified artifacts、
-  previous guidance、reusable idea 或 failure mode
+- 有 entry 时按优先级取 raw model summary：
+  `metadata.raw_model_summary` -> `metadata.execution_text` 里的 `<summary>` -> 老 entry 的
+  `entry.summary` fallback
+- 在 raw model summary 后追加 verifier score block：
+  `Verifier status`、task raw score label、`Reward`、`Verifier message`
+- 不调用 `_clip()`、code block removal、implementation fact extraction 或 profile compaction
+- 不输出 `Entry id`、node visits、verified artifacts、previous guidance、reusable idea 或 failure mode
 
-execution prompt 额外 attach parsed `<guidance>`，并 attach visible best valid entry 的
-raw summary；不再 attach selected node metadata、root initial construction facts 或
-verified artifacts。
+execution prompt 额外 attach parsed `<guidance>`；不再 attach visible best valid entry、
+selected node metadata、root initial construction facts 或 verified artifacts。
 
 ## Execution Prompt 构建
 
@@ -363,16 +361,11 @@ You are the execution model. Turn guidance into one concrete runnable Python can
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem. Use them
-as run-local context when implementing the guided candidate.
+The next sections describe the current search state for this problem.
 
 <selected_summary>
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
-
-<global_best_valid_summary>
-{best_valid_text}
-</global_best_valid_summary>
 
 <guidance>
 {guidance}
@@ -395,7 +388,7 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
-Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, including the search, refinement, or optimization strategy used. If the solution’s main contribution lies in specific implementation details, such as parameter fine-tuning, threshold adjustment, normalization choices, perturbation design, or constraint-handling tricks, explicitly emphasize those details and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 ````
 
@@ -421,7 +414,7 @@ Use natural language to summarize the overall idea and method of the solution. E
 </solution>
 
 <summary>
-Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, including the search, refinement, or optimization strategy used. If the solution’s main contribution lies in specific implementation details, such as parameter fine-tuning, threshold adjustment, normalization choices, perturbation design, or constraint-handling tricks, explicitly emphasize those details and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 ````
 
@@ -447,12 +440,15 @@ guidance_ttt/agent_loop.py::build_execution_summary
 规范化规则：
 
 - `Execution Interpretation` 必定合并提取出的 `<execution_thinking>`。
-- `Implemented Algorithm` 必定附上提取出的 solution code，格式为 fenced Python block。
+- `Implemented Algorithm` 必定附上提取出的 solution code，格式为 task-specific fenced code
+  block（Erdos 是 Python，Polyomino 是 C++）。
 - `Empirical Outcome` 必定使用 verifier 实际结果，不信任模型自报。
 - 如果 execution model 的 `<summary>` 缺失或 malformed，会合成完整六段 summary。
 - 如果 verifier valid，failure analysis 默认写 `No verifier failure reported.`
 - 如果 verifier 失败，failure analysis 默认写 `Verifier reported <status>: <message>`。
 - `LibraryEntry.solution` 和 `LibraryEntry.execution_thinking` 仍然写入，主要用于 backward compatibility。
+- execution model 原始 `<summary>` 会额外写入 `LibraryEntry.metadata["raw_model_summary"]`，
+  供后续 prompt attach 使用。
 
 `Empirical Outcome` 的实际格式：
 
@@ -477,7 +473,8 @@ guidance_ttt/agent_loop.py::_extract_reusable_idea
 2. `New Ideas Introduced`
 3. 旧格式 `Reusable idea: ...`
 
-这保证新 library entries 的可复用信息来自 canonical summary，而老 library entries 仍然可读。
+这保证 library 内部仍有 canonical summary 可用于结构化分析；prompt attach 则优先使用
+raw model summary + verifier score，老 library entries 仍可 fallback 到 canonical summary。
 
 ## Verifier
 

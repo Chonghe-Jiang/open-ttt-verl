@@ -11,10 +11,42 @@ class Prompt:
     user: str
 
 
-def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str) -> str:
-    if entry is None or entry.summary is None or entry.summary == "":
-        return fallback
+def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
+    if entry is None:
+        return None
+    metadata = entry.metadata or {}
+    raw_model_summary = metadata.get("raw_model_summary")
+    if isinstance(raw_model_summary, str) and raw_model_summary != "":
+        return raw_model_summary
+    execution_text = metadata.get("execution_text")
+    if isinstance(execution_text, str) and execution_text:
+        parsed_summary = extract_tag_or_none(execution_text, "summary")
+        if parsed_summary:
+            return parsed_summary
+    if entry.summary is None or entry.summary == "":
+        return None
     return entry.summary
+
+
+def _score_for_prompt(entry: LibraryEntry, *, raw_score_label: str) -> str:
+    raw_score = "None" if entry.verifier_raw_score is None else repr(float(entry.verifier_raw_score))
+    return "\n".join(
+        [
+            f"Verifier status: {entry.verifier_status}",
+            f"{raw_score_label}: {raw_score}",
+            f"Reward: {float(entry.verifier_reward)!r}",
+            f"Verifier message: {entry.verifier_message}",
+        ]
+    )
+
+
+def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str, raw_score_label: str = "Score") -> str:
+    if entry is None:
+        return fallback
+    raw_summary = _raw_model_summary_for_prompt(entry)
+    if raw_summary is None:
+        return fallback
+    return f"{raw_summary}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
 
 
 def build_guidance_prompt(
@@ -25,19 +57,14 @@ def build_guidance_prompt(
     global_best_entries: list[LibraryEntry],
     local_failure_entries: list[LibraryEntry],
     objective_text: str | None = None,
+    raw_score_label: str = "Score",
 ) -> Prompt:
-    selected_entry_id = selected_entry.id if selected_entry is not None else None
-    best_entries_for_prompt = [
-        entry for entry in global_best_entries if entry is not None and entry.id != selected_entry_id
-    ]
-    best_text = "\n\n".join(
-        _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
-        for entry in best_entries_for_prompt
-    )
-    if not best_text and global_best_entries and selected_entry_id:
-        best_text = "The selected summary is also the current global best visible summary."
     failure_text = "\n\n".join(
-        _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
+        _raw_summary_for_prompt(
+            entry,
+            fallback="No previous summary is attached.",
+            raw_score_label=raw_score_label,
+        )
         for entry in local_failure_entries
     )
     best_valid = _best_valid_entry(global_best_entries, selected_entry)
@@ -59,12 +86,8 @@ The next sections describe the current search state for this problem. Use them
 as run-local context when deciding the next step.
 
 <selected_summary>
-{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.", raw_score_label=raw_score_label)}
 </selected_summary>
-
-<global_best>
-{best_text or "No global best summary yet."}
-</global_best>
 
 <local_failures>
 {failure_text or "No local failure summaries yet."}
@@ -143,9 +166,9 @@ def build_execution_prompt(
     solution_language: str = "python",
     solution_contract: str | None = None,
     score_direction: str = "min",
+    raw_score_label: str = "Score",
 ) -> Prompt:
-    best_valid = _best_valid_entry(global_best_entries or [], selected_entry, score_direction=score_direction)
-    best_valid_text = _raw_summary_for_prompt(best_valid, fallback="No global best valid summary yet.")
+    _ = (global_best_entries, score_direction)
     fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
     language_name = "C++17" if fenced_language == "cpp" else "Python"
     placeholder = (
@@ -160,16 +183,11 @@ def build_execution_prompt(
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem. Use them
-as run-local context when implementing the guided candidate.
+The next sections describe the current search state for this problem.
 
 <selected_summary>
-{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
+{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.", raw_score_label=raw_score_label)}
 </selected_summary>
-
-<global_best_valid_summary>
-{best_valid_text}
-</global_best_valid_summary>
 
 <guidance>
 {guidance}
@@ -193,7 +211,7 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
-Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, including the search, refinement, or optimization strategy used. If the solution’s main contribution lies in specific implementation details, such as parameter fine-tuning, threshold adjustment, normalization choices, perturbation design, or constraint-handling tricks, explicitly emphasize those details and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 """
     return Prompt(

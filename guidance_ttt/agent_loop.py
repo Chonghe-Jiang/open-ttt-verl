@@ -33,6 +33,7 @@ class ExecutionVerification:
     execution_thinking: str
     solution: str
     summary: str
+    model_summary: str | None
     verification: VerificationResult
     fallback_used: bool
     fallback_reason: str | None
@@ -191,6 +192,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                     context["global_best_entries"],
                 )
             ),
+            raw_score_label=task_spec.raw_score_label,
         )
         prompt_ids = await self.apply_chat_template(
             [
@@ -207,11 +209,10 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             problem_prompt=problem_prompt,
             selected_node=selected_node,
             selected_entry=selected_entry,
-            global_best_entries=context["global_best_entries"],
             guidance=guidance,
             solution_language=task_spec.solution_language,
             solution_contract=task_spec.execution_solution_contract,
-            score_direction=task_spec.score_direction,
+            raw_score_label=task_spec.raw_score_label,
         )
         verification: VerificationResult
         execution_text = ""
@@ -246,6 +247,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         execution_thinking = execution_result.execution_thinking
         solution = execution_result.solution
         summary = execution_result.summary
+        raw_model_summary = execution_result.model_summary
         verification = execution_result.verification
 
         entry = LibraryEntry(
@@ -275,6 +277,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "execution_prompt": {"system": execution_prompt.system, "user": execution_prompt.user},
                 "task": task_config,
                 "execution_text": execution_text,
+                "raw_model_summary": raw_model_summary,
                 "execution_provider": self.execution_llm_config.get("provider", "mock"),
                 "execution_model": self.execution_llm_config.get("model", "mock-exec"),
                 "execution_response_metadata": execution_response_metadata,
@@ -579,8 +582,9 @@ def _verify_execution_without_fallback(
         verification = VerificationResult.execution_error(initial_error)
     execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
     solution = _extract_solution_code(execution_text, task_spec=task_spec)
+    model_summary = extract_tag_or_none(execution_text, "summary")
     summary = build_execution_summary(
-        model_summary=extract_tag_or_none(execution_text, "summary"),
+        model_summary=model_summary,
         execution_thinking=execution_thinking,
         solution=solution,
         guidance=guidance,
@@ -593,6 +597,7 @@ def _verify_execution_without_fallback(
         execution_thinking=execution_thinking,
         solution=solution,
         summary=summary,
+        model_summary=model_summary,
         verification=verification,
         fallback_used=False,
         fallback_reason=None,

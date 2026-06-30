@@ -21,7 +21,8 @@ flowchart TD
     B[(GuidanceLibrary JSON)] --> C
 
     C --> D[selected_node]
-    C --> E[selected_entry / global_best_entries / local_failure_entries]
+    C --> E[selected_entry / local_failure_entries]
+    C --> X[global_best_entries<br/>target score only]
 
     A --> F[build_guidance_prompt]
     D --> F
@@ -71,7 +72,7 @@ GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)
 
 GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=global_step)
   -> selected_entry
-  -> global_best_entries
+  -> global_best_entries (objective target only; not prompt summary attach)
   -> local_failure_entries
 
 build_guidance_prompt(...)
@@ -107,36 +108,56 @@ Guidance prompt 和 execution prompt 来自同一次 PUCT selection 的同一个
 selected_node = library.acquire_group(...)
 context = library.context_for_node(selected_node, ...)
 selected_entry = context["selected_entry"]
-global_best_entries = context["global_best_entries"]
+global_best_entries = context["global_best_entries"]  # target score only
 local_failure_entries = context["local_failure_entries"]
 ```
 
-- Guidance prompt 和 execution prompt 都只 attach raw `entry.summary`，不做 clipping、
-  code removal、implementation fact extraction 或 profile compaction。
-- 两个 prompt 都不 attach node id、visits、reward、raw score、verifier status/message、
-  verified artifacts、previous guidance、reusable idea、failure mode 或 root initial
-  construction facts。
+- Guidance prompt 和 execution prompt 都 attach lightweight context: raw model
+  `<summary>` plus verifier score/status/message。不会直接 attach canonical
+  `entry.summary` 的 6-section 大块内容，除非老 library entry 缺少 raw summary 来源。
+- Guidance prompt 和 execution prompt 都不 attach global best summary。当前实现只把
+  PUCT-selected entry 的 raw summary + 分数作为主历史上下文；guidance prompt 另外保留
+  local failure raw summaries。
+- 两个 prompt 都不 attach node id、visits、verified artifacts、previous guidance、
+  reusable idea、failure mode 或 root initial construction facts。
 - Execution prompt 额外 attach 当前 parsed `<guidance>`，用于把 guidance 落成具体代码。
 - 当前 `lineage_entries` 会由 library context 返回，但没有直接写入 prompt。
 
 ## Summary Attach Rules
 
-Guidance 和 execution prompt 都使用 `_raw_summary_for_prompt(entry, fallback=...)`。
+Guidance 和 execution prompt 都使用 `_raw_summary_for_prompt(entry, fallback=...)`，
+但这里的 “raw summary” 指 execution model 原始 `<summary>`，不是
+`LibraryEntry.summary` 里的 canonical summary。
 
-没有 previous entry、summary 为 `None` 或 summary 为空字符串时：
+没有 previous entry、且无法找到 raw summary 时：
 
 ```text
 No previous summary is attached.
 ```
 
-有 entry 且 summary 非空字符串时，直接输出原始 `entry.summary`：
+有 entry 时，attach helper 按优先级取 summary：
 
 ```text
-{entry.summary}
+1. entry.metadata["raw_model_summary"]
+2. entry.metadata["execution_text"] 中的 <summary>...</summary>
+3. entry.summary 作为老 library entry 的兼容 fallback
 ```
 
-该 helper 不调用 `.strip()`、`_clip()` 或任何 summary processing helper；summary 中的
-fenced code、硬编码数组、空白和换行都会原样进入 prompt。
+然后追加 verifier score block：
+
+```text
+{raw model summary}
+
+Verifier status: {entry.verifier_status}
+{task raw score label}: {entry.verifier_raw_score}
+Reward: {entry.verifier_reward}
+Verifier message: {entry.verifier_message}
+```
+
+该 helper 不做 clipping、code removal、implementation fact extraction 或 profile
+compaction。新 library entry 的 prompt context 通常不包含 solution code，因为 execution
+prompt 要求 raw `<summary>` 不包含 code；如果老 entry 只能 fallback 到 canonical
+`entry.summary`，则可能仍然带上旧的 canonical 内容。
 
 ## Task Registry
 
@@ -197,10 +218,6 @@ as run-local context when deciding the next step.
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
 
-<global_best>
-{best_text or "No global best summary yet."}
-</global_best>
-
 <local_failures>
 {failure_text or "No local failure summaries yet."}
 </local_failures>
@@ -232,30 +249,15 @@ This must contain only your final, actionable evolutionary trajectory.
 
 ### Guidance Runtime Variables
 
-`best_text`:
-
-```python
-best_entries_for_prompt = [
-    entry for entry in global_best_entries
-    if entry is not None and entry.id != selected_entry_id
-]
-best_text = "\n\n".join(
-    _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
-    for entry in best_entries_for_prompt
-)
-```
-
-如果 selected entry 本身就是当前 visible global best：
-
-```text
-The selected summary is also the current global best visible summary.
-```
-
 `failure_text`:
 
 ```python
 failure_text = "\n\n".join(
-    _raw_summary_for_prompt(entry, fallback="No previous summary is attached.")
+    _raw_summary_for_prompt(
+        entry,
+        fallback="No previous summary is attached.",
+        raw_score_label=task_spec.raw_score_label,
+    )
     for entry in local_failure_entries
 )
 ```
@@ -267,9 +269,12 @@ target = task_spec.best_target(selected_node, selected_entry, global_best_entrie
 objective_text = task_spec.guidance_objective(target)
 ```
 
-所以 guidance prompt 的历史内容是 raw summary-only，但 objective 文案和 score 方向由
-task spec 控制。Erdos 使用 “Lower raw C5 is better”；Polyomino 使用 “Higher FrontierCS
-score is better”。
+所以 guidance prompt 的历史内容是 raw model summary + verifier score。objective 文案和
+score 方向由 task spec 控制。Erdos 使用 “Lower raw C5 is better”；Polyomino 使用
+“Higher FrontierCS score is better”。
+
+注意：`global_best_entries` 可以继续用于 task objective 计算当前目标分数，但 global
+best 的 summary 不再 attach 到 guidance prompt。
 
 ### Guidance Parsing
 
@@ -312,11 +317,10 @@ execution_prompt = build_execution_prompt(
     problem_prompt=problem_prompt,
     selected_node=selected_node,
     selected_entry=selected_entry,
-    global_best_entries=context["global_best_entries"],
     guidance=guidance,
     solution_language=task_spec.solution_language,
     solution_contract=task_spec.execution_solution_contract,
-    score_direction=task_spec.score_direction,
+    raw_score_label=task_spec.raw_score_label,
 )
 ```
 
@@ -336,16 +340,11 @@ You are the execution model. Turn guidance into one concrete runnable {Python|C+
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem. Use them
-as run-local context when implementing the guided candidate.
+The next sections describe the current search state for this problem.
 
 <selected_summary>
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
-
-<global_best_valid_summary>
-{best_valid_text}
-</global_best_valid_summary>
 
 <guidance>
 {guidance}
@@ -369,28 +368,15 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
-Use natural language to summarize the overall idea and method of the solution. Explain how the candidate was generated, including the search, refinement, or optimization strategy used. If the solution’s main contribution lies in specific implementation details, such as parameter fine-tuning, threshold adjustment, normalization choices, perturbation design, or constraint-handling tricks, explicitly emphasize those details and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 ````
 
 ### Execution Runtime Variables
 
-`best_valid_text`:
-
-```python
-best_valid = _best_valid_entry(
-    global_best_entries or [],
-    selected_entry,
-    score_direction=task_spec.score_direction,
-)
-best_valid_text = _raw_summary_for_prompt(
-    best_valid,
-    fallback="No global best valid summary yet.",
-)
-```
-
-因此 execution model 和 guidance model 使用相同 PUCT-selected context，但 execution prompt
-只额外给出当前 visible best valid summary 和 parsed guidance。
+因此 execution model 和 guidance model 使用相同 PUCT-selected selected summary
+context；execution prompt 只额外给出当前 parsed guidance，不再 attach visible global
+best valid summary。
 
 ### Execution Parsing
 
@@ -529,6 +515,7 @@ LibraryEntry(
         "execution_prompt": {"system": execution_prompt.system, "user": execution_prompt.user},
         "task": task_config,
         "execution_text": execution_text,
+        "raw_model_summary": raw_model_summary,
         "execution_provider": self.execution_llm_config.get("provider", "mock"),
         "execution_model": self.execution_llm_config.get("model", "mock-exec"),
         "execution_response_metadata": execution_response_metadata,

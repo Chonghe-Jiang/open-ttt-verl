@@ -43,9 +43,11 @@ Natural language method summary only.
 </summary>
 ````
 
-The program must read stdin and write the placement to stdout. The library attach
-policy is unchanged: guidance and execution both receive raw summaries selected
-by PUCT, and execution additionally receives the parsed guidance.
+The program must read stdin and write the placement to stdout. Guidance and
+execution both receive the raw model summary plus verifier score/status for the
+PUCT-selected entry, and execution additionally receives the parsed guidance.
+Global best summaries are not attached. The large canonical summary is still
+stored in the library but is not the normal prompt attachment for new entries.
 
 ## Config
 
