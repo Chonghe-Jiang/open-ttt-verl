@@ -1,16 +1,57 @@
-from __future__ import annotations
+# Guidance / Execution Prompt Source Summary
 
-from dataclasses import dataclass
+This file attaches the current source code that constructs the guidance model
+and execution model prompts.
 
-from guidance_ttt.state import LibraryEntry, LibraryNode
+## Agent Loop Call Site
 
+Source: `guidance_ttt/agent_loop.py`
 
-@dataclass
-class Prompt:
-    system: str
-    user: str
+````python
+context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
+selected_entry = context["selected_entry"]
+guidance_prompt = build_guidance_prompt(
+    problem_prompt=problem_prompt,
+    selected_node=selected_node,
+    selected_entry=selected_entry,
+    global_best_entries=context["global_best_entries"],
+    local_failure_entries=context["local_failure_entries"],
+    objective_text=task_spec.guidance_objective(
+        task_spec.best_target(
+            selected_node,
+            selected_entry,
+            context["global_best_entries"],
+        )
+    ),
+    raw_score_label=task_spec.raw_score_label,
+)
+prompt_ids = await self.apply_chat_template(
+    [
+        {"role": "system", "content": guidance_prompt.system},
+        {"role": "user", "content": guidance_prompt.user},
+    ]
+)
+guidance_generation = await self._generate_guidance_response(prompt_ids, sampling_params)
+response_ids = guidance_generation.response_ids
+guidance_text = guidance_generation.text
+guidance, guidance_format_ok = extract_guidance_or_format_error(guidance_text)
 
+execution_prompt = build_execution_prompt(
+    problem_prompt=problem_prompt,
+    selected_node=selected_node,
+    selected_entry=selected_entry,
+    guidance=guidance,
+    solution_language=task_spec.solution_language,
+    solution_contract=task_spec.execution_solution_contract,
+    raw_score_label=task_spec.raw_score_label,
+)
+````
 
+## Shared Prompt Attachment Helpers
+
+Source: `guidance_ttt/prompts.py`
+
+````python
 def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
     if entry is None:
         return None
@@ -47,8 +88,13 @@ def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str, raw_sc
     if raw_summary is None:
         return fallback
     return f"{raw_summary}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
+````
 
+## Guidance Prompt Builder
 
+Source: `guidance_ttt/prompts.py`
+
+````python
 def build_guidance_prompt(
     *,
     problem_prompt: str,
@@ -129,33 +175,13 @@ This must contain only your final, actionable evolutionary trajectory.
         ),
         user=user,
     )
+````
 
+## Execution Prompt Builder
 
-def _best_valid_entry(
-    *entry_groups: list[LibraryEntry] | LibraryEntry | None,
-    score_direction: str = "min",
-) -> LibraryEntry | None:
-    entries: list[LibraryEntry] = []
-    for group in entry_groups:
-        if group is None:
-            continue
-        if isinstance(group, list):
-            entries.extend(group)
-        else:
-            entries.append(group)
-    valid_entries = [
-        entry
-        for entry in entries
-        if entry.verifier_status == "valid" and entry.verifier_raw_score is not None
-    ]
-    if not valid_entries:
-        return None
-    key = lambda entry: float(entry.verifier_raw_score)
-    if score_direction == "max":
-        return max(valid_entries, key=key)
-    return min(valid_entries, key=key)
+Source: `guidance_ttt/prompts.py`
 
-
+````python
 def build_execution_prompt(
     *,
     problem_prompt: str,
@@ -222,57 +248,56 @@ Summarize the solution and its guidance-driven diff from the previous idea in na
         ),
         user=user,
     )
+````
 
+## Task-Specific Prompt Configuration
 
-def extract_tag(text: str, tag: str) -> str:
-    start = text.find(f"<{tag}>")
-    end = text.find(f"</{tag}>")
-    if start == -1 or end == -1 or end <= start:
-        return text.strip()
-    return text[start + len(tag) + 2 : end].strip()
+Source: `guidance_ttt/tasks/__init__.py`
 
-
-def extract_tag_or_none(text: str, tag: str) -> str | None:
-    start = text.find(f"<{tag}>")
-    end = text.find(f"</{tag}>")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    return text[start + len(tag) + 2 : end].strip()
-
-
-def extract_text_outside_tag(text: str, tag: str) -> str:
-    lower_text = text.lower()
-    open_tag = f"<{tag.lower()}>"
-    close_tag = f"</{tag.lower()}>"
-    parts: list[str] = []
-    cursor = 0
-    while True:
-        start = lower_text.find(open_tag, cursor)
-        if start == -1:
-            parts.append(text[cursor:])
-            break
-        parts.append(text[cursor:start])
-        end = lower_text.find(close_tag, start + len(open_tag))
-        if end == -1:
-            break
-        cursor = end + len(close_tag)
-    return "".join(parts).strip()
-
-
-def extract_guidance_or_format_error(text: str) -> tuple[str, bool]:
-    guidance = extract_tag_or_none(text, "guidance")
-    if guidance:
-        return guidance, True
-    outside_think = extract_text_outside_tag(text, "think")
-    if outside_think:
-        return outside_think, False
+````python
+def _erdos_objective(target: float | None) -> str:
     return (
-        "Hypothesis: The guidance model did not emit a valid <guidance> block.\n"
-        "Plan:\n"
-        "1. Treat this attempt as a formatting failure because no text was found outside the thinking block.\n"
-        "2. Retry with an explicit tagged guidance response on the next rollout.\n"
-        "What to preserve: The selected library context and Erdos verifier constraints.\n"
-        "What to change: Emit exactly one tagged guidance block after any thinking.\n"
-        "Expected verifier signal: formatting_error",
-        False,
+        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
+        f"target raw score ({target}). Lower raw C5 is better."
     )
+
+
+def _polyomino_objective(target: float | None) -> str:
+    return (
+        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
+        f"FrontierCS score target ({target}). Higher FrontierCS score is better."
+    )
+
+
+_TASKS: dict[str, TaskSpec] = {
+    "erdos_min_overlap": TaskSpec(
+        task_id="erdos_min_overlap",
+        problem_prompt=ERDOS_PROBLEM_PROMPT,
+        solution_language="python",
+        execution_solution_contract=(
+            "The <solution> block must contain one complete executable Python candidate in a ```python fenced block."
+        ),
+        score_direction="min",
+        raw_score_label="Raw C5",
+        create_root_node=create_erdos_root_node,
+        verifier=_verify_erdos,
+        solution_extractor=_extract_python_solution,
+        guidance_objective=_erdos_objective,
+    ),
+    "polyomino_packing": TaskSpec(
+        task_id="polyomino_packing",
+        problem_prompt=POLYOMINO_PROBLEM_PROMPT,
+        solution_language="cpp",
+        execution_solution_contract=(
+            "The <solution> block must contain one complete C++17 program in a ```cpp fenced block. "
+            "It must read the Polyomino Packing instance from stdin and write the placement to stdout."
+        ),
+        score_direction="max",
+        raw_score_label="FrontierCS score",
+        create_root_node=create_polyomino_root_node,
+        verifier=_verify_polyomino,
+        solution_extractor=extract_cpp_solution_code,
+        guidance_objective=_polyomino_objective,
+    ),
+}
+````

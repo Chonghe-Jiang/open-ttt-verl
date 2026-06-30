@@ -435,6 +435,7 @@ def selected_candidate():
     assert "<summary>" in prompt.user
     assert "Use the problem statement as the authoritative task specification" in prompt.user
     assert "Use the attached library context as historical evidence" in prompt.user
+    assert "Score direction: min." in prompt.user
     assert "Implement one concrete solution that follows the guidance" in prompt.user
     assert "Return exactly these three blocks" in prompt.user
     contract = prompt.user.split("Return exactly these three blocks:", 1)[1]
@@ -490,11 +491,13 @@ def test_execution_prompt_accepts_cpp_solution_contract():
         solution_contract=(
             "The <solution> block must contain one complete C++17 program in a ```cpp fenced block."
         ),
+        score_direction="max",
     )
 
     assert "Pack polyominoes from stdin." in prompt.user
     assert "Use skyline placement with rotations." in prompt.user
     assert "complete C++17 program" in prompt.user
+    assert "Score direction: max." in prompt.user
     assert "```cpp" in prompt.user
     assert "```python" not in prompt.user
     assert "Turn guidance into one concrete runnable C++17 candidate" in prompt.system
