@@ -4,6 +4,8 @@ from omegaconf import OmegaConf
 from guidance_ttt.agent_loop import (
     EXECUTION_SUMMARY_SECTIONS,
     GuidanceExecutionAgentLoop,
+    _normalize_task_config,
+    _verifier_config_from_task_config,
     _verify_execution_without_fallback,
     build_agent_loop_output,
     build_execution_summary,
@@ -192,6 +194,27 @@ Use shelf packing with normalized offsets.
     assert result.solution.startswith("#include <bits/stdc++.h>")
     assert "```cpp\n#include <bits/stdc++.h>" in result.summary
     assert "Empirical Outcome\nVerifier status: valid\nFrontierCS score: 12.5\nReward: 12.5" in result.summary
+
+
+def test_task_config_normalization_converts_nested_omegaconf_to_plain_dict():
+    task_config = _normalize_task_config(
+        OmegaConf.create(
+            {
+                "id": "polyomino_packing",
+                "frontiercs": {
+                    "problem_id": "0",
+                    "n_cases": 70,
+                },
+            }
+        )
+    )
+
+    assert type(task_config) is dict
+    assert type(task_config["frontiercs"]) is dict
+    assert _verifier_config_from_task_config(task_config) == {
+        "problem_id": "0",
+        "n_cases": 70,
+    }
 
 
 def test_build_execution_summary_normalizes_all_sections_and_verifier_outcome():

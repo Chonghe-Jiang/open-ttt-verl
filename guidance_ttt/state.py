@@ -1,21 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, is_dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 
 def _jsonable(value: Any) -> Any:
+    try:
+        from omegaconf import DictConfig, ListConfig, OmegaConf
+
+        if isinstance(value, (DictConfig, ListConfig)):
+            return _jsonable(OmegaConf.to_container(value, resolve=True))
+    except Exception:
+        pass
     if hasattr(value, "tolist"):
         return value.tolist()
     if hasattr(value, "item"):
         return value.item()
-    if isinstance(value, dict):
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(asdict(value))
+    if isinstance(value, Mapping):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, tuple):
         return [_jsonable(v) for v in value]
     if isinstance(value, list):
         return [_jsonable(v) for v in value]
+    if isinstance(value, set):
+        return sorted((_jsonable(v) for v in value), key=repr)
     return value
 
 

@@ -1,5 +1,7 @@
 import json
 
+from omegaconf import OmegaConf
+
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.state import LibraryEntry, make_root_node
 
@@ -49,6 +51,37 @@ def test_submit_child_adds_entry_child_and_updates_best(tmp_path):
     assert child.value == 4.0
     assert snapshot["best_node_id"] == child.id
     assert snapshot["nodes"][selected.id]["children"] == [child.id]
+
+
+def test_submit_child_serializes_nested_omegaconf_metadata(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=0.0, reward=0.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+    selected = library.acquire_group("0:slot-a")
+    entry = _entry(selected.id, reward=1.0, suffix="poly")
+    entry.metadata = {
+        "task": OmegaConf.create(
+            {
+                "id": "polyomino_packing",
+                "frontiercs": {
+                    "problem_id": "0",
+                    "n_cases": 70,
+                },
+            }
+        )
+    }
+
+    library.submit_child("0:slot-a", entry)
+    store = json.loads(path.read_text())
+
+    task = store["entries"][entry.id]["metadata"]["task"]
+    assert task == {
+        "id": "polyomino_packing",
+        "frontiercs": {
+            "problem_id": "0",
+            "n_cases": 70,
+        },
+    }
 
 
 def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path):

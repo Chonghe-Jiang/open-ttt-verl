@@ -13,7 +13,7 @@ from guidance_ttt.prompts import (
     extract_guidance_or_format_error,
     extract_tag_or_none,
 )
-from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult
+from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult, _jsonable
 from guidance_ttt.tasks import TaskSpec, get_task_spec
 
 
@@ -212,6 +212,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             guidance=guidance,
             solution_language=task_spec.solution_language,
             solution_contract=task_spec.execution_solution_contract,
+            score_direction=task_spec.score_direction,
             raw_score_label=task_spec.raw_score_label,
         )
         verification: VerificationResult
@@ -546,11 +547,17 @@ def _normalize_task_config(task: dict[str, Any] | str | None) -> dict[str, Any]:
         return {"id": "erdos_min_overlap"}
     if isinstance(task, str):
         return {"id": task}
-    return dict(task)
+    normalized = _jsonable(task)
+    if not isinstance(normalized, dict):
+        raise TypeError(f"task config must normalize to a dict, got {type(normalized).__name__}")
+    return normalized
 
 
 def _verifier_config_from_task_config(task_config: dict[str, Any]) -> dict[str, Any]:
-    return dict(task_config.get("frontiercs") or {})
+    frontiercs = _jsonable(task_config.get("frontiercs") or {})
+    if not isinstance(frontiercs, dict):
+        raise TypeError(f"task.frontiercs must normalize to a dict, got {type(frontiercs).__name__}")
+    return frontiercs
 
 
 def _extract_solution_code(execution_text: str, *, task_spec: TaskSpec | None = None) -> str:
