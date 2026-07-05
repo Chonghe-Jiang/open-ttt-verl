@@ -112,6 +112,67 @@ Installing FrontierCS into a shared training environment can downgrade or pin
 packages such as `protobuf`, `click`, and `cryptography`. Use a dedicated env if
 those conflicts matter for other workloads.
 
+## Modal Polyomino Runs
+
+The Modal entrypoint is:
+
+```bash
+python -m pip install modal
+modal token new
+```
+
+Then launch from the repository root:
+
+```bash
+modal run scripts/modal_polyomino_h200_smoke.py --action verifier
+modal run scripts/modal_polyomino_h200_smoke.py --action train
+modal run scripts/modal_polyomino_h200_smoke.py --action train_history
+```
+
+Actions:
+
+- `verifier`: starts the FrontierCS/go-judge service inside Modal and evaluates
+  a baseline C++ solution. This checks that the remote judge path works before
+  training.
+- `train`: runs the 4xH200 one-step Polyomino Guidance-TTT smoke config at
+  `guidance_ttt/config/polyomino_modal_h200_4gpu_smoke.yaml`.
+- `train_history`: runs the 2xH200 one-step history extraction smoke config at
+  `guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml`. This is
+  the cheaper check for guidance parsing, raw execution summary extraction,
+  canonical library summary writing, and execution text capture.
+
+The Modal script builds a remote image with FrontierCS and go-judge, copies this
+repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
+`/opt/Frontier-CS`. It mounts:
+
+```text
+guidance-ttt-runs  -> /runs
+guidance-ttt-cache -> /cache
+```
+
+Training outputs are written to:
+
+```text
+/runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke
+/runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
+```
+
+The smoke configs intentionally keep only the training shape small: `num_steps`,
+`groups_per_batch`, `group_size`, PPO mini-batch size, and GPU count. Execution
+generation is not artificially shortened in these configs:
+
+```yaml
+llm:
+  execution:
+    max_tokens: null
+    phase1_max_tokens: null
+```
+
+FrontierCS/go-judge concurrency is capped at 8 in
+`scripts/modal_polyomino_h200_smoke.py`; the local vLLM execution batch settings
+are aligned with the selected smoke size. If you change GPU count or group size,
+update the YAML config and the Modal script constants together.
+
 ## Local gpt-oss-20b Execution
 
 Download the local execution model:
