@@ -32,7 +32,8 @@ def test_modal_polyomino_h200_smoke_config_matches_requested_shape():
     assert execution["model"] == "openai/gpt-oss-20b"
     assert execution["tensor_model_parallel_size"] == 4
     assert execution["enforce_eager"] is True
-    assert execution["max_tokens"] == 4096
+    assert execution["max_tokens"] is None
+    assert execution["phase1_max_tokens"] is None
     assert execution["max_num_seqs"] == 8
     assert execution["max_batch_size"] == 8
     assert execution["batch_wait_ms"] == 50
@@ -79,6 +80,8 @@ def test_modal_polyomino_history_smoke_config_matches_requested_shape():
     assert execution["provider"] == "local_vllm"
     assert execution["model"] == "openai/gpt-oss-20b"
     assert execution["tensor_model_parallel_size"] == 2
+    assert execution["max_tokens"] is None
+    assert execution["phase1_max_tokens"] is None
     assert execution["max_num_seqs"] == 4
     assert execution["max_batch_size"] == 4
 

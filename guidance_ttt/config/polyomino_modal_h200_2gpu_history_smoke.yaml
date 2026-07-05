@@ -54,8 +54,8 @@ llm:
     reasoning_effort: low
     temperature: 0.35
     top_p: 0.95
-    max_tokens: 4096
-    phase1_max_tokens: 4096
+    max_tokens: null
+    phase1_max_tokens: null
     tensor_model_parallel_size: 2
     gpu_memory_utilization: 0.35
     enforce_eager: true
