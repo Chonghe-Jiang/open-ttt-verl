@@ -120,9 +120,73 @@ Recovered raw summary from the execution response.
     assert "def run(): return None" not in prompt.user
 
 
+def test_prompt_context_rejects_raw_summary_when_model_omits_closing_summary_tag():
+    entry = _entry()
+    entry.summary = "Canonical summary should not be attached when execution_text has raw summary content."
+    entry.metadata = {
+        "execution_text": """<execution_thinking>
+think
+</execution_thinking>
+<solution>
+```cpp
+int main() { return 0; }
+```
+</solution>
+<summary>
+Recovered raw summary from a model response that ended without the closing tag.
+It should remain raw model text, not the canonical summary.""",
+    }
+
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=entry,
+        guidance="Try shelf packing.",
+        raw_score_label="FrontierCS score",
+    )
+
+    assert "No previous summary is attached." in prompt.user
+    assert "Recovered raw summary from a model response that ended without the closing tag." not in prompt.user
+    assert "It should remain raw model text, not the canonical summary." not in prompt.user
+    assert "FrontierCS score: 0.4" in prompt.user
+    assert "Canonical summary should not be attached" not in prompt.user
+    assert "int main()" not in prompt.user
+
+
+def test_prompt_context_never_falls_back_to_canonical_summary_when_raw_summary_is_missing():
+    entry = _entry()
+    entry.summary = """Execution Interpretation
+canonical thinking should not be attached
+
+Implemented Algorithm
+```python
+def canonical_solution_code_should_not_be_attached():
+    pass
+```
+"""
+    entry.metadata = {}
+
+    prompt = build_execution_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=entry,
+        guidance="Try deterministic coordinate descent.",
+        raw_score_label="Raw C5",
+    )
+
+    assert "No previous summary is attached." in prompt.user
+    assert "Raw C5: 0.4" in prompt.user
+    assert "Reward: 2.5" in prompt.user
+    assert "Verifier status: valid" in prompt.user
+    assert "Verifier message: C5 bound: 0.400000" in prompt.user
+    assert "canonical thinking should not be attached" not in prompt.user
+    assert "canonical_solution_code_should_not_be_attached" not in prompt.user
+
+
 def test_guidance_prompt_attaches_selected_raw_summary_but_not_library_details():
     entry = _entry()
-    entry.summary = """  Raw summary with intentional leading spaces.
+    entry.metadata = {
+        "raw_model_summary": """  Raw summary with intentional leading spaces.
 
 Implemented Algorithm
 ```python
@@ -133,6 +197,7 @@ def run(seed=42, budget_s=1, **kwargs):
 
 Next Guidance Delta
 Preserve this exact raw text."""
+    }
     prompt = build_guidance_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
@@ -197,7 +262,7 @@ def test_guidance_prompt_omits_global_best_and_keeps_local_failure_history():
     global_best.reusable_idea = "reuse best projection repair"
     local_failure = _entry()
     local_failure.id = "failure-entry"
-    local_failure.summary = "failed because sum drifted"
+    local_failure.metadata = {"raw_model_summary": "failed because sum drifted"}
     local_failure.guidance = "bad alternating pattern"
     local_failure.verifier_status = "invalid"
     local_failure.failure_mode = "invalid"
@@ -288,12 +353,12 @@ def test_guidance_prompt_uses_only_summary_not_verified_profile_artifacts():
     best.id = "best-entry"
     best.verifier_raw_score = 0.3812435631313583
     best.verifier_reward = 2.6229950364447134
-    best.summary = (
-        "Empirical Outcome\n"
-        "Verified returned profile: n_points=19, c5_bound=0.3812435631313583, "
-        "h length=19, head=[1.0, 0.9872194239853203], tail=[0.9951851401967569, 0.9999965067437544]"
-    )
     best.metadata = {
+        "raw_model_summary": (
+            "Empirical Outcome\n"
+            "Verified returned profile: n_points=19, c5_bound=0.3812435631313583, "
+            "h length=19, head=[1.0, 0.9872194239853203], tail=[0.9951851401967569, 0.9999965067437544]"
+        ),
         "verification_artifacts": {
             "n_points": 19,
             "c5_bound": 0.3812435631313583,
@@ -359,7 +424,8 @@ def test_guidance_prompt_root_uses_selected_raw_score_without_initial_constructi
         },
     )
     code_entry = _entry()
-    code_entry.summary = "Execution Interpretation\n" + ("long inherited context. " * 80) + """
+    code_entry.metadata = {
+        "raw_model_summary": "Execution Interpretation\n" + ("long inherited context. " * 80) + """
 
 Implemented Algorithm
 ```python
@@ -372,6 +438,7 @@ result = minimize(c5_score, h0, method="SLSQP", options={"maxiter": 300, "ftol":
 Next Guidance Delta
 Try pairwise mass transfer around the first five coordinates.
 """
+    }
 
     prompt = build_guidance_prompt(
         problem_prompt="Find better C5",
@@ -396,13 +463,15 @@ Try pairwise mass transfer around the first five coordinates.
 
 def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_raw_summaries():
     selected_entry = _entry()
-    selected_entry.summary = """Selected raw summary.
+    selected_entry.metadata = {
+        "raw_model_summary": """Selected raw summary.
 
 ```python
 def selected_candidate():
     return "keep this code visible"
 ```
 """
+    }
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
@@ -448,6 +517,9 @@ def selected_candidate():
     assert "what specific changes were made based on the guidance" in prompt.user
     assert "parameter tuning, threshold choices, normalization" in prompt.user
     assert "Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters" in prompt.user
+    assert "The <summary>...</summary> block is required" in prompt.user
+    assert "Do not place the summary inside <execution_thinking>" in prompt.user
+    assert "If you omit any required XML block, the attempt will be treated as invalid" in prompt.user
     assert "Execution Interpretation" not in contract
     assert "Implemented Algorithm" not in contract
     assert "New Ideas Introduced" not in contract
@@ -646,7 +718,39 @@ def test_guidance_extraction_requires_explicit_guidance_tag():
     assert guidance == "Hypothesis: try coordinate descent"
 
 
-def test_guidance_extraction_falls_back_to_text_outside_think_tags():
+def test_guidance_extraction_unwraps_redundant_guidance_tags():
+    text = """<think>
+</think>
+
+<guidance>
+<guidance>
+Hypothesis: try skyline packing.
+</guidance>
+</guidance>"""
+
+    guidance, ok = extract_guidance_or_format_error(text)
+
+    assert ok is True
+    assert guidance == "Hypothesis: try skyline packing."
+
+
+def test_guidance_extraction_rejects_empty_nested_guidance_tags():
+    text = """<think>
+</think>
+
+<guidance>
+<guidance>
+</guidance>
+</guidance>"""
+
+    guidance, ok = extract_guidance_or_format_error(text)
+
+    assert ok is False
+    assert "formatting failure" in guidance
+    assert "</guidance>" not in guidance
+
+
+def test_guidance_extraction_rejects_text_outside_think_without_guidance_tag():
     text = """<think>
 long hidden reasoning
 </think>
@@ -660,8 +764,8 @@ Plan:
     guidance, ok = extract_guidance_or_format_error(text)
 
     assert ok is False
-    assert guidance.startswith("Hypothesis: use projected coordinate descent.")
-    assert "<think>" not in guidance
+    assert "formatting failure" in guidance
+    assert "Hypothesis: use projected coordinate descent." not in guidance
     assert "long hidden reasoning" not in guidance
     assert extract_tag_or_none(text, "guidance") is None
 
@@ -680,3 +784,18 @@ def test_extract_text_outside_tag_drops_unclosed_think_block():
     text = "submitted guidance\n<think>\nunfinished hidden reasoning"
 
     assert extract_text_outside_tag(text, "think") == "submitted guidance"
+
+
+def test_execution_prompt_unwraps_guidance_before_wrapping_once():
+    prompt = build_execution_prompt(
+        problem_prompt="Pack the pieces.",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        guidance="<guidance>\nUse skyline packing.\n</guidance>",
+        solution_language="cpp",
+        solution_contract="Return C++.",
+    )
+
+    assert prompt.user.count("<guidance>") == 1
+    assert prompt.user.count("</guidance>") == 1
+    assert "<guidance>\nUse skyline packing.\n</guidance>" in prompt.user

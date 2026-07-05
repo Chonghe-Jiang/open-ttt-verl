@@ -118,7 +118,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.task_config = _normalize_task_config(task)
+        fallback_task = task if task is not None else self._task_config_from_rollout_config()
+        self.task_config = _normalize_task_config(fallback_task)
         self.task_spec = get_task_spec(str(self.task_config.get("id", "erdos_min_overlap")))
         self.execution_llm_config = execution_llm or self._execution_llm_from_rollout_config() or {
             "provider": "mock",
@@ -131,7 +132,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         if hasattr(self, "rollout_config"):
             self.response_length = self.rollout_config.response_length
 
-    def _execution_llm_from_rollout_config(self) -> dict[str, Any] | None:
+    def _agent_loop_config_from_rollout_config(self) -> dict[str, Any] | None:
         rollout_config = getattr(self, "rollout_config", None)
         agent_config = _config_get(rollout_config, "agent")
         agent_loop_config_path = _config_get(agent_config, "agent_loop_config_path")
@@ -146,12 +147,39 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             for agent_loop_config in loaded:
                 if _config_get(agent_loop_config, "name") not in candidate_names:
                     continue
-                execution_llm = _config_get(agent_loop_config, "execution_llm")
-                if execution_llm:
-                    return OmegaConf.to_container(execution_llm, resolve=True)
+                return _jsonable(OmegaConf.to_container(agent_loop_config, resolve=True))
         except Exception:
             return None
         return None
+
+    def _execution_llm_from_rollout_config(self) -> dict[str, Any] | None:
+        agent_loop_config = self._agent_loop_config_from_rollout_config()
+        if agent_loop_config is None:
+            return None
+        execution_llm = _config_get(agent_loop_config, "execution_llm")
+        if execution_llm:
+            return _jsonable(execution_llm)
+        return None
+
+    def _task_config_from_rollout_config(self) -> dict[str, Any] | None:
+        agent_loop_config = self._agent_loop_config_from_rollout_config()
+        if agent_loop_config is None:
+            return None
+        task_config = _config_get(agent_loop_config, "task")
+        if task_config:
+            return _normalize_task_config(task_config)
+        return None
+
+    def _task_config_for_extra_info(self, extra_info: dict[str, Any], task_spec: TaskSpec) -> dict[str, Any]:
+        extra_task_config = extra_info.get("task_config")
+        if extra_task_config is not None:
+            normalized = _normalize_task_config(extra_task_config)
+            normalized["id"] = str(normalized.get("id") or task_spec.task_id)
+            return normalized
+        task_id = str(extra_info.get("task") or "")
+        if task_id and task_id != str(self.task_config.get("id", "")):
+            return {"id": task_spec.task_id}
+        return self._task_config_for_spec(task_spec)
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> Any:
         if not hasattr(self, "server_manager"):
@@ -159,7 +187,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
 
         extra_info = dict(kwargs.get("extra_info") or {})
         task_spec = self._task_spec_for_extra_info(extra_info)
-        task_config = self._task_config_for_spec(task_spec)
+        task_config = self._task_config_for_extra_info(extra_info, task_spec)
         problem_prompt = self.problem_prompt_override or task_spec.problem_prompt
         library_path = extra_info.get("library_path") or extra_info.get("archive_path")
         if not library_path:

@@ -1,12 +1,12 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_gpt_oss_20b_8gpu_50step
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen8b_actor_gpt_oss_exec_8gpu_50step
-  model_path: /work/mit/ppliang_mit/lsy/models/Qwen3-8B
+  experiment_name: polyomino_qwen8b_actor_gpt_oss_exec_modal_h200_4gpu_smoke
+  model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
-  num_steps: 50
-  total_epochs: 50
+  num_steps: 1
+  total_epochs: 1
   max_prompt_length: 8192
   max_response_length: 4096
   learning_rate: 4.0e-5
@@ -15,19 +15,24 @@ run:
   use_kl_loss: true
   kl_loss_coef: 0.05
   rollout_engine: vllm
-  tensor_model_parallel_size: 8
+  tensor_model_parallel_size: 4
   gpu_memory_utilization: 0.12
-  n_gpus_per_node: 8
+  n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 5
+  save_freq: -1
   test_freq: -1
   val_before_train: false
   prepare_only: false
+  hf_cache_dir: /cache/huggingface
+  ray_temp_dir: /tmp/ray
+  tmp_dir: /tmp/guidance-ttt-tmp
+  triton_cache_dir: /cache/triton
 
 task:
   id: polyomino_packing
   frontiercs:
-    base_dir: /work/mit/ppliang_mit/lsy/reference/Frontier-CS
+    base_dir: /opt/Frontier-CS
+    judge_url: http://127.0.0.1:8081
     problem_id: "0"
     n_cases: 70
     time_limit_s: 2
@@ -43,23 +48,25 @@ ttt:
 llm:
   execution:
     provider: local_vllm
-    model: models/gpt-oss-20b
+    model: openai/gpt-oss-20b
     dtype: auto
     trust_remote_code: true
     reasoning_effort: low
     temperature: 0.35
     top_p: 0.95
-    max_tokens: null
-    phase1_max_tokens: null
-    tensor_model_parallel_size: 8
+    max_tokens: 4096
+    phase1_max_tokens: 4096
+    tensor_model_parallel_size: 4
     gpu_memory_utilization: 0.35
     enforce_eager: true
     max_num_seqs: 8
     max_batch_size: 8
     batch_wait_ms: 50
     max_model_len: 32768
+    download_dir: /cache/huggingface/hub
 
 verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
   - actor_rollout_ref.model.lora_rank=32
   - actor_rollout_ref.model.lora_alpha=32
   - actor_rollout_ref.rollout.load_format=auto

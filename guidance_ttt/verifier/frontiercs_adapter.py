@@ -25,6 +25,7 @@ def evaluate_cpp_solution(
 ) -> FrontierCSResult:
     config = dict(config or {})
     base_dir_value = config.pop("base_dir", None)
+    judge_url = str(config.pop("judge_url", "http://localhost:8081"))
     base_dir = Path(str(base_dir_value)).expanduser().resolve() if base_dir_value else None
     try:
         from frontier_cs import SingleEvaluator
@@ -35,7 +36,7 @@ def evaluate_cpp_solution(
         ) from exc
 
     try:
-        evaluator = SingleEvaluator(register_cleanup=False, base_dir=base_dir)
+        evaluator = SingleEvaluator(register_cleanup=False, base_dir=base_dir, judge_url=judge_url)
         result = evaluator.evaluate("algorithmic", problem_id=str(problem_id), code=code)
     except Exception as exc:
         raise FrontierCSEnvironmentError(

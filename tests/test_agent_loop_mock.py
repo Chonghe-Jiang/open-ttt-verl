@@ -341,6 +341,67 @@ def test_agent_loop_loads_execution_llm_from_legacy_erdos_config_without_default
     }
 
 
+def test_agent_loop_loads_task_config_from_rollout_config_path(tmp_path):
+    config_path = tmp_path / "agent_loop.yaml"
+    config_path.write_text(
+        """
+- name: guidance_execution_task
+  _target_: guidance_ttt.agent_loop.GuidanceExecutionAgentLoop
+  task:
+    id: polyomino_packing
+    frontiercs:
+      base_dir: /opt/Frontier-CS
+      judge_url: http://127.0.0.1:8081
+      problem_id: "0"
+"""
+    )
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.rollout_config = OmegaConf.create(
+        {
+            "agent": {
+                "agent_loop_config_path": str(config_path),
+                "default_agent_loop": "guidance_execution_task",
+            }
+        }
+    )
+
+    task_config = loop._task_config_from_rollout_config()
+
+    assert task_config == {
+        "id": "polyomino_packing",
+        "frontiercs": {
+            "base_dir": "/opt/Frontier-CS",
+            "judge_url": "http://127.0.0.1:8081",
+            "problem_id": "0",
+        },
+    }
+
+
+def test_agent_loop_uses_extra_info_task_config_for_verifier_config():
+    full_task_config = {
+        "id": "polyomino_packing",
+        "frontiercs": {
+            "base_dir": "/opt/Frontier-CS",
+            "judge_url": "http://127.0.0.1:8081",
+            "problem_id": "0",
+        },
+    }
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.task_config = {"id": "erdos_min_overlap"}
+
+    task_config = loop._task_config_for_extra_info(
+        {"task": "polyomino_packing", "task_config": full_task_config},
+        get_task_spec("polyomino_packing"),
+    )
+
+    assert task_config == full_task_config
+    assert _verifier_config_from_task_config(task_config) == {
+        "base_dir": "/opt/Frontier-CS",
+        "judge_url": "http://127.0.0.1:8081",
+        "problem_id": "0",
+    }
+
+
 @pytest.mark.anyio
 async def test_empty_guidance_generation_retries_with_min_tokens():
     class FakeTokenizer:

@@ -233,8 +233,9 @@ guidance_ttt/prompts.py::build_guidance_prompt
 - prompt 会包含 problem、selected/failure raw model summary + verifier score context、目标 raw score、
   输出格式和推荐搜索策略
 - selected/failure context 优先来自 `entry.metadata["raw_model_summary"]`，
-  其次从 `entry.metadata["execution_text"]` 解析 `<summary>`，最后才 fallback 到
-  `entry.summary`；随后追加 verifier status、task raw score label、reward 和 verifier message。
+  其次从 `entry.metadata["execution_text"]` 解析 `<summary>`；不会 fallback 到
+  `entry.summary`。有 entry 但缺 raw summary 时只 attach 占位文本，并追加 verifier status、
+  task raw score label、reward 和 verifier message。
 - 不 attach node id、visits、verified artifacts、previous guidance、reusable idea、failure mode
   或 root 初始构造 facts。
 
@@ -304,10 +305,9 @@ guidance_ttt/prompts.py::extract_guidance_or_format_error
 规则：
 
 1. 如果输出有 `<guidance>...</guidance>`，使用标签内文本，`guidance_format_ok=True`。
-2. 如果没有 `<guidance>`，删除 `<think>...</think>` 内文本后，使用剩余文本，`guidance_format_ok=False`。
-3. 如果只输出了 thinking，没有可用文本，则合成 formatting failure guidance。
+2. 如果没有非空 `<guidance>`，合成 formatting failure guidance，`guidance_format_ok=False`。
 
-这保证 actor 即使格式不完美，也能产生一个可训练的 rollout；但 metadata 会记录格式失败。
+这保证 execution 只消费显式 tagged guidance；metadata 会记录格式失败。
 
 ## Raw Summary Context 构建
 
@@ -321,9 +321,9 @@ guidance 和 execution prompt 行为：
 
 - `entry is None` 时输出 `No previous summary is attached.`
 - 有 entry 时按优先级取 raw model summary：
-  `metadata.raw_model_summary` -> `metadata.execution_text` 里的 `<summary>` -> 老 entry 的
-  `entry.summary` fallback
-- 在 raw model summary 后追加 verifier score block：
+  `metadata.raw_model_summary` -> `metadata.execution_text` 里的 `<summary>`
+- 有 raw model summary 时在其后追加 verifier score block；缺 raw model summary 时输出
+  `No previous summary is attached.` 后追加 verifier score block：
   `Verifier status`、task raw score label、`Reward`、`Verifier message`
 - 不调用 `_clip()`、code block removal、implementation fact extraction 或 profile compaction
 - 不输出 `Entry id`、node visits、verified artifacts、previous guidance、reusable idea 或 failure mode
@@ -474,7 +474,8 @@ guidance_ttt/agent_loop.py::_extract_reusable_idea
 3. 旧格式 `Reusable idea: ...`
 
 这保证 library 内部仍有 canonical summary 可用于结构化分析；prompt attach 则优先使用
-raw model summary + verifier score，老 library entries 仍可 fallback 到 canonical summary。
+raw model summary + verifier score，老 library entries 缺 raw summary 时不会 fallback 到
+canonical summary。
 
 ## Verifier
 

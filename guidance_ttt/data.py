@@ -5,16 +5,26 @@ from pathlib import Path
 from typing import Any
 
 
+def _slot_task_config(task: str, task_config: dict[str, Any] | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": task}
+    if task_config is not None:
+        payload.update(json.loads(json.dumps(task_config)))
+    payload["id"] = str(payload.get("id") or task)
+    return payload
+
+
 def build_slot_records(
     num_slots: int,
     library_path: str,
     task: str = "erdos_min_overlap",
     *,
+    task_config: dict[str, Any] | None = None,
     rollout_n: int = 1,
     puct_c: float = 1.0,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
 ) -> list[dict[str, Any]]:
+    task_config_payload = _slot_task_config(task, task_config)
     return [
         {
             "data_source": "guidance_ttt",
@@ -22,6 +32,7 @@ def build_slot_records(
             "reward_model": {"ground_truth": ""},
             "extra_info": {
                 "task": task,
+                "task_config": json.loads(json.dumps(task_config_payload)),
                 "slot_id": f"slot_{slot_idx}",
                 "uid": f"slot_{slot_idx}",
                 "library_path": library_path,
@@ -43,6 +54,7 @@ def write_slot_parquet(
     num_slots: int,
     library_path: str,
     task: str = "erdos_min_overlap",
+    task_config: dict[str, Any] | None = None,
     rollout_n: int = 1,
     puct_c: float = 1.0,
     max_buffer_size: int = 1000,
@@ -54,6 +66,7 @@ def write_slot_parquet(
         num_slots=num_slots,
         library_path=library_path,
         task=task,
+        task_config=task_config,
         rollout_n=rollout_n,
         puct_c=puct_c,
         max_buffer_size=max_buffer_size,

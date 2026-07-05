@@ -152,6 +152,7 @@ async def test_local_transformers_client_loads_model_lazily_and_uses_chat_messag
 async def test_local_vllm_client_passes_execution_engine_kwargs(monkeypatch):
     llm_client_module._LOCAL_VLLM_CACHE.clear()
     llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    llm_client_module._LOCAL_VLLM_BATCHERS.clear()
     captured = {}
 
     class FakeTokenizer:
@@ -227,6 +228,7 @@ async def test_local_vllm_client_passes_execution_engine_kwargs(monkeypatch):
 async def test_local_vllm_client_uses_remaining_context_when_max_tokens_is_none(monkeypatch):
     llm_client_module._LOCAL_VLLM_CACHE.clear()
     llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    llm_client_module._LOCAL_VLLM_BATCHERS.clear()
     captured = {}
 
     class FakeTokenizer:
@@ -277,57 +279,68 @@ async def test_local_vllm_client_uses_remaining_context_when_max_tokens_is_none(
 
 
 @pytest.mark.anyio
-async def test_local_vllm_client_serializes_concurrent_generate_calls(monkeypatch):
+async def test_local_vllm_client_batches_concurrent_generate_calls(monkeypatch):
     llm_client_module._LOCAL_VLLM_CACHE.clear()
     llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
-    active_generate = 0
-    max_active_generate = 0
-    active_tokenizer = 0
-    max_active_tokenizer = 0
+    llm_client_module._LOCAL_VLLM_BATCHERS.clear()
+    generate_batches = []
 
     class FakeTokenizer:
         def apply_chat_template(self, messages, **kwargs):
-            nonlocal active_tokenizer, max_active_tokenizer
-            active_tokenizer += 1
-            max_active_tokenizer = max(max_active_tokenizer, active_tokenizer)
-            time.sleep(0.03)
-            active_tokenizer -= 1
-            return "formatted prompt"
+            return f"formatted {messages[-1]['content']}"
 
     class FakeGeneration:
-        text = "<execution_thinking>serialized</execution_thinking>\n```python\npass\n```"
+        def __init__(self, text):
+            self.text = text
 
     class FakeRequestOutput:
-        outputs = [FakeGeneration()]
+        def __init__(self, text):
+            self.outputs = [FakeGeneration(text)]
 
     class FakeLLM:
         def get_tokenizer(self):
             return FakeTokenizer()
 
         def generate(self, prompts, sampling_params):
-            nonlocal active_generate, max_active_generate
-            active_generate += 1
-            max_active_generate = max(max_active_generate, active_generate)
+            generate_batches.append(list(prompts))
             time.sleep(0.03)
-            active_generate -= 1
-            return [FakeRequestOutput()]
+            return [
+                FakeRequestOutput(f"<execution_thinking>{prompt}</execution_thinking>\n```python\npass\n```")
+                for prompt in prompts
+            ]
 
     monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
     monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: kwargs)
-    client = LocalVLLMLLMClient({"provider": "local_vllm", "model": "models/gpt-oss-20b"})
-    request = LLMRequest(
+    client = LocalVLLMLLMClient(
+        {
+            "provider": "local_vllm",
+            "model": "models/gpt-oss-20b",
+            "batch_wait_ms": 50,
+            "max_batch_size": 8,
+        }
+    )
+    request_one = LLMRequest(
         system="system prompt",
-        user="user prompt",
+        user="user one",
+        model="models/gpt-oss-20b",
+        temperature=0.0,
+        max_tokens=16,
+        metadata={"purpose": "execution"},
+    )
+    request_two = LLMRequest(
+        system="system prompt",
+        user="user two",
         model="models/gpt-oss-20b",
         temperature=0.0,
         max_tokens=16,
         metadata={"purpose": "execution"},
     )
 
-    await asyncio.gather(client.complete(request), client.complete(request))
+    response_one, response_two = await asyncio.gather(client.complete(request_one), client.complete(request_two))
 
-    assert max_active_generate == 1
-    assert max_active_tokenizer == 1
+    assert generate_batches == [["formatted user one", "formatted user two"]]
+    assert response_one.text.startswith("<execution_thinking>formatted user one")
+    assert response_two.text.startswith("<execution_thinking>formatted user two")
 
 
 @pytest.mark.anyio

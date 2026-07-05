@@ -23,9 +23,7 @@ def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
         parsed_summary = extract_tag_or_none(execution_text, "summary")
         if parsed_summary:
             return parsed_summary
-    if entry.summary is None or entry.summary == "":
-        return None
-    return entry.summary
+    return None
 
 
 def _score_for_prompt(entry: LibraryEntry, *, raw_score_label: str) -> str:
@@ -45,7 +43,7 @@ def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str, raw_sc
         return fallback
     raw_summary = _raw_model_summary_for_prompt(entry)
     if raw_summary is None:
-        return fallback
+        return f"{fallback}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
     return f"{raw_summary}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
 
 
@@ -169,6 +167,7 @@ def build_execution_prompt(
     raw_score_label: str = "Score",
 ) -> Prompt:
     _ = global_best_entries
+    prompt_guidance = _unwrap_redundant_tag(guidance, "guidance") or guidance.strip()
     fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
     language_name = "C++17" if fenced_language == "cpp" else "Python"
     placeholder = (
@@ -190,7 +189,7 @@ The next sections describe the current search state for this problem.
 </selected_summary>
 
 <guidance>
-{guidance}
+{prompt_guidance}
 </guidance>
 
 Use the problem statement as the authoritative task specification.
@@ -200,9 +199,11 @@ Implement one concrete solution that follows the guidance while satisfying the p
 {contract}
 
 Return exactly these three blocks:
+If you omit any required XML block, the attempt will be treated as invalid.
 
 <execution_thinking>
 Briefly explain how the guidance was translated into the submitted solution.
+Do not place the summary inside <execution_thinking>.
 </execution_thinking>
 
 <solution>
@@ -212,6 +213,7 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
+The <summary>...</summary> block is required.
 Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 """
@@ -233,11 +235,42 @@ def extract_tag(text: str, tag: str) -> str:
 
 
 def extract_tag_or_none(text: str, tag: str) -> str | None:
-    start = text.find(f"<{tag}>")
-    end = text.find(f"</{tag}>")
-    if start == -1 or end == -1 or end <= start:
+    open_tag = f"<{tag}>"
+    close_tag = f"</{tag}>"
+    start = text.find(open_tag)
+    if start == -1:
         return None
-    return text[start + len(tag) + 2 : end].strip()
+    cursor = start + len(open_tag)
+    depth = 1
+    while depth > 0:
+        next_open = text.find(open_tag, cursor)
+        next_close = text.find(close_tag, cursor)
+        if next_close == -1:
+            return None
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            cursor = next_open + len(open_tag)
+            continue
+        depth -= 1
+        if depth == 0:
+            return text[start + len(open_tag) : next_close].strip()
+        cursor = next_close + len(close_tag)
+    return None
+
+
+def _unwrap_redundant_tag(text: str, tag: str) -> str:
+    value = text.strip()
+    while value:
+        inner = extract_tag_or_none(value, tag)
+        if inner is None:
+            break
+        outside = extract_text_outside_tag(value, tag)
+        if outside:
+            break
+        if inner.strip() == value:
+            break
+        value = inner.strip()
+    return value
 
 
 def extract_text_outside_tag(text: str, tag: str) -> str:
@@ -261,11 +294,15 @@ def extract_text_outside_tag(text: str, tag: str) -> str:
 
 def extract_guidance_or_format_error(text: str) -> tuple[str, bool]:
     guidance = extract_tag_or_none(text, "guidance")
-    if guidance:
-        return guidance, True
-    outside_think = extract_text_outside_tag(text, "think")
-    if outside_think:
-        return outside_think, False
+    if guidance is not None:
+        unwrapped_guidance = _unwrap_redundant_tag(guidance, "guidance")
+        if unwrapped_guidance:
+            return unwrapped_guidance, True
+        return _guidance_format_error()
+    return _guidance_format_error()
+
+
+def _guidance_format_error() -> tuple[str, bool]:
     return (
         "Hypothesis: The guidance model did not emit a valid <guidance> block.\n"
         "Plan:\n"

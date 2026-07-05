@@ -74,6 +74,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         num_slots=int(ttt_cfg["groups_per_batch"]),
         library_path=str(library_path),
         task=task_spec.task_id,
+        task_config=task_cfg,
         rollout_n=int(ttt_cfg["group_size"]),
         puct_c=float(ttt_cfg.get("puct_c", 1.0)),
         max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),

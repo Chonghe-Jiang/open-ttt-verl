@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 import urllib.error
@@ -140,6 +141,7 @@ _LOCAL_PIPELINE_CACHE: dict[str, Callable] = {}
 _LOCAL_PIPELINE_CACHE_LOCK = threading.Lock()
 _LOCAL_VLLM_CACHE: dict[str, Any] = {}
 _LOCAL_VLLM_GENERATE_LOCKS: dict[str, threading.Lock] = {}
+_LOCAL_VLLM_BATCHERS: dict[str, "_LocalVLLMBatcher"] = {}
 _LOCAL_VLLM_CACHE_LOCK = threading.Lock()
 
 
@@ -322,7 +324,7 @@ class LocalVLLMLLMClient:
         self._llm = None
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        text = await asyncio.to_thread(self._complete_sync, request)
+        text = await asyncio.to_thread(self._get_batcher().complete, request)
         return LLMResponse(
             text=text,
             model=self.model,
@@ -332,18 +334,9 @@ class LocalVLLMLLMClient:
         )
 
     def _complete_sync(self, request: LLMRequest) -> str:
-        llm = self._get_llm()
-        # vLLM's offline LLM engine and tokenizer are not thread-safe. Agent
-        # loops can call the executor concurrently for group rollouts, so
-        # serialize prompt formatting, token counting, sampling-params creation,
-        # and generation per engine.
-        with self._get_generate_lock():
-            prompt = self._format_prompt(llm, request)
-            sampling_params = self._sampling_params(request, prompt=prompt, llm=llm)
-            outputs = llm.generate([prompt], sampling_params=sampling_params)
-        if not outputs:
-            return ""
-        first = outputs[0]
+        return self._get_batcher().complete(request)
+
+    def _extract_vllm_text(self, first) -> str:
         generations = getattr(first, "outputs", None) or []
         if not generations:
             return ""
@@ -404,6 +397,99 @@ class LocalVLLMLLMClient:
                 lock = threading.Lock()
                 _LOCAL_VLLM_GENERATE_LOCKS[self._cache_key] = lock
             return lock
+
+    def _get_batcher(self) -> "_LocalVLLMBatcher":
+        with _LOCAL_VLLM_CACHE_LOCK:
+            batcher = _LOCAL_VLLM_BATCHERS.get(self._cache_key)
+            if batcher is None:
+                batcher = _LocalVLLMBatcher(self)
+                _LOCAL_VLLM_BATCHERS[self._cache_key] = batcher
+            return batcher
+
+
+class _LocalVLLMBatchItem:
+    def __init__(self, request: LLMRequest):
+        self.request = request
+        self.text = ""
+        self.error: BaseException | None = None
+        self.done = False
+
+
+class _LocalVLLMBatcher:
+    def __init__(self, client: LocalVLLMLLMClient):
+        self.client = client
+        self.max_batch_size = max(
+            1,
+            int(client.config.get("max_batch_size", client.config.get("max_num_seqs", 8))),
+        )
+        self.batch_wait_s = max(0.0, float(client.config.get("batch_wait_ms", 20)) / 1000.0)
+        self._condition = threading.Condition()
+        self._queue: list[_LocalVLLMBatchItem] = []
+        self._leader_active = False
+
+    def complete(self, request: LLMRequest) -> str:
+        item = _LocalVLLMBatchItem(request)
+        with self._condition:
+            self._queue.append(item)
+            self._condition.notify_all()
+
+        while True:
+            batch = self._take_batch_or_wait(item)
+            if batch is not None:
+                self._run_batch(batch)
+                with self._condition:
+                    self._leader_active = False
+                    self._condition.notify_all()
+
+            with self._condition:
+                if item.done:
+                    if item.error is not None:
+                        raise item.error
+                    return item.text
+
+    def _take_batch_or_wait(self, item: _LocalVLLMBatchItem) -> list[_LocalVLLMBatchItem] | None:
+        with self._condition:
+            if item.done:
+                return None
+            if self._leader_active:
+                self._condition.wait()
+                return None
+            self._leader_active = True
+            deadline = time.monotonic() + self.batch_wait_s
+            while len(self._queue) < self.max_batch_size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            batch = self._queue[: self.max_batch_size]
+            del self._queue[: len(batch)]
+            return batch
+
+    def _run_batch(self, batch: list[_LocalVLLMBatchItem]) -> None:
+        try:
+            llm = self.client._get_llm()
+            prompts = []
+            sampling_params = []
+            for item in batch:
+                prompt = self.client._format_prompt(llm, item.request)
+                prompts.append(prompt)
+                sampling_params.append(self.client._sampling_params(item.request, prompt=prompt, llm=llm))
+            generate_sampling_params = sampling_params[0] if len(sampling_params) == 1 else sampling_params
+            outputs = llm.generate(prompts, sampling_params=generate_sampling_params)
+            texts = [self.client._extract_vllm_text(output) for output in (outputs or [])]
+            if len(texts) < len(batch):
+                texts.extend([""] * (len(batch) - len(texts)))
+            with self._condition:
+                for item, text in zip(batch, texts, strict=False):
+                    item.text = text
+                    item.done = True
+                self._condition.notify_all()
+        except BaseException as exc:
+            with self._condition:
+                for item in batch:
+                    item.error = exc
+                    item.done = True
+                self._condition.notify_all()
 
 
 def _extract_local_generated_text(result) -> str:

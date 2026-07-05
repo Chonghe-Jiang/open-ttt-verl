@@ -114,7 +114,8 @@ local_failure_entries = context["local_failure_entries"]
 
 - Guidance prompt 和 execution prompt 都 attach lightweight context: raw model
   `<summary>` plus verifier score/status/message。不会直接 attach canonical
-  `entry.summary` 的 6-section 大块内容，除非老 library entry 缺少 raw summary 来源。
+  `entry.summary` 的 6-section 大块内容；老 library entry 缺少 raw summary 时只 attach
+  占位文本和 verifier score/status/message。
 - Guidance prompt 和 execution prompt 都不 attach global best summary。当前实现只把
   PUCT-selected entry 的 raw summary + 分数作为主历史上下文；guidance prompt 另外保留
   local failure raw summaries。
@@ -129,7 +130,7 @@ Guidance 和 execution prompt 都使用 `_raw_summary_for_prompt(entry, fallback
 但这里的 “raw summary” 指 execution model 原始 `<summary>`，不是
 `LibraryEntry.summary` 里的 canonical summary。
 
-没有 previous entry、且无法找到 raw summary 时：
+没有 previous entry 时：
 
 ```text
 No previous summary is attached.
@@ -140,10 +141,9 @@ No previous summary is attached.
 ```text
 1. entry.metadata["raw_model_summary"]
 2. entry.metadata["execution_text"] 中的 <summary>...</summary>
-3. entry.summary 作为老 library entry 的兼容 fallback
 ```
 
-然后追加 verifier score block：
+如果有 raw summary，则 attach：
 
 ```text
 {raw model summary}
@@ -154,10 +154,21 @@ Reward: {entry.verifier_reward}
 Verifier message: {entry.verifier_message}
 ```
 
+如果 entry 存在但 raw summary 缺失，则 attach：
+
+```text
+No previous summary is attached.
+
+Verifier status: {entry.verifier_status}
+{task raw score label}: {entry.verifier_raw_score}
+Reward: {entry.verifier_reward}
+Verifier message: {entry.verifier_message}
+```
+
 该 helper 不做 clipping、code removal、implementation fact extraction 或 profile
 compaction。新 library entry 的 prompt context 通常不包含 solution code，因为 execution
-prompt 要求 raw `<summary>` 不包含 code；如果老 entry 只能 fallback 到 canonical
-`entry.summary`，则可能仍然带上旧的 canonical 内容。
+prompt 要求 raw `<summary>` 不包含 code；缺少 raw summary 的老 entry 不会 fallback 到
+canonical `entry.summary`。
 
 ## Task Registry
 
@@ -284,9 +295,6 @@ best 的 summary 不再 attach 到 guidance prompt。
 If raw output has <guidance>...</guidance>:
   submitted guidance = text inside <guidance>
   guidance_format_ok = true
-Else if raw output has non-empty text outside <think>...</think>:
-  submitted guidance = outside-think text
-  guidance_format_ok = false
 Else:
   submitted guidance = synthetic formatting-failure guidance
   guidance_format_ok = false
@@ -356,9 +364,11 @@ Implement one concrete solution that follows the guidance while satisfying the p
 {solution_contract}
 
 Return exactly these three blocks:
+If you omit any required XML block, the attempt will be treated as invalid.
 
 <execution_thinking>
 Briefly explain how the guidance was translated into the submitted solution.
+Do not place the summary inside <execution_thinking>.
 </execution_thinking>
 
 <solution>
@@ -368,6 +378,7 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
+The <summary>...</summary> block is required.
 Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
 </summary>
 ````

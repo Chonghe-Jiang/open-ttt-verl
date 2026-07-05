@@ -40,6 +40,7 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     }
     slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
     assert slots[0]["extra_info"]["task"] == "erdos_min_overlap"
+    assert slots[0]["extra_info"]["task_config"] == {"id": "erdos_min_overlap"}
     assert slots[0]["extra_info"]["rollout_n"] == 3
     assert slots[0]["extra_info"]["group_size"] == 3
     assert slots[0]["extra_info"]["puct_c"] == 1.5
@@ -92,6 +93,7 @@ def test_prepare_run_supports_polyomino_task_config(tmp_path):
     assert len(root_nodes) == 2
     slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
     assert slots[0]["extra_info"]["task"] == "polyomino_packing"
+    assert slots[0]["extra_info"]["task_config"] == config["task"]
     data = yaml.safe_load(Path(prepared["agent_loop_config"]).read_text())
     assert data[0]["name"] == "guidance_execution_task"
     assert data[0]["task"] == config["task"]

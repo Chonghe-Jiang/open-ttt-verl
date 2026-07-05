@@ -64,9 +64,7 @@ def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
         parsed_summary = extract_tag_or_none(execution_text, "summary")
         if parsed_summary:
             return parsed_summary
-    if entry.summary is None or entry.summary == "":
-        return None
-    return entry.summary
+    return None
 
 
 def _score_for_prompt(entry: LibraryEntry, *, raw_score_label: str) -> str:
@@ -86,7 +84,7 @@ def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str, raw_sc
         return fallback
     raw_summary = _raw_model_summary_for_prompt(entry)
     if raw_summary is None:
-        return fallback
+        return f"{fallback}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
     return f"{raw_summary}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
 ````
 
