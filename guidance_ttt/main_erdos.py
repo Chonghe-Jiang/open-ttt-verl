@@ -175,6 +175,10 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_NO_USAGE_STATS='1'",
         f"+ray_kwargs.ray_init.runtime_env.env_vars.VERL_VLLM_ZMQ_SUFFIX={zmq_suffix}",
     ]
+    for env_name in ("CC", "CXX", "CUDAHOSTCXX"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            overrides.append(f"+ray_kwargs.ray_init.runtime_env.env_vars.{env_name}={env_value}")
     overrides.extend(config.get("verl_overrides", []))
     overrides.extend(extra_overrides)
     return overrides
