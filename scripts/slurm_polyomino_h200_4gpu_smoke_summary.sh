@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=poly-ttt-summary
+#SBATCH --job-name=poly-smoke-summary
 #SBATCH -p mit_preemptable
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:h200:4
-#SBATCH --time=12:00:00
-#SBATCH -c 64
-#SBATCH --mem=500G
+#SBATCH --time=02:00:00
+#SBATCH -c 32
+#SBATCH --mem=300G
 #SBATCH --account=mit_general
 #SBATCH --qos=normal
 #SBATCH --output=slurm_%j.out
@@ -29,8 +29,8 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 export START_FRONTIER_JUDGE="${START_FRONTIER_JUDGE:-1}"
-export CONFIG="${CONFIG:-guidance_ttt/config/polyomino_h200_4gpu_single_summary.yaml}"
-export OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_single_summary}"
+export CONFIG="${CONFIG:-guidance_ttt/config/polyomino_h200_4gpu_smoke_summary.yaml}"
+export OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_smoke_summary}"
 export FRONTIERCS_DIR="${FRONTIERCS_DIR:-/home/qua/code/reference/Frontier-CS}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-8B}"
 export EXECUTION_MODEL="${EXECUTION_MODEL:-openai/gpt-oss-20b}"

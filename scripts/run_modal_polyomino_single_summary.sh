@@ -14,6 +14,7 @@ JUDGE_URL="${JUDGE_URL:-http://127.0.0.1:8081}"
 START_FRONTIER_JUDGE="${START_FRONTIER_JUDGE:-0}"
 RESET_OUTPUT_DIR="${RESET_OUTPUT_DIR:-1}"
 RUN_LOG="${RUN_LOG:-$OUTPUT_DIR/train.log}"
+ALLOW_FALLBACK_SUMMARY="${ALLOW_FALLBACK_SUMMARY:-1}"
 
 export NCCL_NET="${NCCL_NET:-Socket}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
@@ -38,7 +39,35 @@ if [[ -n "$APPTAINER_IMAGE" ]]; then
   export CC="${CONTAINER_CC:-/usr/bin/gcc}"
   export CXX="${CONTAINER_CXX:-/usr/bin/g++}"
   export CUDAHOSTCXX="${CONTAINER_CUDAHOSTCXX:-$CXX}"
-  PYTHON_RUN=(apptainer exec --nv --bind /home/qua/code:/home/qua/code "$APPTAINER_IMAGE" "$PYTHON_BIN")
+  if ! command -v apptainer >/dev/null 2>&1 && ! [[ -x /usr/bin/apptainer ]]; then
+    for module_init in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /usr/share/lmod/lmod/init/bash; do
+      if [[ -f "$module_init" ]]; then
+        # shellcheck disable=SC1090
+        source "$module_init"
+        break
+      fi
+    done
+    if command -v module >/dev/null 2>&1; then
+      module load apptainer/1.4.2 >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ -n "${CONTAINER_RUNTIME_BIN:-}" ]]; then
+    CONTAINER_RUNTIME="$CONTAINER_RUNTIME_BIN"
+  elif command -v apptainer >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="$(command -v apptainer)"
+  elif [[ -x /usr/bin/apptainer ]]; then
+    CONTAINER_RUNTIME="/usr/bin/apptainer"
+  elif command -v singularity >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="$(command -v singularity)"
+  elif [[ -x /usr/bin/singularity ]]; then
+    CONTAINER_RUNTIME="/usr/bin/singularity"
+  else
+    echo "No apptainer or singularity runtime found; set CONTAINER_RUNTIME_BIN" >&2
+    exit 127
+  fi
+  export CONTAINER_RUNTIME_BIN="$CONTAINER_RUNTIME"
+  echo "CONTAINER_RUNTIME_BIN=$CONTAINER_RUNTIME_BIN"
+  PYTHON_RUN=("$CONTAINER_RUNTIME_BIN" exec --nv --bind /home/qua/code:/home/qua/code "$APPTAINER_IMAGE" "$PYTHON_BIN")
 fi
 
 judge_pid=""
@@ -446,6 +475,10 @@ on_error() {
   write_run_summary_if_possible
   write_step_io_log || log_status="$?"
   if [[ "$ensure_status" == "0" ]] && [[ "$log_status" == "0" ]] && validate_step_summary; then
+    if [[ "$ALLOW_FALLBACK_SUMMARY" != "1" ]]; then
+      echo "fallback summary written, but ALLOW_FALLBACK_SUMMARY=$ALLOW_FALLBACK_SUMMARY; preserving failure status $status" >&2
+      exit "$status"
+    fi
     echo "fallback summary written; treating requested one-step summary artifact as complete" >&2
     exit 0
   fi
