@@ -14,3 +14,4 @@ reference/
 pytest-of-*/
 torchinductor_*/
 *.egg-info/
+.env

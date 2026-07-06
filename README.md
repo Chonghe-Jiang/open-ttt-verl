@@ -127,7 +127,31 @@ Then launch from the repository root:
 modal run scripts/modal_polyomino_h200_smoke.py --action verifier
 modal run scripts/modal_polyomino_h200_smoke.py --action train
 modal run scripts/modal_polyomino_h200_smoke.py --action train_history
+modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary
 ```
+
+For the one-summary Modal run, use:
+
+```bash
+scripts/run_modal_polyomino_single_summary.sh
+```
+
+The launcher uses `modal run --detach` so the remote training function is not
+stopped if the local client disconnects during model loading.
+
+The launcher requires `.env` to contain `WORKSPACE=<modal-workspace-name-or-id>`.
+Before submitting the H200 job, it checks `modal token info` and exits unless
+the active Modal token is connected to that exact workspace name or workspace
+id. If `WORKSPACE` also matches a local Modal profile name, the launcher exports
+it as `MODAL_PROFILE` before running Modal.
+
+If `.env` contains `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, the launcher exports
+both before calling Modal, so those credentials take precedence over the active
+profile. `MODAL_SECRET_KEY` is also accepted as a compatibility alias for
+`MODAL_TOKEN_SECRET`. If `.env` contains only `MODAL_TOKEN_ID`, the launcher
+looks for a matching token id in `~/.modal.toml` and uses that saved token
+secret. A token id with no matching secret is rejected because Modal API token
+auth requires both values.
 
 Actions:
 
@@ -140,6 +164,14 @@ Actions:
   `guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml`. This is
   the cheaper check for guidance parsing, raw execution summary extraction,
   canonical library summary writing, and execution text capture.
+- `train_single_summary`: runs a 2xH200 one-step Polyomino config with
+  `Qwen/Qwen3-8B` as the guidance actor and `openai/gpt-oss-20b` as the local
+  vLLM execution model. It uses one slot with the minimum two rollouts required
+  by verl, prunes the output to the best guided entry, then validates that
+  `library.json` contains exactly one valid entry with a summary.
+- `prune_single_summary`: re-validates and prunes an existing
+  `polyomino_modal_h200_2gpu_single_summary` output directory without rerunning
+  the GPU training step.
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -155,6 +187,7 @@ Training outputs are written to:
 ```text
 /runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
+/runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
 ```
 
 The smoke configs intentionally keep only the training shape small: `num_steps`,

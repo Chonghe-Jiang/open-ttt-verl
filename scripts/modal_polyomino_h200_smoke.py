@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import json
+import os
+import re
 import shutil
 import subprocess
+import sys
+import tomllib
 import time
 from pathlib import Path
-
-import modal
 
 
 APP_NAME = "guidance-ttt-polyomino-h200-smoke"
@@ -18,9 +21,166 @@ REMOTE_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h20
 REMOTE_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke"
 REMOTE_HISTORY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml"
 REMOTE_HISTORY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke"
+REMOTE_SINGLE_SUMMARY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_single_summary.yaml"
+REMOTE_SINGLE_SUMMARY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary"
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _strip_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _load_dotenv_key(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name.startswith("export "):
+            name = name.removeprefix("export ").strip()
+        if name == key:
+            return _strip_env_value(value)
+    return None
+
+
+def _load_dotenv_keys(path: Path, keys: set[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name.startswith("export "):
+            name = name.removeprefix("export ").strip()
+        if name in keys:
+            values[name] = _strip_env_value(value)
+    return values
+
+
+def _configure_modal_auth(env_path: Path = REPO_ROOT / ".env") -> dict[str, str]:
+    dotenv_values = _load_dotenv_keys(env_path, {"WORKSPACE", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MODAL_SECRET_KEY"})
+    if "MODAL_TOKEN_SECRET" not in dotenv_values and dotenv_values.get("MODAL_SECRET_KEY"):
+        dotenv_values["MODAL_TOKEN_SECRET"] = dotenv_values["MODAL_SECRET_KEY"]
+    if "MODAL_TOKEN_SECRET" not in os.environ and os.environ.get("MODAL_SECRET_KEY"):
+        os.environ["MODAL_TOKEN_SECRET"] = os.environ["MODAL_SECRET_KEY"]
+    for key in ("WORKSPACE", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"):
+        if key not in os.environ and dotenv_values.get(key):
+            os.environ[key] = dotenv_values[key]
+    if os.environ.get("MODAL_TOKEN_ID") and not os.environ.get("MODAL_TOKEN_SECRET"):
+        token_secret = _modal_token_secret_for_id(os.environ["MODAL_TOKEN_ID"])
+        if token_secret:
+            os.environ["MODAL_TOKEN_SECRET"] = token_secret
+    return {key: os.environ[key] for key in ("WORKSPACE", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET") if key in os.environ}
+
+
+def _validate_modal_token_env() -> None:
+    has_token_id = bool(os.environ.get("MODAL_TOKEN_ID"))
+    has_token_secret = bool(os.environ.get("MODAL_TOKEN_SECRET"))
+    if has_token_id != has_token_secret:
+        missing = "MODAL_TOKEN_SECRET" if has_token_id else "MODAL_TOKEN_ID"
+        present = "MODAL_TOKEN_ID" if has_token_id else "MODAL_TOKEN_SECRET"
+        raise RuntimeError(
+            f".env defines {present} but not {missing}. Modal API token auth requires both values; "
+            "no matching token secret for that id was found in ~/.modal.toml."
+        )
+
+
+def _modal_token_secret_for_id(token_id: str, path: Path | None = None) -> str | None:
+    config_path = path or (Path.home() / ".modal.toml")
+    if not config_path.exists():
+        return None
+    data = tomllib.loads(config_path.read_text())
+    for section in data.values():
+        if isinstance(section, dict) and section.get("token_id") == token_id:
+            token_secret = section.get("token_secret")
+            return str(token_secret) if token_secret else None
+    return None
+
+
+def _sync_modal_profile(profile: str) -> None:
+    modal_config = importlib.import_module("modal.config")
+    if hasattr(modal_config, "_profile"):
+        setattr(modal_config, "_profile", profile)
+
+
+def _modal_profile_names(path: Path | None = None) -> set[str]:
+    config_path = path or (Path.home() / ".modal.toml")
+    if not config_path.exists():
+        return set()
+    data = tomllib.loads(config_path.read_text())
+    return {str(name) for name, section in data.items() if isinstance(section, dict)}
+
+
+def _configure_modal_profile(env_path: Path = REPO_ROOT / ".env") -> str | None:
+    workspace = os.environ.get("WORKSPACE") or _load_dotenv_key(env_path, "WORKSPACE")
+    if workspace and "MODAL_PROFILE" not in os.environ and workspace in _modal_profile_names():
+        os.environ["MODAL_PROFILE"] = workspace
+        _sync_modal_profile(workspace)
+    return workspace
+
+
+def _parse_modal_token_workspace(token_info: str) -> tuple[str, str]:
+    match = re.search(r"^Workspace:\s*(?P<name>.*?)\s*\((?P<id>[^)]+)\)\s*$", token_info, re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"Could not parse workspace from modal token info:\n{token_info}")
+    return match.group("name"), match.group("id")
+
+
+def _current_modal_token_workspace() -> tuple[str, str]:
+    result = subprocess.run(
+        ["modal", "token", "info"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return _parse_modal_token_workspace(result.stdout)
+
+
+def _should_validate_modal_workspace() -> bool:
+    if os.environ.get("MODAL_IS_REMOTE") == "1":
+        return False
+    if os.environ.get("GUIDANCE_TTT_SKIP_MODAL_WORKSPACE_CHECK"):
+        return False
+    if os.environ.get("GUIDANCE_TTT_ENFORCE_MODAL_WORKSPACE"):
+        return True
+    return "modal_polyomino_h200_smoke.py" in "\n".join(sys.argv)
+
+
+def _validate_modal_workspace(expected_workspace: str | None) -> None:
+    if not expected_workspace:
+        raise RuntimeError(".env must contain WORKSPACE=<modal-workspace-name-or-id>.")
+    actual_name, actual_id = _current_modal_token_workspace()
+    if expected_workspace not in {actual_name, actual_id}:
+        raise RuntimeError(
+            "Modal token workspace does not match .env WORKSPACE.\n"
+            f"  .env WORKSPACE: {expected_workspace}\n"
+            f"  token workspace: {actual_name} ({actual_id})\n\n"
+            "Create or set a Modal token that is actually connected to the .env workspace, then retry:\n"
+            f"  modal token new --profile {expected_workspace!r} --activate\n"
+            "  modal token info\n\n"
+            "The token-info Workspace line must show the .env workspace name or id."
+        )
+
+
+MODAL_AUTH = _configure_modal_auth()
+MODAL_WORKSPACE = _configure_modal_profile()
+if _should_validate_modal_workspace():
+    _validate_modal_token_env()
+    _validate_modal_workspace(MODAL_WORKSPACE)
+
+import modal  # noqa: E402
 
 app = modal.App(APP_NAME)
 runs_volume = modal.Volume.from_name("guidance-ttt-runs", create_if_missing=True)
@@ -44,6 +204,16 @@ def history_training_command() -> list[str]:
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_HISTORY_CONFIG_PATH,
+    ]
+
+
+def single_summary_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_SINGLE_SUMMARY_CONFIG_PATH,
     ]
 
 
@@ -282,6 +452,99 @@ def _summarize_history_extraction(output_dir: str = REMOTE_HISTORY_OUTPUT_DIR) -
     }
 
 
+def _entry_single_summary_rank(entry: dict[str, object]) -> tuple[int, int, int, int, float, str]:
+    metadata = entry.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    raw_score = entry.get("verifier_raw_score")
+    reward = entry.get("verifier_reward")
+    numeric_score = raw_score if raw_score is not None else reward
+    try:
+        score = float(numeric_score)
+    except (TypeError, ValueError):
+        score = float("-inf")
+    return (
+        1 if str(entry.get("verifier_status")) == "valid" else 0,
+        1 if bool(metadata.get("guidance_format_ok")) and str(entry.get("guidance") or "").strip() else 0,
+        1 if str(entry.get("summary") or "").strip() else 0,
+        1 if str(metadata.get("execution_text") or "").strip() else 0,
+        score,
+        str(entry.get("id") or ""),
+    )
+
+
+def _prune_to_single_summary(output_dir: str = REMOTE_SINGLE_SUMMARY_OUTPUT_DIR) -> dict[str, object]:
+    library_path = Path(output_dir) / "library.json"
+    if not library_path.exists():
+        return {"output_dir": output_dir, "library_exists": False}
+    data = json.loads(library_path.read_text())
+    entries = data.get("entries") or {}
+    if not isinstance(entries, dict) or len(entries) <= 1:
+        return {"output_dir": output_dir, "library_exists": True, "entry_count": len(entries)}
+
+    chosen_id, chosen_entry = max(
+        ((entry_id, entry) for entry_id, entry in entries.items() if isinstance(entry, dict)),
+        key=lambda item: _entry_single_summary_rank(item[1]),
+    )
+    nodes = data.get("nodes") or {}
+    chosen_node_id = None
+    for node_id, node in nodes.items():
+        if isinstance(node, dict) and node.get("entry_id") == chosen_id:
+            chosen_node_id = node_id
+            break
+
+    keep_node_ids: set[str] = set()
+    current_node_id = chosen_node_id
+    while current_node_id and current_node_id in nodes:
+        keep_node_ids.add(current_node_id)
+        parent_id = nodes[current_node_id].get("parent_id") if isinstance(nodes[current_node_id], dict) else None
+        current_node_id = str(parent_id) if parent_id else None
+    for node_id, node in nodes.items():
+        if isinstance(node, dict) and node.get("entry_id") is None:
+            keep_node_ids.add(node_id)
+
+    pruned_nodes = {
+        node_id: node
+        for node_id, node in nodes.items()
+        if node_id in keep_node_ids and isinstance(node, dict)
+    }
+    for node_id, node in pruned_nodes.items():
+        children = node.get("children") or []
+        node["children"] = [child for child in children if child in pruned_nodes]
+        if node.get("entry_id") not in {None, chosen_id}:
+            node["entry_id"] = None
+    if chosen_node_id:
+        data["best_node_id"] = chosen_node_id
+
+    groups = data.get("groups") or {}
+    if isinstance(groups, dict):
+        for group in groups.values():
+            if not isinstance(group, dict):
+                continue
+            group["children"] = [child for child in (group.get("children") or []) if child == chosen_node_id]
+            group["submitted"] = 1 if group["children"] else 0
+            group["finalized"] = bool(group["children"])
+
+    if isinstance(data.get("config"), dict):
+        data["config"]["rollout_n"] = 1
+    data["rollout_n"] = 1
+    data["entries"] = {chosen_id: chosen_entry}
+    data["nodes"] = pruned_nodes
+    data.setdefault("metadata", {})
+    if isinstance(data["metadata"], dict):
+        data["metadata"]["single_summary_pruned_from_entries"] = len(entries)
+        data["metadata"]["single_summary_chosen_entry_id"] = chosen_id
+    library_path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    return {
+        "output_dir": output_dir,
+        "library_exists": True,
+        "entry_count": 1,
+        "chosen_entry_id": chosen_id,
+        "chosen_node_id": chosen_node_id,
+        "pruned_from_entry_count": len(entries),
+    }
+
+
 def _validate_history_extraction(summary: dict[str, object]) -> None:
     entry_count = int(summary.get("entry_count", 0))
     if entry_count <= 0:
@@ -289,6 +552,17 @@ def _validate_history_extraction(summary: dict[str, object]) -> None:
     for key in ("guidance_ok_count", "raw_summary_ok_count", "canonical_summary_ok_count", "execution_text_ok_count"):
         if int(summary.get(key, 0)) <= 0:
             raise RuntimeError(f"History smoke missing {key}: {summary}")
+
+
+def _validate_single_summary_extraction(summary: dict[str, object]) -> None:
+    if int(summary.get("entry_count", 0)) != 1:
+        raise RuntimeError(f"Single-summary smoke should write exactly one library entry: {summary}")
+    for key in ("guidance_ok_count", "canonical_summary_ok_count", "execution_text_ok_count"):
+        if int(summary.get(key, 0)) != 1:
+            raise RuntimeError(f"Single-summary smoke missing {key}: {summary}")
+    statuses = summary.get("statuses") or {}
+    if not isinstance(statuses, dict) or int(statuses.get("valid", 0)) != 1:
+        raise RuntimeError(f"Single-summary smoke should keep exactly one valid entry: {summary}")
 
 
 def _build_frontier_runtime(image: modal.Image) -> modal.Image:
@@ -517,6 +791,51 @@ def train_history_smoke() -> dict[str, object]:
         _stop_judge(judge)
 
 
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(single_summary_training_command(), cwd=REMOTE_REPO_DIR)
+        prune_summary = _prune_to_single_summary(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        summary = _summarize_output(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "single_summary_prune": prune_summary, "history_extraction": history_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        _validate_single_summary_extraction(history_summary)
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    timeout=30 * 60,
+    cpu=4,
+    memory=8192,
+    volumes={"/runs": runs_volume},
+)
+def prune_single_summary_smoke() -> dict[str, object]:
+    prune_summary = _prune_to_single_summary(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+    summary = _summarize_output(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+    history_summary = _summarize_history_extraction(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+    merged_summary = {**summary, "single_summary_prune": prune_summary, "history_extraction": history_summary}
+    print(json.dumps(merged_summary, indent=2), flush=True)
+    _validate_single_summary_extraction(history_summary)
+    runs_volume.commit()
+    return merged_summary
+
+
 @app.local_entrypoint()
 def main(action: str = "train"):
     if action == "verifier":
@@ -525,5 +844,13 @@ def main(action: str = "train"):
         print(train_smoke.remote())
     elif action == "train_history":
         print(train_history_smoke.remote())
+    elif action == "train_single_summary":
+        print(train_single_summary_smoke.remote())
+    elif action == "prune_single_summary":
+        print(prune_single_summary_smoke.remote())
     else:
-        raise ValueError(f"Unknown action {action!r}; expected 'verifier', 'train', or 'train_history'")
+        raise ValueError(
+            "Unknown action "
+            f"{action!r}; expected 'verifier', 'train', 'train_history', 'train_single_summary', "
+            "or 'prune_single_summary'"
+        )
