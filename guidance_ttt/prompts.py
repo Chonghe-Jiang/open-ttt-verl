@@ -74,7 +74,7 @@ def build_guidance_prompt(
     best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
     objective = objective_text or (
         "Your task is to provide the next **evolutionary guidance** to beat the current visible "
-        f"target raw score ({best_valid_target}). Lower raw C5 is better."
+        f"target score ({best_valid_target}) according to the task-specific objective and score direction."
     )
     user = f"""<problem>
 {problem_prompt}
@@ -217,7 +217,7 @@ Do not include code.
 <summary>
 A concise natural-language summary of the candidate.
 
-This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important for understanding the candidate, such as representation choices, search operators, feasibility checks, objective handling, restart or exploration strategy, normalization, projection, or constraint handling.
 
 Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
 
@@ -316,7 +316,7 @@ def _guidance_format_error() -> tuple[str, bool]:
         "Plan:\n"
         "1. Treat this attempt as a formatting failure because no text was found outside the thinking block.\n"
         "2. Retry with an explicit tagged guidance response on the next rollout.\n"
-        "What to preserve: The selected library context and Erdos verifier constraints.\n"
+        "What to preserve: The selected library context and task verifier constraints.\n"
         "What to change: Emit exactly one tagged guidance block after any thinking.\n"
         "Expected verifier signal: formatting_error",
         False,

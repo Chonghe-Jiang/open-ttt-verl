@@ -1,16 +1,16 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_h200_4gpu_single_summary
+  output_dir: outputs/guidance_ttt/polyomino_h200_4gpu_one_step_30k_summary
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen8b_actor_gpt_oss_exec_h200_4gpu_single_summary
+  experiment_name: polyomino_qwen8b_actor_gpt_oss_exec_h200_4gpu_one_step_30k_summary
   model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
   num_steps: 1
   total_epochs: 1
   max_prompt_length: 8192
-  max_response_length: 4096
+  max_response_length: 30000
   learning_rate: 4.0e-5
-  ppo_mini_batch_size: 8
+  ppo_mini_batch_size: 4
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0.05
@@ -40,29 +40,23 @@ task:
     total_timeout_s: 340
 
 ttt:
-  groups_per_batch: 8
-  group_size: 32
+  groups_per_batch: 4
+  group_size: 1
   eval_timeout: 340
   puct_c: 1.0
+  bootstrap:
+    enabled: true
+    required: true
+    max_attempts: 2
+    overwrite_existing: false
 
 llm:
   execution:
-    provider: local_vllm
-    model: openai/gpt-oss-20b
-    dtype: auto
-    trust_remote_code: true
-    reasoning_effort: low
+    provider: openai_compatible
+    model: claude-sub2api-opus-4-8
     temperature: 0.35
-    top_p: 0.95
     max_tokens: null
     phase1_max_tokens: null
-    tensor_model_parallel_size: 4
-    gpu_memory_utilization: 0.35
-    enforce_eager: true
-    max_num_seqs: 8
-    max_batch_size: 8
-    batch_wait_ms: 50
-    max_model_len: 32768
 
 verl_overrides:
   - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
@@ -78,10 +72,19 @@ verl_overrides:
   - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
   - actor_rollout_ref.ref.fsdp_config.param_offload=True
   - actor_rollout_ref.rollout.agent.num_workers=1
-  - actor_rollout_ref.rollout.max_model_len=8192
-  - actor_rollout_ref.rollout.max_num_seqs=8
-  - actor_rollout_ref.rollout.max_num_batched_tokens=8192
+  - actor_rollout_ref.rollout.max_model_len=40960
+  - actor_rollout_ref.rollout.max_num_seqs=1
+  - actor_rollout_ref.rollout.max_num_batched_tokens=40960
   - actor_rollout_ref.rollout.enforce_eager=True
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.actor.ppo_max_token_len_per_gpu=40960
+  - +actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu=40960
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=40960
+  - actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=40960
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
   - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

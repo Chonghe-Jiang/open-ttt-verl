@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=poly-ttt-summary
+#SBATCH --job-name=poly-one-30k
 #SBATCH -p mit_preemptable
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:h200:4
-#SBATCH --time=12:00:00
+#SBATCH --time=06:00:00
 #SBATCH -c 64
 #SBATCH --mem=500G
 #SBATCH --account=mit_general
@@ -30,10 +30,10 @@ fi
 
 export START_FRONTIER_JUDGE="${START_FRONTIER_JUDGE:-1}"
 export CONFIG="${CONFIG:-guidance_ttt/config/polyomino_h200_4gpu_single_summary.yaml}"
-export OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_single_summary}"
+export OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_one_step_30k_summary}"
 export FRONTIERCS_DIR="${FRONTIERCS_DIR:-/home/qua/code/reference/Frontier-CS}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-8B}"
-export EXECUTION_MODEL="${EXECUTION_MODEL:-openai/gpt-oss-20b}"
+export EXECUTION_MODEL="${EXECUTION_MODEL:-claude-sub2api-opus-4-8}"
 export APPTAINER_IMAGE="${APPTAINER_IMAGE:-/orcd/scratch/orcd/010/dwai/vllm.sif}"
 export CONTAINER_CC="${CONTAINER_CC:-/usr/bin/gcc}"
 export CONTAINER_CXX="${CONTAINER_CXX:-/usr/bin/g++}"
@@ -48,4 +48,4 @@ echo "CONTAINER_CC=$CONTAINER_CC"
 echo "CONTAINER_CXX=$CONTAINER_CXX"
 echo "ALLOW_FALLBACK_SUMMARY=$ALLOW_FALLBACK_SUMMARY"
 
-scripts/run_modal_polyomino_single_summary.sh "$@"
+scripts/run_local_polyomino_h200_single_summary.sh "$@"

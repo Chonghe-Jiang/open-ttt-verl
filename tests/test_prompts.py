@@ -314,8 +314,9 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
         local_failure_entries=[],
     )
 
-    assert "current visible target raw score (0.3821438682282878)" in prompt.user
-    assert "Lower raw C5 is better" in prompt.user
+    assert "current visible target score (0.3821438682282878)" in prompt.user
+    assert "according to the task-specific objective and score direction" in prompt.user
+    assert "Lower raw C5 is better" not in prompt.user
     assert "what bottleneck the next attempt should address" in prompt.user
     assert "high-level algorithmic directions" in prompt.user
     assert "Propose high-level algorithmic directions and ideas." in prompt.user
@@ -527,7 +528,8 @@ def selected_candidate():
     assert "A concise natural-language summary of the candidate" in prompt.user
     assert "guidance-driven change from the prior idea" in prompt.user
     assert "If a suggested guidance component was not actually implemented" in prompt.user
-    assert "placement ordering, orientation normalization, feasibility checks" in prompt.user
+    assert "representation choices, search operators, feasibility checks" in prompt.user
+    assert "objective handling, restart or exploration strategy, normalization, projection" in prompt.user
     assert "Do not include source code, code fences, copied constants" in prompt.user
     assert "Any response that does not follow this exact three-block structure should be treated as invalid" in prompt.user
     assert "You must output all three XML blocks exactly as shown below" in prompt.user
