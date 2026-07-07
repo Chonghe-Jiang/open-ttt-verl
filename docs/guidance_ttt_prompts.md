@@ -28,7 +28,7 @@ flowchart TD
     D --> F
     E --> F
     F --> G[Guidance model<br/>trainable actor]
-    G --> H[Raw guidance response<br/>&lt;think&gt; + &lt;guidance&gt;]
+    G --> H[Raw guidance response<br/>Qwen native thinking + &lt;guidance&gt;]
     H --> I[extract_guidance_or_format_error]
 
     A --> J[build_execution_prompt]
@@ -77,7 +77,7 @@ GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=globa
 
 build_guidance_prompt(...)
   -> guidance chat messages
-  -> guidance model outputs <think>...</think> and <guidance>...</guidance>
+  -> guidance model may use Qwen native thinking, then outputs <guidance>...</guidance>
 
 extract_guidance_or_format_error(...)
   -> parsed guidance
@@ -237,24 +237,19 @@ as run-local context when deciding the next step.
 {objective_text}
 
 # Evolutionary Guidelines
-1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
-2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
-3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
+1. Analyze the search history.
+   Use `<selected_summary>` and `<local_failures>` to identify what has already been tried, what worked, what failed, and what bottleneck the next attempt should address.
 
-Provide your response exactly in the following format:
+2. Stay at the algorithmic-strategy level.
+   Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
 
-<think>
-</think>
+3. Produce exactly the required XML structure.
+   Provide internal reasoning and return exactly one `<guidance>` block and no other custom XML blocks, commentary, code, or markdown.
+
+Please do internal reasoning and provide your response exactly in the following format:
 
 <guidance>
-</guidance>
-
-The following notes explain what each block should contain:
-<think>
-Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-</think>
-<guidance>
-This must contain only your final, actionable evolutionary trajectory.
+Provide the final evolutionary guidance for the next execution attempt. Describe the main algorithmic direction and keep the guidance conceptual and actionable.
 </guidance>
 ````
 
@@ -299,6 +294,9 @@ Else:
   submitted guidance = synthetic formatting-failure guidance
   guidance_format_ok = false
 ```
+
+Qwen3 guidance actor 仍通过 chat template 开启 native thinking；prompt 不再要求
+自定义 reasoning XML block，避免模型同时模仿两套 thinking 格式。
 
 如果第一次 generation 解码后为空，agent loop 会 retry 一次，并记录
 `guidance_generation_attempts`。
@@ -363,12 +361,13 @@ Use the attached library context as historical evidence, not as code to copy bli
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
 {solution_contract}
 
-Return exactly these three blocks:
-If you omit any required XML block, the attempt will be treated as invalid.
+Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+
+Required output format:
 
 <execution_thinking>
-Briefly explain how the guidance was translated into the submitted solution.
-Do not place the summary inside <execution_thinking>.
+A short explanation of how the guidance was converted into the submitted algorithm.
+Do not include code.
 </execution_thinking>
 
 <solution>
@@ -378,9 +377,70 @@ Do not place the summary inside <execution_thinking>.
 </solution>
 
 <summary>
-The <summary>...</summary> block is required.
-Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+A concise natural-language summary of the candidate.
+
+This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+
+Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+
 </summary>
+
+Any response that does not follow this exact three-block structure should be treated as invalid.
+````
+
+### Bootstrap Execution Prompt
+
+`build_bootstrap_execution_prompt(...)` is used only by the explicit
+`--bootstrap-only` pre-training step. It does not attach library history or
+guidance; its output seeds the root library node so step 1 has a selected
+summary.
+
+For Polyomino Modal experiments that should not spend an execution call on
+every launch, `ttt.bootstrap.seed_library_path` can point to a fixed JSON
+library. The OpenRouter GPT-5.5 2xH200 smoke config uses:
+
+```text
+guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
+```
+
+When the output `library.json` does not exist, `prepare_run(...)` copies that
+seed library directly. If `library.json` already exists, it is left untouched.
+
+````text
+<problem>
+{problem_prompt}
+</problem>
+
+You are generating the initial bootstrap candidate for a Guidance-TTT run.
+
+There is no previous library summary and no guidance yet. Produce one concrete baseline solution that satisfies the problem statement and can seed the future search history.
+
+{solution_contract}
+
+Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+
+Required output format:
+
+<execution_thinking>
+A short explanation of the baseline strategy used to produce the initial candidate.
+Do not include code.
+</execution_thinking>
+
+<solution>
+```{python_or_cpp}
+{placeholder}
+```
+</solution>
+
+<summary>
+A concise natural-language summary of the candidate.
+
+This summary must describe the implemented baseline algorithm, the main construction/search/refinement mechanism, and what future guidance could improve. If the solution intentionally uses a simple heuristic rather than a full optimization method, state that clearly.
+
+Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+</summary>
+
+Any response that does not follow this exact three-block structure should be treated as invalid.
 ````
 
 ### Execution Runtime Variables

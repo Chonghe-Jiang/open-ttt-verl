@@ -53,6 +53,25 @@ def test_submit_child_adds_entry_child_and_updates_best(tmp_path):
     assert snapshot["nodes"][selected.id]["children"] == [child.id]
 
 
+def test_attach_entry_to_root_makes_root_context_non_empty(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+    entry = _entry(root.id, reward=4.0, suffix="bootstrap")
+    entry.timestep = 0
+    entry.metadata = {"bootstrap": True, "raw_model_summary": "Bootstrap raw summary."}
+
+    library.attach_entry_to_root(root.id, entry)
+    snapshot = library.snapshot()
+    context = library.context_for_node(root)
+
+    assert snapshot["nodes"][root.id]["entry_id"] == entry.id
+    assert snapshot["nodes"][root.id]["value"] == 4.0
+    assert snapshot["nodes"][root.id]["metadata"]["bootstrap"] is True
+    assert snapshot["entries"][entry.id]["metadata"]["raw_model_summary"] == "Bootstrap raw summary."
+    assert context["selected_entry"].id == entry.id
+
+
 def test_submit_child_serializes_nested_omegaconf_metadata(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="polyomino_packing", raw_score=0.0, reward=0.0)

@@ -123,6 +123,33 @@ class GuidanceLibrary:
                 self._save()
                 return child
 
+    def attach_entry_to_root(self, root_node_id: str, entry: LibraryEntry, *, overwrite_existing: bool = False) -> None:
+        with self._thread_lock:
+            with self._file_lock():
+                self._reload()
+                if root_node_id not in self._nodes:
+                    raise KeyError(f"Unknown root node id: {root_node_id}")
+                root = self._nodes[root_node_id]
+                if root.parent_id is not None:
+                    raise ValueError(f"Node {root_node_id} is not a root node")
+                if root.entry_id and not overwrite_existing:
+                    raise ValueError(f"Root node {root_node_id} already has entry {root.entry_id}")
+
+                entry.parent_id = root.id
+                entry.timestep = 0
+                self._entries[entry.id] = entry
+                root.entry_id = entry.id
+                root.value = entry.verifier_reward
+                root.raw_score = entry.verifier_raw_score
+                root.metadata.update(
+                    {
+                        "bootstrap": bool((entry.metadata or {}).get("bootstrap")),
+                        "verifier_status": entry.verifier_status,
+                    }
+                )
+                self._refresh_best()
+                self._save()
+
     def mark_node_visited(self, node_id: str, *, count: int) -> None:
         with self._thread_lock:
             with self._file_lock():
@@ -148,8 +175,9 @@ class GuidanceLibrary:
         with self._thread_lock:
             with self._file_lock():
                 self._reload()
+                selected_node = self._nodes.get(node.id)
                 lineage: list[LibraryEntry] = []
-                current: LibraryNode | None = self._nodes.get(node.id)
+                current: LibraryNode | None = selected_node
                 while current is not None:
                     if (
                         current.entry_id
@@ -172,7 +200,7 @@ class GuidanceLibrary:
                 ]
                 return {
                     "selected_entry": self._visible_entry(
-                        node.entry_id,
+                        selected_node.entry_id if selected_node is not None else None,
                         visible_timestep_exclusive=visible_timestep_exclusive,
                     ),
                     "lineage_entries": lineage,

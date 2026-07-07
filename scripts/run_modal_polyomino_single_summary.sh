@@ -142,4 +142,5 @@ if [[ "$expected_workspace" != "$actual_workspace_name" && "$expected_workspace"
   exit 1
 fi
 
+modal run scripts/modal_polyomino_h200_smoke.py --action bootstrap_single_summary
 modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_single_summary "$@"

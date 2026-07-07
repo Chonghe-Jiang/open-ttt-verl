@@ -23,6 +23,16 @@ REMOTE_HISTORY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_m
 REMOTE_HISTORY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke"
 REMOTE_SINGLE_SUMMARY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_single_summary.yaml"
 REMOTE_SINGLE_SUMMARY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary"
+REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_qwen_exec_single_summary.yaml"
+)
+REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_qwen_exec_single_summary"
+REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary.yaml"
+)
+REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary"
+)
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -185,6 +195,7 @@ import modal  # noqa: E402
 app = modal.App(APP_NAME)
 runs_volume = modal.Volume.from_name("guidance-ttt-runs", create_if_missing=True)
 cache_volume = modal.Volume.from_name("guidance-ttt-cache", create_if_missing=True)
+openrouter_secret = modal.Secret.from_name("openrouter-api-key")
 
 
 def training_command() -> list[str]:
@@ -214,6 +225,59 @@ def single_summary_training_command() -> list[str]:
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_SINGLE_SUMMARY_CONFIG_PATH,
+    ]
+
+
+def single_summary_bootstrap_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
+
+
+def qwen_exec_single_summary_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH,
+    ]
+
+
+def qwen_exec_single_summary_bootstrap_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
+
+
+def openrouter_gpt55_single_summary_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH,
+    ]
+
+
+def openrouter_gpt55_single_summary_bootstrap_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
     ]
 
 
@@ -452,6 +516,132 @@ def _summarize_history_extraction(output_dir: str = REMOTE_HISTORY_OUTPUT_DIR) -
     }
 
 
+def _dump_prompt_answer_artifacts(output_dir: str = REMOTE_SINGLE_SUMMARY_OUTPUT_DIR) -> dict[str, object]:
+    output_path = Path(output_dir)
+    library_path = output_path / "library.json"
+    if not library_path.exists():
+        return {"output_dir": output_dir, "library_exists": False}
+    data = json.loads(library_path.read_text())
+    entries = [
+        _prompt_answer_entry_record(entry)
+        for entry in (data.get("entries") or {}).values()
+        if isinstance(entry, dict)
+    ]
+    entries.sort(key=lambda item: (int(item.get("timestep") or 0), str(item.get("entry_id") or "")))
+    dump = {
+        "output_dir": output_dir,
+        "library_path": str(library_path),
+        "entry_count": len(entries),
+        "best_node_id": data.get("best_node_id"),
+        "entries": entries,
+    }
+    json_path = output_path / "prompt_answer_dump.json"
+    markdown_path = output_path / "prompt_answer_dump.md"
+    json_path.write_text(json.dumps(dump, indent=2, sort_keys=True))
+    markdown_path.write_text(_prompt_answer_dump_markdown(dump))
+    return {
+        "output_dir": output_dir,
+        "library_exists": True,
+        "entry_count": len(entries),
+        "json_path": str(json_path),
+        "markdown_path": str(markdown_path),
+    }
+
+
+def _prompt_answer_entry_record(entry: dict[str, object]) -> dict[str, object]:
+    metadata = entry.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return {
+        "entry_id": entry.get("id"),
+        "timestep": entry.get("timestep"),
+        "status": entry.get("verifier_status"),
+        "message": entry.get("verifier_message"),
+        "reward": entry.get("verifier_reward"),
+        "raw_score": entry.get("verifier_raw_score"),
+        "guidance_format_ok": bool(metadata.get("guidance_format_ok")),
+        "guidance": entry.get("guidance", ""),
+        "raw_guidance_text": metadata.get("raw_guidance_text", ""),
+        "raw_guidance_with_specials": metadata.get("raw_guidance_with_specials", ""),
+        "guidance_prompt": metadata.get("guidance_prompt") or {},
+        "execution_prompt": metadata.get("execution_prompt") or {},
+        "execution_output": metadata.get("execution_text", ""),
+        "raw_model_summary": metadata.get("raw_model_summary", ""),
+        "canonical_summary": entry.get("summary", ""),
+        "solution": entry.get("solution", ""),
+        "execution_thinking": entry.get("execution_thinking", ""),
+        "execution_provider": metadata.get("execution_provider"),
+        "execution_model": metadata.get("execution_model"),
+        "execution_finish_reason": metadata.get("execution_finish_reason"),
+        "verification_artifacts": metadata.get("verification_artifacts") or {},
+    }
+
+
+def _prompt_answer_dump_markdown(dump: dict[str, object]) -> str:
+    lines = [
+        "# Polyomino Modal Prompt/Answer Dump",
+        "",
+        f"- Output dir: `{dump.get('output_dir')}`",
+        f"- Library: `{dump.get('library_path')}`",
+        f"- Entry count: `{dump.get('entry_count')}`",
+        f"- Best node id: `{dump.get('best_node_id')}`",
+        "",
+    ]
+    entries = dump.get("entries") or []
+    if not isinstance(entries, list) or not entries:
+        lines.extend(["No library entries were found.", ""])
+        return "\n".join(lines)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        lines.extend(
+            [
+                f"## Entry `{entry.get('entry_id')}`",
+                "",
+                f"- Timestep: `{entry.get('timestep')}`",
+                f"- Status: `{entry.get('status')}`",
+                f"- Reward: `{entry.get('reward')}`",
+                f"- Raw score: `{entry.get('raw_score')}`",
+                f"- Guidance format ok: `{entry.get('guidance_format_ok')}`",
+                f"- Execution model: `{entry.get('execution_model')}`",
+                f"- Execution finish reason: `{entry.get('execution_finish_reason')}`",
+                "",
+            ]
+        )
+        _append_prompt_answer_section(lines, "Guidance Prompt System", _prompt_part(entry, "guidance_prompt", "system"))
+        _append_prompt_answer_section(lines, "Guidance Prompt User", _prompt_part(entry, "guidance_prompt", "user"))
+        _append_prompt_answer_section(lines, "Guidance Answer", entry.get("guidance"))
+        _append_prompt_answer_section(lines, "Raw Guidance Answer", entry.get("raw_guidance_text"))
+        _append_prompt_answer_section(lines, "Raw Guidance Answer With Specials", entry.get("raw_guidance_with_specials"))
+        _append_prompt_answer_section(lines, "Execution Prompt System", _prompt_part(entry, "execution_prompt", "system"))
+        _append_prompt_answer_section(lines, "Execution Prompt User", _prompt_part(entry, "execution_prompt", "user"))
+        _append_prompt_answer_section(lines, "Execution Answer", entry.get("execution_output"))
+        _append_prompt_answer_section(lines, "Raw Model Summary", entry.get("raw_model_summary"))
+        _append_prompt_answer_section(lines, "Canonical Library Summary", entry.get("canonical_summary"))
+        lines.extend(
+            [
+                "### Verification Artifacts",
+                "",
+                "```json",
+                json.dumps(entry.get("verification_artifacts") or {}, indent=2, sort_keys=True),
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _prompt_part(entry: dict[str, object], prompt_key: str, part_key: str) -> object:
+    prompt = entry.get(prompt_key) or {}
+    if not isinstance(prompt, dict):
+        return ""
+    return prompt.get(part_key, "")
+
+
+def _append_prompt_answer_section(lines: list[str], title: str, value: object) -> None:
+    lines.extend([f"### {title}", "", "```text", str(value or ""), "```", ""])
+
+
 def _entry_single_summary_rank(entry: dict[str, object]) -> tuple[int, int, int, int, float, str]:
     metadata = entry.get("metadata") or {}
     if not isinstance(metadata, dict):
@@ -672,6 +862,7 @@ train_image = (
             "HF_XET_HIGH_PERFORMANCE": "1",
             "TORCH_CUDA_ARCH_LIST": "9.0 9.0a",
             "VLLM_NO_USAGE_STATS": "1",
+            "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": REMOTE_REPO_DIR,
             "RAY_raylet_start_wait_time_s": "300",
@@ -801,16 +992,188 @@ def train_history_smoke() -> dict[str, object]:
 )
 def train_single_summary_smoke() -> dict[str, object]:
     _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
-    _reset_output_dir(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
     judge = _start_judge()
     try:
         _run_streaming(single_summary_training_command(), cwd=REMOTE_REPO_DIR)
-        prune_summary = _prune_to_single_summary(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
         summary = _summarize_output(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
         history_summary = _summarize_history_extraction(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
-        merged_summary = {**summary, "single_summary_prune": prune_summary, "history_extraction": history_summary}
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
         print(json.dumps(merged_summary, indent=2), flush=True)
-        _validate_single_summary_extraction(history_summary)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Single-summary smoke did not write library entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def bootstrap_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(single_summary_bootstrap_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Bootstrap smoke did not write any library entries: {merged_summary}")
+        if int(history_summary.get("raw_summary_ok_count", 0)) <= 0:
+            raise RuntimeError(f"Bootstrap smoke did not write a raw model summary: {merged_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_qwen_exec_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    judge = _start_judge()
+    try:
+        _run_streaming(qwen_exec_single_summary_training_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Qwen execution single-summary smoke did not write library entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def bootstrap_qwen_exec_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(qwen_exec_single_summary_bootstrap_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Qwen execution bootstrap smoke did not write any library entries: {merged_summary}")
+        if int(history_summary.get("raw_summary_ok_count", 0)) <= 0:
+            raise RuntimeError(f"Qwen execution bootstrap smoke did not write a raw model summary: {merged_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+    secrets=[openrouter_secret],
+)
+def train_openrouter_gpt55_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    judge = _start_judge()
+    try:
+        _run_streaming(openrouter_gpt55_single_summary_training_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"OpenRouter GPT-5.5 single-summary smoke did not write library entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+    secrets=[openrouter_secret],
+)
+def train_openrouter_gpt55_seeded_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(openrouter_gpt55_single_summary_training_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"OpenRouter GPT-5.5 seeded smoke did not write library entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=HISTORY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=48,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+    secrets=[openrouter_secret],
+)
+def bootstrap_openrouter_gpt55_single_summary_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(openrouter_gpt55_single_summary_bootstrap_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"OpenRouter GPT-5.5 bootstrap smoke did not write any library entries: {merged_summary}")
+        if int(history_summary.get("raw_summary_ok_count", 0)) <= 0:
+            raise RuntimeError(f"OpenRouter GPT-5.5 bootstrap smoke did not write a raw model summary: {merged_summary}")
         return merged_summary
     finally:
         runs_volume.commit()
@@ -844,13 +1207,28 @@ def main(action: str = "train"):
         print(train_smoke.remote())
     elif action == "train_history":
         print(train_history_smoke.remote())
+    elif action == "bootstrap_single_summary":
+        print(bootstrap_single_summary_smoke.remote())
     elif action == "train_single_summary":
         print(train_single_summary_smoke.remote())
+    elif action == "bootstrap_single_summary_qwen_exec":
+        print(bootstrap_qwen_exec_single_summary_smoke.remote())
+    elif action == "train_single_summary_qwen_exec":
+        print(train_qwen_exec_single_summary_smoke.remote())
+    elif action == "bootstrap_single_summary_openrouter_gpt55":
+        print(bootstrap_openrouter_gpt55_single_summary_smoke.remote())
+    elif action == "train_single_summary_openrouter_gpt55":
+        print(train_openrouter_gpt55_single_summary_smoke.remote())
+    elif action == "train_single_summary_openrouter_gpt55_seeded":
+        print(train_openrouter_gpt55_seeded_single_summary_smoke.remote())
     elif action == "prune_single_summary":
         print(prune_single_summary_smoke.remote())
     else:
         raise ValueError(
             "Unknown action "
-            f"{action!r}; expected 'verifier', 'train', 'train_history', 'train_single_summary', "
+            f"{action!r}; expected 'verifier', 'train', 'train_history', 'bootstrap_single_summary', "
+            "'train_single_summary', 'bootstrap_single_summary_qwen_exec', "
+            "'train_single_summary_qwen_exec', 'bootstrap_single_summary_openrouter_gpt55', "
+            "'train_single_summary_openrouter_gpt55', 'train_single_summary_openrouter_gpt55_seeded', "
             "or 'prune_single_summary'"
         )

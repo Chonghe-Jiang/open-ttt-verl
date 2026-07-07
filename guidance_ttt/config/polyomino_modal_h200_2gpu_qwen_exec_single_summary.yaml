@@ -1,7 +1,7 @@
 run:
-  output_dir: /runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_2gpu_qwen_exec_single_summary
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen8b_actor_gpt_oss_exec_modal_h200_2gpu_single_summary
+  experiment_name: polyomino_qwen8b_actor_qwen8b_exec_modal_h200_2gpu_single_summary
   model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
@@ -49,14 +49,13 @@ ttt:
     required: true
     max_attempts: 2
     overwrite_existing: false
+    seed_library_path: guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
 
 llm:
   execution:
     provider: local_vllm
-    model: openai/gpt-oss-20b
-    dtype: auto
-    trust_remote_code: true
-    reasoning_effort: low
+    model: Qwen/Qwen3-8B
+    dtype: bfloat16
     temperature: 0.35
     top_p: 0.95
     max_tokens: null
@@ -69,6 +68,8 @@ llm:
     batch_wait_ms: 50
     max_model_len: 32768
     download_dir: /cache/huggingface/hub
+    chat_template_kwargs:
+      enable_thinking: true
 
 verl_overrides:
   - +actor_rollout_ref.model.override_config.attn_implementation=sdpa

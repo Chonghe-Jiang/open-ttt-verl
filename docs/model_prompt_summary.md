@@ -141,24 +141,19 @@ as run-local context when deciding the next step.
 {objective}
 
 # Evolutionary Guidelines
-1. **Analyze History, Do Not Repeat It:** Identify why the current profile plateaued based on `<selected_summary>` and `<local_failures>`.
-2. **High-Level Mutations, No Low-Level Details:** Propose conceptual algorithmic shifts, structural relaxations, or novel search topologies (e.g., introducing a new mathematical constraint or hybridizing optimization frameworks). Do not write code or micromanage hyperparameters.
-3. **Strict Separation of Thought and Action:** You must separate your cognitive process from the final directional output using the exact XML tags provided below.
+1. Analyze the search history.
+   Use `<selected_summary>` and `<local_failures>` to identify what has already been tried, what worked, what failed, and what bottleneck the next attempt should address.
 
-Provide your response exactly in the following format:
+2. Stay at the algorithmic-strategy level.
+   Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
 
-<think>
-</think>
+3. Produce exactly the required XML structure.
+   Provide internal reasoning and return exactly one `<guidance>` block and no other custom XML blocks, commentary, code, or markdown.
+
+Please do internal reasoning and provide your response exactly in the following format:
 
 <guidance>
-</guidance>
-
-The following notes explain what each block should contain:
-<think>
-Use this space entirely for internal reflection. Diagnose historical bottlenecks from the logs, extract lessons from local failures, and debate which conceptual shift is most likely to yield a breakthrough.
-</think>
-<guidance>
-This must contain only your final, actionable evolutionary trajectory.
+Provide the final evolutionary guidance for the next execution attempt. Describe the main algorithmic direction and keep the guidance conceptual and actionable.
 </guidance>
 """
     return Prompt(
@@ -223,10 +218,13 @@ Score direction: {score_direction}.
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
 {contract}
 
-Return exactly these three blocks:
+Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+
+Required output format:
 
 <execution_thinking>
-Briefly explain how the guidance was translated into the submitted solution.
+A short explanation of how the guidance was converted into the submitted algorithm.
+Do not include code.
 </execution_thinking>
 
 <solution>
@@ -236,8 +234,15 @@ Briefly explain how the guidance was translated into the submitted solution.
 </solution>
 
 <summary>
-Summarize the solution and its guidance-driven diff from the previous idea in natural language. Explain how the candidate was generated, including the search, refinement, or optimization strategy used, and what specific changes were made based on the guidance. If implementation details are central to the solution, such as parameter tuning, threshold choices, normalization, perturbation design, or constraint handling, highlight them and explain why they matter. Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters.
+A concise natural-language summary of the candidate.
+
+This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+
+Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+
 </summary>
+
+Any response that does not follow this exact three-block structure should be treated as invalid.
 """
     return Prompt(
         system=(

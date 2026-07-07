@@ -83,6 +83,23 @@ async def test_openai_compatible_client_maps_chat_completion(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_openai_compatible_client_can_read_api_key_from_named_env(monkeypatch):
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    client = make_llm_client(
+        {
+            "provider": "openai_compatible",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
+        }
+    )
+
+    assert isinstance(client, OpenAICompatibleLLMClient)
+    assert client.endpoint == "https://openrouter.ai/api/v1"
+    assert client.api_key == "openrouter-test-key"
+
+
+@pytest.mark.anyio
 async def test_local_transformers_client_loads_model_lazily_and_uses_chat_messages(monkeypatch):
     captured = {}
 
@@ -276,6 +293,63 @@ async def test_local_vllm_client_uses_remaining_context_when_max_tokens_is_none(
 
     assert captured["sampling_kwargs"]["max_tokens"] == 32763
     assert response.text.startswith("<execution_thinking>auto")
+
+
+@pytest.mark.anyio
+async def test_local_vllm_client_passes_qwen_thinking_chat_template_kwargs(monkeypatch):
+    llm_client_module._LOCAL_VLLM_CACHE.clear()
+    llm_client_module._LOCAL_VLLM_GENERATE_LOCKS.clear()
+    llm_client_module._LOCAL_VLLM_BATCHERS.clear()
+    captured = {}
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            captured["messages"] = messages
+            captured["chat_template_kwargs"] = kwargs
+            return "formatted qwen prompt"
+
+    class FakeGeneration:
+        text = "<execution_thinking>qwen</execution_thinking>\n```cpp\nint main(){return 0;}\n```"
+
+    class FakeRequestOutput:
+        outputs = [FakeGeneration()]
+
+    class FakeLLM:
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, sampling_params):
+            captured["prompts"] = prompts
+            captured["sampling_params"] = sampling_params
+            return [FakeRequestOutput()]
+
+    monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
+    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs))
+
+    client = make_llm_client(
+        {
+            "provider": "local_vllm",
+            "model": "Qwen/Qwen3-8B",
+            "max_model_len": 32768,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+    )
+    response = await client.complete(
+        LLMRequest(
+            system="system prompt",
+            user="user prompt",
+            model="Qwen/Qwen3-8B",
+            temperature=0.35,
+            max_tokens=128,
+            metadata={"purpose": "execution"},
+        )
+    )
+
+    assert captured["chat_template_kwargs"]["enable_thinking"] is True
+    assert captured["chat_template_kwargs"]["tokenize"] is False
+    assert captured["chat_template_kwargs"]["add_generation_prompt"] is True
+    assert "reasoning_effort" not in captured["chat_template_kwargs"]
+    assert response.text.startswith("<execution_thinking>qwen")
 
 
 @pytest.mark.anyio

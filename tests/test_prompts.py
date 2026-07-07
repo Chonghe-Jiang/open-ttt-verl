@@ -235,21 +235,32 @@ Preserve this exact raw text."""
     assert "# Objective" in prompt.user
     assert "next **evolutionary guidance**" in prompt.user
     assert "# Evolutionary Guidelines" in prompt.user
-    assert "Analyze History, Do Not Repeat It" in prompt.user
-    assert "High-Level Mutations, No Low-Level Details" in prompt.user
-    assert "Strict Separation of Thought and Action" in prompt.user
-    assert "<think>" in prompt.user
-    assert "</think>" in prompt.user
-    assert "The following notes explain what each block should contain" in prompt.user
-    assert "<think>\nUse this space entirely for internal reflection" in prompt.user
-    assert "<guidance>\nThis must contain only your final, actionable evolutionary trajectory" in prompt.user
-    format_index = prompt.user.index("Provide your response exactly in the following format:")
-    notes_index = prompt.user.index("The following notes explain what each block should contain:")
-    assert format_index < notes_index
+    assert "1. Analyze the search history." in prompt.user
+    assert "what has already been tried, what worked, what failed" in prompt.user
+    assert "2. Stay at the algorithmic-strategy level." in prompt.user
+    assert "Propose high-level algorithmic directions and ideas." in prompt.user
+    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
+    assert "3. Produce exactly the required XML structure." in prompt.user
+    assert "Provide internal reasoning and return exactly one `<guidance>` block" in prompt.user
+    assert "Analyze History, Do Not Repeat It" not in prompt.user
+    assert "High-Level Mutations, No Low-Level Details" not in prompt.user
+    assert "Strict Separation of Thought and Action" not in prompt.user
+    assert "<think>" not in prompt.user
+    assert "</think>" not in prompt.user
+    assert "The following notes explain what each block should contain" not in prompt.user
+    assert "Please do internal reasoning and provide your response exactly in the following format" in prompt.user
+    assert "Think step by step internally" not in prompt.user
+    assert "<guidance>\nProvide the final evolutionary guidance for the next execution attempt" in prompt.user
+    assert "Describe the main algorithmic direction and keep the guidance conceptual and actionable" in prompt.user
+    assert "Use this space entirely for internal reflection" not in prompt.user
+    assert "This must contain only your final, actionable evolutionary trajectory" not in prompt.user
+    format_index = prompt.user.index("Please do internal reasoning and provide your response exactly in the following format")
+    guidance_index = prompt.user.index("<guidance>\nProvide the final evolutionary guidance for the next execution attempt")
+    assert format_index < guidance_index
     assert "Evolutionary Mutation" not in prompt.user
     assert "Directional Search Strategy" not in prompt.user
     assert "Progress Target" not in prompt.user
-    assert "Do not write code or micromanage hyperparameters" in prompt.user
+    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
     assert "current visible target raw score (0.4)" in prompt.user
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
 
@@ -305,15 +316,12 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
 
     assert "current visible target raw score (0.3821438682282878)" in prompt.user
     assert "Lower raw C5 is better" in prompt.user
-    assert "why the current profile plateaued" in prompt.user
-    assert "conceptual algorithmic shifts" in prompt.user
-    assert "structural relaxations" in prompt.user
-    assert "novel search topologies" in prompt.user
-    assert "introducing a new mathematical constraint" in prompt.user
-    assert "hybridizing optimization frameworks" in prompt.user
-    assert "Do not write code or micromanage hyperparameters" in prompt.user
-    assert "The following notes explain what each block should contain" in prompt.user
-    assert "This must contain only your final, actionable evolutionary trajectory" in prompt.user
+    assert "what bottleneck the next attempt should address" in prompt.user
+    assert "high-level algorithmic directions" in prompt.user
+    assert "Propose high-level algorithmic directions and ideas." in prompt.user
+    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
+    assert "The following notes explain what each block should contain" not in prompt.user
+    assert "Provide the final evolutionary guidance for the next execution attempt" in prompt.user
     assert "The preferred submitted guidance" not in prompt.user
     assert "Preserve the current best valid construction" not in prompt.user
     assert "SLSQP again" not in prompt.user
@@ -402,7 +410,7 @@ def test_guidance_prompt_uses_only_summary_not_verified_profile_artifacts():
     assert "Reward: 2.6229950364447134" in prompt.user
     assert "The selected summary is also the current global best visible summary." not in prompt.user
     assert "<global_best>" not in prompt.user
-    assert "why the current profile plateaued" in prompt.user
+    assert "what bottleneck the next attempt should address" in prompt.user
 
 
 def test_guidance_prompt_root_uses_selected_raw_score_without_initial_construction_facts():
@@ -449,8 +457,8 @@ Try pairwise mass transfer around the first five coordinates.
     )
 
     assert "current visible target raw score (0.5)" in prompt.user
-    assert "The following notes explain what each block should contain" in prompt.user
-    assert "This must contain only your final, actionable evolutionary trajectory" in prompt.user
+    assert "The following notes explain what each block should contain" not in prompt.user
+    assert "Provide the final evolutionary guidance for the next execution attempt" in prompt.user
     assert "Current initial construction (reference state to improve)" not in prompt.user
     assert "initialization=random_perturbed_constant" not in prompt.user
     assert "h=[0.2, 0.4, 0.6, 0.8]" not in prompt.user
@@ -506,20 +514,27 @@ def selected_candidate():
     assert "Use the attached library context as historical evidence" in prompt.user
     assert "Score direction: min." in prompt.user
     assert "Implement one concrete solution that follows the guidance" in prompt.user
-    assert "Return exactly these three blocks" in prompt.user
-    contract = prompt.user.split("Return exactly these three blocks:", 1)[1]
+    assert "Return exactly these three blocks" not in prompt.user
+    assert "Your response must contain exactly three top-level XML blocks" in prompt.user
+    assert "Required output format:" in prompt.user
+    contract = prompt.user.split("Required output format:", 1)[1]
     assert contract.find("<execution_thinking>") < contract.find("<solution>")
     assert contract.find("<solution>") < contract.find("```python")
     assert contract.find("```python") < contract.find("</solution>")
     assert contract.find("</solution>") < contract.find("<summary>")
-    assert "Summarize the solution and its guidance-driven diff from the previous idea" in prompt.user
-    assert "Explain how the candidate was generated, including the search, refinement, or optimization strategy used" in prompt.user
-    assert "what specific changes were made based on the guidance" in prompt.user
-    assert "parameter tuning, threshold choices, normalization" in prompt.user
-    assert "Do not include code, hard-coded arrays, copied profile values, or raw candidate parameters" in prompt.user
-    assert "The <summary>...</summary> block is required" in prompt.user
-    assert "Do not place the summary inside <execution_thinking>" in prompt.user
-    assert "If you omit any required XML block, the attempt will be treated as invalid" in prompt.user
+    assert "A short explanation of how the guidance was converted into the submitted algorithm" in prompt.user
+    assert "Do not include code." in prompt.user
+    assert "A concise natural-language summary of the candidate" in prompt.user
+    assert "guidance-driven change from the prior idea" in prompt.user
+    assert "If a suggested guidance component was not actually implemented" in prompt.user
+    assert "placement ordering, orientation normalization, feasibility checks" in prompt.user
+    assert "Do not include source code, code fences, copied constants" in prompt.user
+    assert "Any response that does not follow this exact three-block structure should be treated as invalid" in prompt.user
+    assert "You must output all three XML blocks exactly as shown below" in prompt.user
+    assert "The <solution> block is mandatory and must contain a fenced ```python code block" in prompt.user
+    assert "The <summary>...</summary> block is mandatory and must be closed" in prompt.user
+    assert "Do not output only execution_thinking, only a summary, or plain natural language" in prompt.user
+    assert "Do not omit angle brackets from XML tags" in prompt.user
     assert "Execution Interpretation" not in contract
     assert "Implemented Algorithm" not in contract
     assert "New Ideas Introduced" not in contract

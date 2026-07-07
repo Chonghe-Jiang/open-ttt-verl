@@ -1,7 +1,7 @@
-from pathlib import Path
 import importlib.util
 import json
 import os
+from pathlib import Path
 
 import yaml
 
@@ -110,21 +110,33 @@ def test_modal_polyomino_single_summary_config_matches_requested_shape():
     assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
     assert config["run"]["num_steps"] == 1
     assert config["run"]["total_epochs"] == 1
+    assert config["run"]["max_prompt_length"] == 8192
+    assert config["run"]["max_response_length"] == 24576
     assert config["run"]["n_gpus_per_node"] == 2
     assert config["run"]["tensor_model_parallel_size"] == 2
     assert config["ttt"]["groups_per_batch"] == 1
     assert config["ttt"]["group_size"] == 2
     assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 2
+    assert config["ttt"]["bootstrap"] == {
+        "enabled": True,
+        "required": True,
+        "max_attempts": 2,
+        "overwrite_existing": False,
+    }
     assert config["task"]["id"] == "polyomino_packing"
 
     execution = config["llm"]["execution"]
     assert execution["provider"] == "local_vllm"
     assert execution["model"] == "openai/gpt-oss-20b"
     assert execution["tensor_model_parallel_size"] == 2
+    assert execution["max_tokens"] is None
+    assert execution["phase1_max_tokens"] is None
     assert execution["max_num_seqs"] == 1
     assert execution["max_batch_size"] == 1
 
     overrides = set(config["verl_overrides"])
+    assert "actor_rollout_ref.rollout.max_model_len=32768" in overrides
+    assert "actor_rollout_ref.rollout.max_num_batched_tokens=32768" in overrides
     assert "actor_rollout_ref.rollout.enforce_eager=True" in overrides
     assert "actor_rollout_ref.actor.use_torch_compile=False" in overrides
     assert "actor_rollout_ref.actor.fsdp_config.use_torch_compile=False" in overrides
@@ -138,6 +150,14 @@ def test_modal_polyomino_single_summary_script_targets_requested_config():
 
     assert module.REMOTE_SINGLE_SUMMARY_CONFIG_PATH.endswith("polyomino_modal_h200_2gpu_single_summary.yaml")
     assert module.REMOTE_SINGLE_SUMMARY_OUTPUT_DIR.endswith("polyomino_modal_h200_2gpu_single_summary")
+    assert module.single_summary_bootstrap_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
     assert module.single_summary_training_command() == [
         "python",
         "-m",
@@ -145,6 +165,222 @@ def test_modal_polyomino_single_summary_script_targets_requested_config():
         "--config",
         module.REMOTE_SINGLE_SUMMARY_CONFIG_PATH,
     ]
+
+
+def test_modal_polyomino_qwen_exec_single_summary_config_matches_requested_shape():
+    config_path = Path("guidance_ttt/config/polyomino_modal_h200_2gpu_qwen_exec_single_summary.yaml")
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["num_steps"] == 1
+    assert config["run"]["total_epochs"] == 1
+    assert config["run"]["n_gpus_per_node"] == 2
+    assert config["run"]["tensor_model_parallel_size"] == 2
+    assert config["run"]["experiment_name"] == "polyomino_qwen8b_actor_qwen8b_exec_modal_h200_2gpu_single_summary"
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_2gpu_qwen_exec_single_summary")
+    assert config["ttt"]["groups_per_batch"] == 1
+    assert config["ttt"]["group_size"] == 2
+    assert config["ttt"]["bootstrap"]["seed_library_path"] == (
+        "guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json"
+    )
+    assert config["task"]["id"] == "polyomino_packing"
+
+    execution = config["llm"]["execution"]
+    assert execution["provider"] == "local_vllm"
+    assert execution["model"] == "Qwen/Qwen3-8B"
+    assert "reasoning_effort" not in execution
+    assert execution["chat_template_kwargs"] == {"enable_thinking": True}
+    assert execution["tensor_model_parallel_size"] == 2
+    assert execution["max_tokens"] is None
+    assert execution["phase1_max_tokens"] is None
+    assert execution["max_num_seqs"] == 1
+    assert execution["max_batch_size"] == 1
+    assert execution["max_model_len"] == 32768
+
+
+def test_modal_polyomino_qwen_exec_single_summary_script_targets_requested_config():
+    module = _load_modal_smoke_module()
+
+    assert module.REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_2gpu_qwen_exec_single_summary.yaml"
+    )
+    assert module.REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_2gpu_qwen_exec_single_summary"
+    )
+    assert module.qwen_exec_single_summary_bootstrap_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
+    assert module.qwen_exec_single_summary_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH,
+    ]
+
+
+def test_modal_polyomino_openrouter_gpt55_single_summary_config_matches_requested_shape():
+    config_path = Path("guidance_ttt/config/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary.yaml")
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["num_steps"] == 1
+    assert config["run"]["total_epochs"] == 1
+    assert config["run"]["max_prompt_length"] == 8192
+    assert config["run"]["max_response_length"] == 24576
+    assert config["run"]["n_gpus_per_node"] == 2
+    assert config["run"]["tensor_model_parallel_size"] == 2
+    assert config["run"]["experiment_name"] == "polyomino_qwen8b_actor_openrouter_gpt55_exec_modal_h200_2gpu_single_summary"
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary")
+    assert config["ttt"]["groups_per_batch"] == 1
+    assert config["ttt"]["group_size"] == 2
+    assert config["task"]["id"] == "polyomino_packing"
+
+    execution = config["llm"]["execution"]
+    assert execution == {
+        "provider": "openai_compatible",
+        "model": "openai/gpt-5.5",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "temperature": 0.35,
+        "max_tokens": None,
+        "phase1_max_tokens": None,
+    }
+
+
+def test_modal_polyomino_openrouter_gpt55_single_summary_script_targets_requested_config_and_secret():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary.yaml"
+    )
+    assert module.REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary"
+    )
+    assert module.openrouter_gpt55_single_summary_bootstrap_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
+    assert module.openrouter_gpt55_single_summary_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH,
+    ]
+    source = script[script.index("def train_openrouter_gpt55_seeded_single_summary_smoke") :]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "_reset_output_dir(REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR)" in source
+    assert "openrouter_gpt55_single_summary_training_command()" in source
+    assert "openrouter_gpt55_single_summary_bootstrap_command()" not in source
+    assert "train_single_summary_openrouter_gpt55_seeded" in script
+    assert 'modal.Secret.from_name("openrouter-api-key")' in script
+    assert "secrets=[openrouter_secret]" in script
+
+
+def test_modal_train_image_uses_spawn_for_local_vllm_workers():
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert '"VLLM_WORKER_MULTIPROC_METHOD": "spawn"' in script
+
+
+def test_modal_polyomino_single_summary_launcher_bootstraps_before_training():
+    launcher = Path("scripts/run_modal_polyomino_single_summary.sh").read_text()
+
+    bootstrap_index = launcher.index("--action bootstrap_single_summary")
+    train_index = launcher.index("--action train_single_summary")
+    assert bootstrap_index < train_index
+    assert "modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_single_summary" in launcher
+
+
+def test_modal_polyomino_single_summary_training_does_not_auto_prune():
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+    start = script.index("def train_single_summary_smoke")
+    end = script.index("@app.function", start + 1)
+    source = script[start:end]
+
+    assert "prune_summary = _prune_to_single_summary" not in source
+    assert "_dump_prompt_answer_artifacts" in source
+
+
+def test_modal_polyomino_prompt_answer_dump_includes_all_entries(tmp_path):
+    module = _load_modal_smoke_module()
+    output_dir = tmp_path / "single"
+    output_dir.mkdir()
+    library_path = output_dir / "library.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "nodes": {},
+                "entries": {
+                    "entry-bootstrap": {
+                        "id": "entry-bootstrap",
+                        "timestep": 0,
+                        "guidance": "Bootstrap execution without guidance.",
+                        "summary": "bootstrap canonical summary",
+                        "verifier_reward": 10.0,
+                        "verifier_raw_score": 10.0,
+                        "verifier_status": "valid",
+                        "metadata": {
+                            "raw_model_summary": "bootstrap raw summary",
+                            "execution_prompt": {"system": "bootstrap exec system", "user": "bootstrap exec user"},
+                            "execution_text": "<execution_thinking>bootstrap</execution_thinking>",
+                            "verification_artifacts": {"cases": 1},
+                        },
+                    },
+                    "entry-guided": {
+                        "id": "entry-guided",
+                        "timestep": 1,
+                        "guidance": "<think>diagnosis</think><guidance>guided change</guidance>",
+                        "summary": "guided canonical summary",
+                        "verifier_reward": 20.0,
+                        "verifier_raw_score": 20.0,
+                        "verifier_status": "invalid",
+                        "metadata": {
+                            "guidance_format_ok": True,
+                            "raw_guidance_text": "<think>raw diagnosis</think><guidance>raw guided change</guidance>",
+                            "raw_guidance_with_specials": "<|assistant|><think>raw diagnosis</think><guidance>raw guided change</guidance>",
+                            "raw_model_summary": "guided raw summary",
+                            "guidance_prompt": {"system": "guidance system", "user": "guidance user"},
+                            "execution_prompt": {"system": "execution system", "user": "execution user"},
+                            "execution_text": "<execution_thinking>guided</execution_thinking>",
+                            "verification_artifacts": {"error": "bad packing"},
+                        },
+                    },
+                },
+                "best_node_id": None,
+            }
+        )
+    )
+
+    dump_summary = module._dump_prompt_answer_artifacts(str(output_dir))
+    markdown = Path(dump_summary["markdown_path"]).read_text()
+    data = json.loads(Path(dump_summary["json_path"]).read_text())
+
+    assert dump_summary["entry_count"] == 2
+    assert {entry["entry_id"] for entry in data["entries"]} == {"entry-bootstrap", "entry-guided"}
+    assert "entry-bootstrap" in markdown
+    assert "entry-guided" in markdown
+    guided_entry = next(entry for entry in data["entries"] if entry["entry_id"] == "entry-guided")
+    assert guided_entry["raw_guidance_text"] == "<think>raw diagnosis</think><guidance>raw guided change</guidance>"
+    assert guided_entry["raw_guidance_with_specials"] == "<|assistant|><think>raw diagnosis</think><guidance>raw guided change</guidance>"
+    assert "### Raw Guidance Answer" in markdown
+    assert "<think>raw diagnosis</think><guidance>raw guided change</guidance>" in markdown
+    assert "### Raw Guidance Answer With Specials" in markdown
+    assert "<|assistant|><think>raw diagnosis</think><guidance>raw guided change</guidance>" in markdown
+    assert "guidance system" in markdown
+    assert "execution user" in markdown
+    assert "<execution_thinking>guided</execution_thinking>" in markdown
 
 
 def test_modal_polyomino_train_smoke_resets_output_dir(tmp_path):

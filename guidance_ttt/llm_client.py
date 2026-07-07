@@ -93,9 +93,13 @@ class UnconfiguredLLMClient:
 class OpenAICompatibleLLMClient:
     def __init__(self, config: dict):
         self.endpoint = str(config.get("endpoint") or config.get("base_url") or os.environ.get("ENDPOINT", "")).rstrip("/")
-        self.api_key = str(config.get("api_key") or os.environ.get("API_KEY", ""))
+        api_key_env = str(config.get("api_key_env") or "").strip()
+        env_api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+        self.api_key = str(config.get("api_key") or env_api_key or os.environ.get("API_KEY", ""))
         if not self.endpoint or not self.api_key:
-            raise ValueError("OpenAI-compatible executor requires endpoint/base_url and api_key, or ENDPOINT/API_KEY env vars")
+            raise ValueError(
+                "OpenAI-compatible executor requires endpoint/base_url and api_key, api_key_env, or ENDPOINT/API_KEY env vars"
+            )
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = {

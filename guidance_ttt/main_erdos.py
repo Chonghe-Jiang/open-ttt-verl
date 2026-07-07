@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -58,15 +60,23 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
 
     library_path = output_dir / "library.json"
     if not library_path.exists():
-        root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
-        GuidanceLibrary(
-            library_path,
-            initial_nodes=root_nodes,
-            rollout_n=int(ttt_cfg["group_size"]),
-            puct_c=float(ttt_cfg.get("puct_c", 1.0)),
-            max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
-            topk_children=int(ttt_cfg.get("topk_children", 2)),
-        )
+        bootstrap_cfg = dict(ttt_cfg.get("bootstrap") or {})
+        seed_library_path = bootstrap_cfg.get("seed_library_path")
+        if seed_library_path:
+            source_path = Path(str(seed_library_path)).expanduser()
+            if not source_path.is_absolute():
+                source_path = Path.cwd() / source_path
+            shutil.copyfile(source_path, library_path)
+        else:
+            root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
+            GuidanceLibrary(
+                library_path,
+                initial_nodes=root_nodes,
+                rollout_n=int(ttt_cfg["group_size"]),
+                puct_c=float(ttt_cfg.get("puct_c", 1.0)),
+                max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
+                topk_children=int(ttt_cfg.get("topk_children", 2)),
+            )
 
     slot_parquet = output_dir / "ttt_slots.parquet"
     write_slot_parquet(
@@ -131,7 +141,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         f"data.max_response_length={int(run_cfg.get('max_response_length', 2048))}",
         "data.filter_overlong_prompts=True",
         "data.truncation=error",
-        "+data.apply_chat_template_kwargs.enable_thinking=False",
+        "+data.apply_chat_template_kwargs.enable_thinking=True",
         f"actor_rollout_ref.model.path={run_cfg['model_path']}",
         "actor_rollout_ref.model.use_remove_padding=False",
         f"actor_rollout_ref.actor.optim.lr={float(run_cfg.get('learning_rate', 1e-5))}",
@@ -184,6 +194,26 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     return overrides
 
 
+def validate_bootstrap_requirement(config: dict[str, Any], prepared: dict[str, Path]) -> None:
+    bootstrap_cfg = ((config.get("ttt") or {}).get("bootstrap") or {})
+    if not bootstrap_cfg.get("required", False):
+        return
+    library = GuidanceLibrary(prepared["library_path"])
+    snapshot = library.snapshot()
+    entries = snapshot.get("entries") or {}
+    root_nodes = [
+        node
+        for node in (snapshot.get("nodes") or {}).values()
+        if isinstance(node, dict) and node.get("parent_id") is None
+    ]
+    has_root_entry = any(str(node.get("entry_id") or "") in entries for node in root_nodes)
+    if not has_root_entry:
+        raise RuntimeError(
+            "Bootstrap history is required but no root-attached library entry exists. "
+            "Run this recipe once with --bootstrap-only before launching training."
+        )
+
+
 def _default_verl_config_dir() -> Path:
     return Path.cwd() / "verl" / "trainer" / "config"
 
@@ -192,6 +222,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Guidance + Execution TTT with verl.")
     parser.add_argument("--config", default="guidance_ttt/config/erdos_smoke.yaml")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--bootstrap-only", action="store_true")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
 
@@ -204,9 +235,26 @@ def main() -> None:
     print(f"Prepared library: {prepared['library_path']}")
     print(f"Prepared slots: {prepared['slot_parquet']}")
     print(f"Prepared agent loop config: {prepared['agent_loop_config']}")
+    if args.bootstrap_only:
+        bootstrap_cfg = ((config.get("ttt") or {}).get("bootstrap") or {})
+        if not bootstrap_cfg.get("enabled", False):
+            raise RuntimeError("Bootstrap requested but ttt.bootstrap.enabled is not true in the recipe config.")
+        from guidance_ttt.bootstrap import bootstrap_library_entries
+
+        result = bootstrap_library_entries(
+            prepared["library_path"],
+            task_config=dict(config.get("task") or {"id": "erdos_min_overlap"}),
+            execution_llm_config=dict((config.get("llm") or {}).get("execution") or {"provider": "mock"}),
+            verifier_timeout_s=int((config.get("ttt") or {}).get("eval_timeout", 60)),
+            max_attempts=int(bootstrap_cfg.get("max_attempts", 2)),
+            overwrite_existing=bool(bootstrap_cfg.get("overwrite_existing", False)),
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
     if args.prepare_only or config["run"].get("prepare_only", False):
         print("Prepare-only mode; not launching verl trainer.")
         return
+    validate_bootstrap_requirement(config, prepared)
 
     import guidance_ttt.verl_ext  # noqa: F401
     import ray

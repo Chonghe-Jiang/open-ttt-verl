@@ -29,6 +29,59 @@ Execution uses `MockLLMClient` by default so the package can be tested without a
 real API. Real execution can use either an OpenAI-compatible endpoint or a local
 Transformers model with `llm.execution.provider=local`.
 
+## Current Approach
+
+The current Guidance-TTT design trains only the guidance actor. The execution
+model is treated as a frozen solver that converts a high-level guidance idea plus
+the selected library summary into one concrete candidate.
+
+At rollout time:
+
+1. The JSON library uses PUCT to select one visible node.
+2. The guidance actor receives the problem statement and the selected node's raw
+   execution summary plus verifier score/status. It returns exactly one
+   `<guidance>` block.
+3. The execution model receives the same selected summary/score context plus the
+   parsed guidance. It returns `<execution_thinking>`, `<solution>`, and
+   `<summary>` in one response.
+4. The verifier scores the solution. For Polyomino, this always goes through
+   FrontierCS/go-judge.
+5. The new entry is written as a child of the selected PUCT node. Its raw model
+   summary, verifier score/status, execution text, and solution are stored in
+   `library.json`.
+6. GRPO/verl assigns the verifier reward to the guidance response tokens only;
+   execution-model tokens are not trained.
+
+For repeated Polyomino Modal experiments, the recommended path is the seeded
+OpenRouter smoke:
+
+```bash
+modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary_openrouter_gpt55_seeded
+```
+
+This initializes an empty run directory from
+`guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`
+instead of spending an execution call on a fresh bootstrap candidate each time.
+The older `bootstrap_single_summary` action is still available when you want to
+generate a new root entry dynamically.
+
+### Library Settings
+
+`library.json` is not just history; if it contains saved library config, that
+config is treated as the source of truth when `GuidanceLibrary` reloads. In
+practice:
+
+- A fresh run without an existing `library.json` uses the YAML values for
+  `ttt.group_size`, `ttt.puct_c`, `ttt.max_buffer_size`, and
+  `ttt.topk_children`.
+- A resumed run with an existing `library.json` reloads `config.rollout_n`,
+  `config.puct_c`, `config.max_buffer_size`, and `config.topk_children` from the
+  library file. This prevents a resumed search tree from silently changing its
+  PUCT semantics.
+- The static Polyomino seed library intentionally does not store a `config`
+  block. Therefore the seeded smoke still takes rollout/group settings from the
+  active YAML config.
+
 ## Repository Layout
 
 ```text
@@ -127,7 +180,9 @@ Then launch from the repository root:
 modal run scripts/modal_polyomino_h200_smoke.py --action verifier
 modal run scripts/modal_polyomino_h200_smoke.py --action train
 modal run scripts/modal_polyomino_h200_smoke.py --action train_history
+modal run scripts/modal_polyomino_h200_smoke.py --action bootstrap_single_summary
 modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary
+modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary_openrouter_gpt55_seeded
 ```
 
 For the one-summary Modal run, use:
@@ -136,8 +191,11 @@ For the one-summary Modal run, use:
 scripts/run_modal_polyomino_single_summary.sh
 ```
 
-The launcher uses `modal run --detach` so the remote training function is not
-stopped if the local client disconnects during model loading.
+The launcher first runs `bootstrap_single_summary` synchronously, which asks the
+execution model for one baseline candidate, verifies it, and attaches its summary
+to the root library node. It then uses `modal run --detach` for
+`train_single_summary` so the remote training function is not stopped if the
+local client disconnects during model loading.
 
 The launcher requires `.env` to contain `WORKSPACE=<modal-workspace-name-or-id>`.
 Before submitting the H200 job, it checks `modal token info` and exits unless
@@ -164,14 +222,26 @@ Actions:
   `guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml`. This is
   the cheaper check for guidance parsing, raw execution summary extraction,
   canonical library summary writing, and execution text capture.
+- `bootstrap_single_summary`: resets the
+  `polyomino_modal_h200_2gpu_single_summary` output directory, runs the
+  execution-only bootstrap pass, starts FrontierCS/go-judge for verification,
+  and writes a root-attached library entry before training.
 - `train_single_summary`: runs a 2xH200 one-step Polyomino config with
   `Qwen/Qwen3-8B` as the guidance actor and `openai/gpt-oss-20b` as the local
-  vLLM execution model. It uses one slot with the minimum two rollouts required
-  by verl, prunes the output to the best guided entry, then validates that
-  `library.json` contains exactly one valid entry with a summary.
+  vLLM execution model. It requires the bootstrap entry to exist, uses one slot
+  with the minimum two rollouts required by verl, prunes the output to the best
+  guided entry, then validates that `library.json` contains exactly one valid
+  entry with a summary.
 - `prune_single_summary`: re-validates and prunes an existing
   `polyomino_modal_h200_2gpu_single_summary` output directory without rerunning
   the GPU training step.
+- `train_single_summary_openrouter_gpt55_seeded`: runs the 2xH200 one-step
+  Polyomino config with `Qwen/Qwen3-8B` as the guidance actor and
+  `openai/gpt-5.5` through OpenRouter as the execution model. The run resets its
+  output directory and initializes `library.json` from the static seed library at
+  `guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`,
+  so it does not call the bootstrap-only API path before training. This action
+  requires a Modal secret named `openrouter-api-key` with `OPENROUTER_API_KEY`.
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -188,11 +258,16 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
+/runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary
 ```
 
 The smoke configs intentionally keep only the training shape small: `num_steps`,
-`groups_per_batch`, `group_size`, PPO mini-batch size, and GPU count. Execution
-generation is not artificially shortened in these configs:
+`groups_per_batch`, `group_size`, PPO mini-batch size, and GPU count. They are
+not meant to be quality-oriented training recipes; they are end-to-end checks
+that the guidance prompt, execution prompt, verifier, library writeback, and
+GRPO update still work together.
+
+Execution generation is not artificially shortened in these configs:
 
 ```yaml
 llm:
@@ -205,6 +280,12 @@ FrontierCS/go-judge concurrency is capped at 8 in
 `scripts/modal_polyomino_h200_smoke.py`; the local vLLM execution batch settings
 are aligned with the selected smoke size. If you change GPU count or group size,
 update the YAML config and the Modal script constants together.
+
+For seeded smoke runs, the initial candidate comes from the static library file,
+but the smoke shape still comes from the active YAML. The seed file does not
+carry `rollout_n` or PUCT config, so the OpenRouter GPT-5.5 seeded smoke uses the
+current YAML defaults: 2 H200 GPUs, `groups_per_batch: 1`, `group_size: 2`,
+`max_prompt_length: 8192`, and `max_response_length: 24576`.
 
 ## Local gpt-oss-20b Execution
 
