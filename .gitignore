@@ -11,6 +11,10 @@ reference/
 .hf_cache/
 .tmp/
 .triton_cache/
+.modal_local_cache/
+.modal_local_runs/
+.modal_local_tmp/
+.modal_local_triton/
 pytest-of-*/
 torchinductor_*/
 *.egg-info/

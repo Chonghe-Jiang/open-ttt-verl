@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +15,7 @@ from guidance_ttt.prompts import (
     build_guidance_prompt,
     extract_guidance_or_format_error,
     extract_tag_or_none,
+    extract_terminal_tag_or_none,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult, _jsonable
 from guidance_ttt.tasks import TaskSpec, get_task_spec
@@ -38,6 +42,22 @@ class ExecutionVerification:
     fallback_used: bool
     fallback_reason: str | None
     original_execution_text: str
+
+
+_EXECUTION_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
+_EXECUTION_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _execution_semaphore_key(config: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "provider": config.get("provider", "mock"),
+            "model": config.get("model", "mock-exec"),
+            "base_url": config.get("base_url") or config.get("endpoint"),
+        },
+        sort_keys=True,
+        default=str,
+    )
 
 
 try:
@@ -126,6 +146,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             "model": "mock-exec",
         }
         self.execution_client = make_llm_client(self.execution_llm_config)
+        self.execution_concurrency = max(1, int(self.execution_llm_config.get("concurrency", 1)))
         self.verifier_timeout_s = int(verifier_timeout_s)
         self.problem_prompt_override = problem_prompt
         self.problem_prompt = problem_prompt or self.task_spec.problem_prompt
@@ -247,7 +268,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         execution_text = ""
         execution_error: str | None = None
         try:
-            execution_response = await self.execution_client.complete(
+            execution_response = await self._complete_execution(
                 LLMRequest(
                     system=execution_prompt.system,
                     user=execution_prompt.user,
@@ -346,6 +367,21 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "task": task_config,
             },
         )
+
+    def _execution_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        concurrency = max(1, int(getattr(self, "execution_concurrency", 1)))
+        key = (id(loop), _execution_semaphore_key(self.execution_llm_config), concurrency)
+        with _EXECUTION_SEMAPHORES_LOCK:
+            semaphore = _EXECUTION_SEMAPHORES.get(key)
+            if semaphore is None:
+                semaphore = asyncio.Semaphore(concurrency)
+                _EXECUTION_SEMAPHORES[key] = semaphore
+            return semaphore
+
+    async def _complete_execution(self, request: LLMRequest):
+        async with self._execution_semaphore():
+            return await self.execution_client.complete(request)
 
     def _task_spec_for_extra_info(self, extra_info: dict[str, Any]) -> TaskSpec:
         task_id = str(extra_info.get("task") or self.task_config.get("id") or self.task_spec.task_id)
@@ -617,7 +653,7 @@ def _verify_execution_without_fallback(
         verification = VerificationResult.execution_error(initial_error)
     execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
     solution = _extract_solution_code(execution_text, task_spec=task_spec)
-    model_summary = extract_tag_or_none(execution_text, "summary")
+    model_summary = extract_terminal_tag_or_none(execution_text, "summary")
     summary = build_execution_summary(
         model_summary=model_summary,
         execution_thinking=execution_thinking,

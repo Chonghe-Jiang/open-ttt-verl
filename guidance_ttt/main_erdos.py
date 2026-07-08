@@ -7,6 +7,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -66,7 +67,13 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
             source_path = Path(str(seed_library_path)).expanduser()
             if not source_path.is_absolute():
                 source_path = Path.cwd() / source_path
-            shutil.copyfile(source_path, library_path)
+            temp_library_path = library_path.with_name(f".{library_path.name}.{uuid4().hex}.tmp")
+            try:
+                shutil.copyfile(source_path, temp_library_path)
+                temp_library_path.replace(library_path)
+            finally:
+                if temp_library_path.exists():
+                    temp_library_path.unlink()
         else:
             root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
             GuidanceLibrary(
@@ -139,8 +146,8 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         f"data.train_batch_size={int(ttt_cfg['groups_per_batch'])}",
         f"data.max_prompt_length={int(run_cfg.get('max_prompt_length', 8192))}",
         f"data.max_response_length={int(run_cfg.get('max_response_length', 2048))}",
-        "data.filter_overlong_prompts=True",
-        "data.truncation=error",
+        f"data.filter_overlong_prompts={bool(run_cfg.get('filter_overlong_prompts', True))}",
+        f"data.truncation={run_cfg.get('truncation', 'error')}",
         "+data.apply_chat_template_kwargs.enable_thinking=True",
         f"actor_rollout_ref.model.path={run_cfg['model_path']}",
         "actor_rollout_ref.model.use_remove_padding=False",
@@ -220,7 +227,7 @@ def _default_verl_config_dir() -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Guidance + Execution TTT with verl.")
-    parser.add_argument("--config", default="guidance_ttt/config/erdos_smoke.yaml")
+    parser.add_argument("--config", default="guidance_ttt/config/backup/erdos_smoke.yaml")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--bootstrap-only", action="store_true")
     parser.add_argument("overrides", nargs="*")

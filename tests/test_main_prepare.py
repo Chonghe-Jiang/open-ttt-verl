@@ -183,6 +183,40 @@ def test_prepare_run_can_initialize_library_from_seed_path(tmp_path):
     validate_bootstrap_requirement(config, prepared)
 
 
+def test_prepare_run_copies_seed_library_via_atomic_replace(tmp_path, monkeypatch):
+    seed_library_path = tmp_path / "seed_library.json"
+    seed_library_path.write_text(json.dumps({"nodes": {}, "entries": {}, "groups": {}, "best_node_id": None}))
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "atomic_seeded_polyomino"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 2,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+            "bootstrap": {"seed_library_path": str(seed_library_path)},
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+    original_replace = Path.replace
+    replace_targets: list[Path] = []
+
+    def tracked_replace(self: Path, target):
+        replace_targets.append(Path(target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", tracked_replace)
+
+    prepared = prepare_run(config)
+
+    assert Path(prepared["library_path"]) in replace_targets
+    assert json.loads(Path(prepared["library_path"]).read_text())["nodes"] == {}
+
+
 def test_prepare_run_does_not_overwrite_existing_library_with_seed_path(tmp_path):
     seed_library_path = tmp_path / "seed_library.json"
     seed_library_path.write_text(json.dumps({"nodes": {}, "entries": {}, "groups": {}, "best_node_id": None}))
@@ -265,10 +299,42 @@ def test_verl_overrides_enable_qwen_thinking_template_for_guidance_actor(tmp_pat
     assert "actor_rollout_ref.rollout.agent.default_agent_loop=guidance_execution_task" in overrides
 
 
+def test_verl_overrides_allow_non_failing_prompt_truncation(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "polyomino"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+            "max_prompt_length": 4096,
+            "max_response_length": 8192,
+            "filter_overlong_prompts": False,
+            "truncation": "middle",
+        },
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 1,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+    prepared = prepare_run(config)
+
+    overrides = build_verl_overrides(config, prepared, [])
+
+    assert "data.max_prompt_length=4096" in overrides
+    assert "data.max_response_length=8192" in overrides
+    assert "data.filter_overlong_prompts=False" in overrides
+    assert "data.truncation=middle" in overrides
+
+
 def test_all_smoke_configs_enable_qwen_thinking_template_for_guidance_actor(tmp_path):
     config_dir = Path("guidance_ttt/config")
-    smoke_configs = sorted(config_dir.glob("*smoke*.yaml"))
-    smoke_configs.extend(sorted(config_dir.glob("*single_summary*.yaml")))
+    config_dirs = [config_dir, config_dir / "backup"]
+    smoke_configs = []
+    for current_dir in config_dirs:
+        smoke_configs.extend(sorted(current_dir.glob("*smoke*.yaml")))
+        smoke_configs.extend(sorted(current_dir.glob("*single_summary*.yaml")))
     assert smoke_configs
 
     for config_path in smoke_configs:
@@ -361,7 +427,7 @@ def test_gpt_oss_recipes_initialize_fsdp_models_in_bfloat16():
         "erdos_gpt_oss_20b_5step.yaml",
         "erdos_gpt_oss_20b_8gpu_50step.yaml",
     ]:
-        config = yaml.safe_load((Path("guidance_ttt/config") / recipe).read_text())
+        config = yaml.safe_load((Path("guidance_ttt/config/backup") / recipe).read_text())
         overrides = config["verl_overrides"]
 
         assert "actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16" in overrides

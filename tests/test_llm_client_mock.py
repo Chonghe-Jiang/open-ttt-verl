@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 import time
@@ -97,6 +98,20 @@ async def test_openai_compatible_client_can_read_api_key_from_named_env(monkeypa
     assert isinstance(client, OpenAICompatibleLLMClient)
     assert client.endpoint == "https://openrouter.ai/api/v1"
     assert client.api_key == "openrouter-test-key"
+
+
+def test_openai_compatible_client_accepts_request_timeout(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    client = make_llm_client(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "timeout_s": 600,
+        }
+    )
+
+    assert isinstance(client, OpenAICompatibleLLMClient)
+    assert client.timeout_s == 600
 
 
 @pytest.mark.anyio
@@ -239,6 +254,30 @@ async def test_local_vllm_client_passes_execution_engine_kwargs(monkeypatch):
     assert captured["sampling_kwargs"]["top_p"] == 0.95
     assert response.text.startswith("<execution_thinking>vllm")
     assert response.metadata["provider"] == "local_vllm"
+
+
+def test_local_vllm_loader_temporarily_scopes_cuda_visible_devices(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4")
+
+    def fake_call_vllm_llm(**kwargs):
+        captured["cuda_visible_devices_during_load"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_llm", fake_call_vllm_llm)
+
+    llm_client_module._load_local_vllm(
+        {
+            "model": "models/gpt-oss-120b",
+            "tensor_model_parallel_size": 1,
+            "cuda_visible_devices": "4",
+        }
+    )
+
+    assert captured["cuda_visible_devices_during_load"] == "4"
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0,1,2,3,4"
+    assert captured["kwargs"]["model"] == "models/gpt-oss-120b"
 
 
 @pytest.mark.anyio

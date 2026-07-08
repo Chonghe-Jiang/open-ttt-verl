@@ -96,6 +96,27 @@ async function runProcess(cmd, workDir) {
             child.kill('SIGKILL');
         }, timeoutMs);
 
+        let settled = false;
+        let stdinError = null;
+        let stdoutError = null;
+        let stderrError = null;
+
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+
+        child.stdin.on('error', (error) => {
+            stdinError = error;
+        });
+        child.stdout.on('error', (error) => {
+            stdoutError = error;
+        });
+        child.stderr.on('error', (error) => {
+            stderrError = error;
+        });
         child.stdout.on('data', (chunk) => {
             stdout = Buffer.concat([stdout, chunk]).subarray(0, stdoutMax);
         });
@@ -103,8 +124,7 @@ async function runProcess(cmd, workDir) {
             stderr = Buffer.concat([stderr, chunk]).subarray(0, stderrMax);
         });
         child.on('error', (error) => {
-            clearTimeout(timer);
-            resolve({
+            finish({
                 status: 'Internal Error',
                 exitStatus: 0,
                 error: String(error),
@@ -115,24 +135,31 @@ async function runProcess(cmd, workDir) {
             });
         });
         child.on('close', (code, signal) => {
-            clearTimeout(timer);
             const runTime = (Date.now() - started) * 1e6;
             const files = {
                 stdout: limitText(stdout, stdoutMax),
                 stderr: limitText(stderr, stderrMax),
             };
+            const ioErrors = [stdinError, stdoutError, stderrError].filter(Boolean).map(String);
+            if (ioErrors.length && code !== 0) {
+                files.stderr = [files.stderr, ...ioErrors].filter(Boolean).join('\n');
+            }
             if (timedOut) {
-                resolve({ status: 'Time Limit Exceeded', exitStatus: code ?? 0, error: signal || 'SIGKILL', files, time: runTime, memory: 0, runTime });
+                finish({ status: 'Time Limit Exceeded', exitStatus: code ?? 0, error: signal || 'SIGKILL', files, time: runTime, memory: 0, runTime });
             } else if (signal) {
-                resolve({ status: 'Signalled', exitStatus: code ?? 0, error: signal, files, time: runTime, memory: 0, runTime });
+                finish({ status: 'Signalled', exitStatus: code ?? 0, error: signal, files, time: runTime, memory: 0, runTime });
             } else if (code === 0) {
-                resolve({ status: 'Accepted', exitStatus: 0, files, time: runTime, memory: 0, runTime });
+                finish({ status: 'Accepted', exitStatus: 0, files, time: runTime, memory: 0, runTime });
             } else {
-                resolve({ status: 'Runtime Error', exitStatus: code ?? 1, files, time: runTime, memory: 0, runTime });
+                finish({ status: 'Runtime Error', exitStatus: code ?? 1, files, time: runTime, memory: 0, runTime });
             }
         });
 
-        child.stdin.end(stdin);
+        try {
+            child.stdin.end(stdin);
+        } catch (error) {
+            stdinError = error;
+        }
     });
 }
 

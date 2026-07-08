@@ -15,25 +15,64 @@ from pathlib import Path
 APP_NAME = "guidance-ttt-polyomino-h200-smoke"
 GPU_CONFIG = "H200:4"
 HISTORY_GPU_CONFIG = "H200:2"
+GPT_OSS_120B_GPU_CONFIG = "H200:5"
+GPT_OSS_120B_3GPU_CONFIG = "H200:3"
+GPT_OSS_120B_SINGLE_GPU_CONFIG = "H200:1"
 REMOTE_REPO_DIR = "/root/guidance"
 REMOTE_FRONTIER_DIR = "/opt/Frontier-CS"
-REMOTE_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_4gpu_smoke.yaml"
+REMOTE_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_4gpu_smoke.yaml"
 REMOTE_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_4gpu_smoke"
-REMOTE_HISTORY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml"
+REMOTE_HISTORY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_2gpu_history_smoke.yaml"
 REMOTE_HISTORY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke"
-REMOTE_SINGLE_SUMMARY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_single_summary.yaml"
+REMOTE_SINGLE_SUMMARY_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_2gpu_single_summary.yaml"
 REMOTE_SINGLE_SUMMARY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary"
 REMOTE_QWEN_EXEC_SINGLE_SUMMARY_CONFIG_PATH = (
-    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_qwen_exec_single_summary.yaml"
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_2gpu_qwen_exec_single_summary.yaml"
 )
 REMOTE_QWEN_EXEC_SINGLE_SUMMARY_OUTPUT_DIR = "/runs/guidance_ttt/polyomino_modal_h200_2gpu_qwen_exec_single_summary"
 REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_CONFIG_PATH = (
-    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary.yaml"
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary.yaml"
 )
 REMOTE_OPENROUTER_GPT55_SINGLE_SUMMARY_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary"
 )
+REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_4gpu_openrouter_gpt55_full_batch.yaml"
+)
+REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_4gpu_openrouter_gpt55_full_batch"
+)
+REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_4gpu_evolvent_gpt55_short_response.yaml"
+)
+REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_4gpu_evolvent_gpt55_short_response"
+)
+REMOTE_GPT_OSS_120B_5GPU_GROUP64_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_5gpu_gpt_oss_120b_group64.yaml"
+)
+REMOTE_GPT_OSS_120B_5GPU_GROUP64_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_5gpu_gpt_oss_120b_group64"
+)
+REMOTE_GPT_OSS_120B_3GPU_GROUP16_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_3gpu_gpt_oss_120b_group16.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_GROUP16_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16"
+)
+REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
+)
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
+GPT_OSS_120B_SERVER_LOG_PATH = "/tmp/gpt_oss_120b_vllm.log"
+GPT_OSS_120B_XML_PROBE_OUTPUT_PATH = "/runs/guidance_ttt/gpt_oss_120b_xml_probe.json"
+FLASH_ATTN_TORCH29_CU12_WHEEL = (
+    "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/"
+    "flash_attn-2.8.3%2Bcu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -196,6 +235,7 @@ app = modal.App(APP_NAME)
 runs_volume = modal.Volume.from_name("guidance-ttt-runs", create_if_missing=True)
 cache_volume = modal.Volume.from_name("guidance-ttt-cache", create_if_missing=True)
 openrouter_secret = modal.Secret.from_name("openrouter-api-key")
+evolvent_secret = modal.Secret.from_name("evolvent-api-key")
 
 
 def training_command() -> list[str]:
@@ -281,6 +321,72 @@ def openrouter_gpt55_single_summary_bootstrap_command() -> list[str]:
     ]
 
 
+def openrouter_gpt55_4gpu_full_batch_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_CONFIG_PATH,
+    ]
+
+
+def evolvent_gpt55_4gpu_short_response_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_5gpu_group64_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_5GPU_GROUP64_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_group16_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_GROUP16_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_group16_h200_tuned_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH,
+    ]
+
+
+def _assert_training_packages_available() -> None:
+    checks = [
+        (
+            "flash_attn",
+            "import flash_attn; print('flash_attn', getattr(flash_attn, '__version__', 'unknown'))",
+        ),
+        ("torch", "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"),
+        ("vllm", "import vllm; print('vllm', vllm.__version__)"),
+    ]
+    for name, code in checks:
+        try:
+            subprocess.run([sys.executable, "-c", code], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Required training package {name!r} is not importable in the Modal image.") from exc
+
+
 def _reset_output_dir(output_dir: str = REMOTE_OUTPUT_DIR) -> None:
     path = Path(output_dir)
     if path.exists():
@@ -355,13 +461,17 @@ def _wait_for_tcp(host: str, port: int, *, timeout_s: int = 120, process: subpro
     raise RuntimeError(f"TCP endpoint {host}:{port} did not become ready within {timeout_s}s: {last_error}")
 
 
-def _print_judge_log(max_bytes: int = 20000) -> None:
-    log_path = Path(JUDGE_LOG_PATH)
+def _print_log_tail(path: str, *, label: str, max_bytes: int = 20000) -> None:
+    log_path = Path(path)
     if not log_path.exists():
-        print(f"Judge log does not exist: {JUDGE_LOG_PATH}", flush=True)
+        print(f"{label} log does not exist: {path}", flush=True)
         return
     payload = log_path.read_bytes()[-max_bytes:].decode(errors="replace")
-    print(f"----- {JUDGE_LOG_PATH} tail -----\n{payload}\n----- end judge log -----", flush=True)
+    print(f"----- {label} log tail ({path}) -----\n{payload}\n----- end {label} log -----", flush=True)
+
+
+def _print_judge_log(max_bytes: int = 20000) -> None:
+    _print_log_tail(JUDGE_LOG_PATH, label="judge", max_bytes=max_bytes)
 
 
 def _start_judge() -> subprocess.Popen:
@@ -395,6 +505,63 @@ def _stop_judge(process: subprocess.Popen) -> None:
         log_file.close()
 
 
+def _start_gpt_oss_120b_server(*, cuda_visible_devices: str = "4") -> subprocess.Popen:
+    env = {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": cuda_visible_devices,
+        "VLLM_NO_USAGE_STATS": "1",
+        "HF_HOME": "/cache/huggingface",
+        "HF_DATASETS_CACHE": "/cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/cache/huggingface/hub",
+        "TRANSFORMERS_CACHE": "/cache/huggingface/hub",
+    }
+    cmd = [
+        "vllm",
+        "serve",
+        "openai/gpt-oss-120b",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--dtype",
+        "auto",
+        "--trust-remote-code",
+        "--tensor-parallel-size",
+        "1",
+        "--gpu-memory-utilization",
+        "0.88",
+        "--max-model-len",
+        "32768",
+        "--max-num-seqs",
+        "8",
+        "--enforce-eager",
+        "--download-dir",
+        "/cache/huggingface/hub",
+    ]
+    print(f"+ CUDA_VISIBLE_DEVICES={cuda_visible_devices} " + " ".join(cmd), flush=True)
+    log_file = open(GPT_OSS_120B_SERVER_LOG_PATH, "wb")
+    process = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    process._guidance_ttt_log_file = log_file  # type: ignore[attr-defined]
+    try:
+        _wait_for_tcp("127.0.0.1", 8000, timeout_s=30 * 60, process=process)
+    except Exception:
+        _print_log_tail(GPT_OSS_120B_SERVER_LOG_PATH, label="gpt-oss-120b-vllm")
+        raise
+    return process
+
+
+def _stop_process(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+    log_file = getattr(process, "_guidance_ttt_log_file", None)
+    if log_file is not None:
+        log_file.close()
+
+
 def _gojudge_run_one(command: dict[str, object]) -> dict[str, object]:
     import urllib.request
 
@@ -410,6 +577,109 @@ def _gojudge_run_one(command: dict[str, object]) -> dict[str, object]:
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         raise RuntimeError(f"Unexpected go-judge response: {data!r}")
     return data[0]
+
+
+def _post_openai_chat_completion(payload: dict[str, object], *, timeout_s: int = 600) -> dict[str, object]:
+    import urllib.request
+
+    request = urllib.request.Request(
+        "http://127.0.0.1:8000/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": "Bearer local-vllm",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        return json.loads(response.read().decode())
+
+
+def _xml_probe_payload(user_prompt: str, *, max_tokens: int = 2048) -> dict[str, object]:
+    return {
+        "model": "openai/gpt-oss-120b",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an execution model. Output exactly the requested XML blocks and no extra text.",
+            },
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
+
+
+def _run_gpt_oss_xml_probe() -> dict[str, object]:
+    prompts = [
+        """Return exactly three top-level XML blocks and no extra text.
+
+<execution_thinking>
+Say one short sentence.
+</execution_thinking>
+
+<solution>
+```cpp
+#include <bits/stdc++.h>
+int main(){return 0;}
+```
+</solution>
+
+<summary>
+Say one short sentence and close this XML block.
+</summary>""",
+        """Your response must contain exactly these blocks:
+<execution_thinking>
+Briefly describe a simple algorithm.
+</execution_thinking>
+<solution>
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+int main(){ cout << "ok\\n"; }
+```
+</solution>
+<summary>
+Summarize the algorithm in one sentence.
+</summary>
+
+Do not omit any closing XML tag. The final characters of your answer must be </summary>.""",
+        """Write three XML blocks: execution_thinking, solution, summary.
+The summary is the final block and must end with a literal closing tag.
+No markdown outside the solution fence.""",
+    ]
+    results = []
+    for index, prompt in enumerate(prompts):
+        response = _post_openai_chat_completion(_xml_probe_payload(prompt), timeout_s=900)
+        choice = (response.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        text = str(message.get("content") or choice.get("text") or "")
+        results.append(
+            {
+                "index": index,
+                "prompt": prompt,
+                "finish_reason": choice.get("finish_reason"),
+                "usage": response.get("usage"),
+                "text": text,
+                "text_len": len(text),
+                "has_execution_thinking_close": "</execution_thinking>" in text,
+                "has_solution_close": "</solution>" in text,
+                "has_summary_open": "<summary>" in text,
+                "has_summary_close": "</summary>" in text,
+                "tail": text[-1000:],
+            }
+        )
+    summary = {
+        "model": "openai/gpt-oss-120b",
+        "result_count": len(results),
+        "summary_close_count": sum(1 for result in results if result["has_summary_close"]),
+        "results": results,
+    }
+    output_path = Path(GPT_OSS_120B_XML_PROBE_OUTPUT_PATH)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+    print(json.dumps(summary, indent=2), flush=True)
+    return summary
 
 
 def _direct_gojudge_smoke() -> None:
@@ -855,6 +1125,7 @@ train_image = (
         "uvicorn",
         "liger-kernel",
     )
+    .uv_pip_install(FLASH_ATTN_TORCH29_CU12_WHEEL)
     .env(
         {
             "HF_HOME": "/cache/huggingface",
@@ -929,6 +1200,12 @@ int main() {
         return payload
     finally:
         _stop_judge(judge)
+
+
+@app.function(image=train_image, timeout=30 * 60, cpu=8, memory=32768)
+def check_training_packages_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    return {"ok": True}
 
 
 @app.function(
@@ -1153,6 +1430,166 @@ def train_openrouter_gpt55_seeded_single_summary_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+    secrets=[openrouter_secret],
+)
+def train_openrouter_gpt55_4gpu_full_batch_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(openrouter_gpt55_4gpu_full_batch_training_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_OPENROUTER_GPT55_4GPU_FULL_BATCH_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"OpenRouter GPT-5.5 4GPU full-batch smoke did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+    secrets=[evolvent_secret],
+)
+def train_evolvent_gpt55_4gpu_short_response_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        _run_streaming(evolvent_gpt55_4gpu_short_response_training_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_EVOLVENT_GPT55_4GPU_SHORT_RESPONSE_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Evolvent GPT-5.5 4GPU short-response smoke did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=327680,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_5gpu_group64_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_5GPU_GROUP64_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server()
+    judge = _start_judge()
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1,2,3"}
+        _run_streaming(gpt_oss_120b_5gpu_group64_training_command(), cwd=REMOTE_REPO_DIR, env=training_env)
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_5GPU_GROUP64_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_GPT_OSS_120B_5GPU_GROUP64_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_GPT_OSS_120B_5GPU_GROUP64_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B 5GPU group64 smoke did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_group16_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_GROUP16_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2")
+    judge = _start_judge()
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(gpt_oss_120b_3gpu_group16_training_command(), cwd=REMOTE_REPO_DIR, env=training_env)
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_3GPU_GROUP16_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_GPT_OSS_120B_3GPU_GROUP16_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_GPT_OSS_120B_3GPU_GROUP16_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B 3GPU group16 smoke did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2")
+    judge = _start_judge()
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_group16_h200_tuned_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(
+            REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR
+        )
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B 3GPU group16 H200-tuned smoke did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
     gpu=HISTORY_GPU_CONFIG,
     timeout=12 * 60 * 60,
     cpu=48,
@@ -1183,6 +1620,26 @@ def bootstrap_openrouter_gpt55_single_summary_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG,
+    timeout=2 * 60 * 60,
+    cpu=16,
+    memory=131072,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def gpt_oss_120b_xml_probe_smoke() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    server = _start_gpt_oss_120b_server(cuda_visible_devices="0")
+    try:
+        result = _run_gpt_oss_xml_probe()
+        runs_volume.commit()
+        cache_volume.commit()
+        return result
+    finally:
+        _stop_process(server)
+
+
+@app.function(
+    image=train_image,
     timeout=30 * 60,
     cpu=4,
     memory=8192,
@@ -1203,6 +1660,8 @@ def prune_single_summary_smoke() -> dict[str, object]:
 def main(action: str = "train"):
     if action == "verifier":
         print(verifier_smoke.remote())
+    elif action == "check_training_packages":
+        print(check_training_packages_smoke.remote())
     elif action == "train":
         print(train_smoke.remote())
     elif action == "train_history":
@@ -1221,14 +1680,30 @@ def main(action: str = "train"):
         print(train_openrouter_gpt55_single_summary_smoke.remote())
     elif action == "train_single_summary_openrouter_gpt55_seeded":
         print(train_openrouter_gpt55_seeded_single_summary_smoke.remote())
+    elif action == "train_openrouter_gpt55_4gpu_full_batch":
+        print(train_openrouter_gpt55_4gpu_full_batch_smoke.remote())
+    elif action == "train_evolvent_gpt55_4gpu_short_response":
+        print(train_evolvent_gpt55_4gpu_short_response_smoke.remote())
+    elif action == "train_gpt_oss_120b_5gpu_group64":
+        print(train_gpt_oss_120b_5gpu_group64_smoke.remote())
+    elif action == "train_gpt_oss_120b_3gpu_group16":
+        print(train_gpt_oss_120b_3gpu_group16_smoke.remote())
+    elif action == "train_gpt_oss_120b_3gpu_group16_h200_tuned":
+        print(train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke.spawn())
+    elif action == "gpt_oss_120b_xml_probe":
+        print(gpt_oss_120b_xml_probe_smoke.remote())
     elif action == "prune_single_summary":
         print(prune_single_summary_smoke.remote())
     else:
         raise ValueError(
             "Unknown action "
-            f"{action!r}; expected 'verifier', 'train', 'train_history', 'bootstrap_single_summary', "
+            f"{action!r}; expected 'verifier', 'check_training_packages', 'train', 'train_history', "
+            "'bootstrap_single_summary', "
             "'train_single_summary', 'bootstrap_single_summary_qwen_exec', "
             "'train_single_summary_qwen_exec', 'bootstrap_single_summary_openrouter_gpt55', "
             "'train_single_summary_openrouter_gpt55', 'train_single_summary_openrouter_gpt55_seeded', "
+            "'train_openrouter_gpt55_4gpu_full_batch', 'train_evolvent_gpt55_4gpu_short_response', "
+            "'train_gpt_oss_120b_5gpu_group64', 'train_gpt_oss_120b_3gpu_group16', "
+            "'train_gpt_oss_120b_3gpu_group16_h200_tuned', 'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"
         )

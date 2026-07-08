@@ -100,6 +100,7 @@ class OpenAICompatibleLLMClient:
             raise ValueError(
                 "OpenAI-compatible executor requires endpoint/base_url and api_key, api_key_env, or ENDPOINT/API_KEY env vars"
             )
+        self.timeout_s = float(config.get("timeout_s", 120))
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = {
@@ -134,7 +135,7 @@ class OpenAICompatibleLLMClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(errors="replace")[:1000]
@@ -313,7 +314,18 @@ def _load_local_vllm(config: dict):
         if source_key in config:
             llm_kwargs[target_key] = config[source_key]
     llm_kwargs.update(config.get("engine_kwargs") or {})
-    return _call_vllm_llm(**llm_kwargs)
+    cuda_visible_devices = config.get("cuda_visible_devices")
+    if cuda_visible_devices is None:
+        return _call_vllm_llm(**llm_kwargs)
+    previous_cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices)
+    try:
+        return _call_vllm_llm(**llm_kwargs)
+    finally:
+        if previous_cuda_visible_devices is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = previous_cuda_visible_devices
 
 
 class LocalVLLMLLMClient:
