@@ -39,13 +39,15 @@ class GuidanceLibrary:
         self._puct_m: dict[str, float] = {}
         self._puct_T: int = 0
 
-        if self.path.exists():
-            self._load()
-        else:
-            for node in initial_nodes or []:
-                self._nodes[node.id] = node
-            self._refresh_best()
-            self._save()
+        with self._thread_lock:
+            with self._file_lock():
+                if self.path.exists():
+                    self._load()
+                else:
+                    for node in initial_nodes or []:
+                        self._nodes[node.id] = node
+                    self._refresh_best()
+                    self._save()
 
     @contextmanager
     def _file_lock(self):
@@ -444,7 +446,13 @@ class GuidanceLibrary:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._to_store(), indent=2, sort_keys=True))
+        temp_path = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps(self._to_store(), indent=2, sort_keys=True))
+            temp_path.replace(self.path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
 
     def _reload(self) -> None:
         if self.path.exists():

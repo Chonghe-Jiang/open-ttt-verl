@@ -52,18 +52,21 @@ At rollout time:
 6. GRPO/verl assigns the verifier reward to the guidance response tokens only;
    execution-model tokens are not trained.
 
-For repeated Polyomino Modal experiments, the recommended path is the seeded
-OpenRouter smoke:
+For current Polyomino Modal experiments, the recommended path is the 3xH200
+GPT-OSS-120B execution recipe:
 
 ```bash
-modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary_openrouter_gpt55_seeded
+WORKSPACE=<modal-workspace-name-or-id> \
+modal run --detach scripts/modal_polyomino_h200_smoke.py \
+  --action train_gpt_oss_120b_3gpu_group16_h200_tuned
 ```
 
-This initializes an empty run directory from
+This recipe trains the Qwen3-8B guidance actor for 50 steps, saves guidance
+actor checkpoints every 5 steps, and uses a local Modal-hosted
+`openai/gpt-oss-120b` vLLM server as the frozen execution model. It initializes
+the run directory from
 `guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`
-instead of spending an execution call on a fresh bootstrap candidate each time.
-The older `bootstrap_single_summary` action is still available when you want to
-generate a new root entry dynamically.
+instead of spending an execution call on a fresh bootstrap candidate.
 
 ### Library Settings
 
@@ -95,13 +98,34 @@ tests/                # lightweight Guidance-TTT tests
 The default verl config directory is `verl/trainer/config` in this repository.
 `run.verl_config_dir=...` can still override it for debugging.
 
+## Install
+
+For local development and tests:
+
+```bash
+python -m pip install -r requirements-ttt.txt
+python -m pip install -r requirements-test.txt
+```
+
+For launching Modal Polyomino runs from your local machine:
+
+```bash
+python -m pip install -r requirements-modal.txt
+modal token new
+```
+
+The Modal script builds the GPU runtime remotely. It installs FrontierCS,
+go-judge, vLLM, PyTorch dependencies, and the H200-compatible `flash_attn`
+wheel inside the Modal image. Local CUDA-specific packages are therefore not
+required just to submit the job.
+
 ## Prepare a Smoke Run
 
 Erdos:
 
 ```bash
 python -m guidance_ttt.main_erdos \
-  --config guidance_ttt/config/erdos_smoke.yaml \
+  --config guidance_ttt/config/backup/erdos_smoke.yaml \
   --prepare-only
 ```
 
@@ -117,7 +141,7 @@ Polyomino:
 
 ```bash
 python -m guidance_ttt.main_erdos \
-  --config guidance_ttt/config/polyomino_frontiercs.yaml \
+  --config guidance_ttt/config/backup/polyomino_frontiercs.yaml \
   --prepare-only
 ```
 
@@ -156,7 +180,7 @@ override:
 
 ```bash
 python -m guidance_ttt.main_erdos \
-  --config guidance_ttt/config/polyomino_frontiercs.yaml \
+  --config guidance_ttt/config/backup/polyomino_frontiercs.yaml \
   --prepare-only \
   task.frontiercs.base_dir=/path/to/Frontier-CS
 ```
@@ -170,8 +194,8 @@ those conflicts matter for other workloads.
 The Modal entrypoint is:
 
 ```bash
-python -m pip install modal
-modal token new
+python -m pip install -r requirements-modal.txt
+modal token info
 ```
 
 Then launch from the repository root:
@@ -183,6 +207,7 @@ modal run scripts/modal_polyomino_h200_smoke.py --action train_history
 modal run scripts/modal_polyomino_h200_smoke.py --action bootstrap_single_summary
 modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary
 modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary_openrouter_gpt55_seeded
+WORKSPACE=<modal-workspace-name-or-id> modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_gpt_oss_120b_3gpu_group16_h200_tuned
 ```
 
 For the one-summary Modal run, use:
@@ -217,9 +242,9 @@ Actions:
   a baseline C++ solution. This checks that the remote judge path works before
   training.
 - `train`: runs the 4xH200 one-step Polyomino Guidance-TTT smoke config at
-  `guidance_ttt/config/polyomino_modal_h200_4gpu_smoke.yaml`.
+  `guidance_ttt/config/backup/polyomino_modal_h200_4gpu_smoke.yaml`.
 - `train_history`: runs the 2xH200 one-step history extraction smoke config at
-  `guidance_ttt/config/polyomino_modal_h200_2gpu_history_smoke.yaml`. This is
+  `guidance_ttt/config/backup/polyomino_modal_h200_2gpu_history_smoke.yaml`. This is
   the cheaper check for guidance parsing, raw execution summary extraction,
   canonical library summary writing, and execution text capture.
 - `bootstrap_single_summary`: resets the
@@ -242,6 +267,14 @@ Actions:
   `guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`,
   so it does not call the bootstrap-only API path before training. This action
   requires a Modal secret named `openrouter-api-key` with `OPENROUTER_API_KEY`.
+- `train_gpt_oss_120b_3gpu_group16_h200_tuned`: current recommended 50-step
+  Polyomino training recipe. It uses 2 H200s for the Qwen3-8B guidance actor
+  and one H200 for the local `openai/gpt-oss-120b` execution server. The active
+  config is
+  `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml`.
+  The run uses `groups_per_batch: 4`, `group_size: 16`, execution concurrency
+  8, `max_prompt_length: 4096`, `max_response_length: 8192`,
+  `filter_overlong_prompts: false`, and `truncation: middle`.
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -259,7 +292,20 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step
 ```
+
+For the 50-step GPT-OSS-120B recipe, guidance actor checkpoints are written to:
+
+```text
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_5/actor
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_10/actor
+...
+```
+
+Modal currently limits a single function timeout to 24 hours. The 50-step run
+can exceed that wall-clock time because execution/verifier rollout dominates
+each step, so checkpointing every 5 steps is intentional.
 
 The smoke configs intentionally keep only the training shape small: `num_steps`,
 `groups_per_batch`, `group_size`, PPO mini-batch size, and GPU count. They are
@@ -309,7 +355,7 @@ minimum C5 score summary:
 ```bash
 python -m guidance_ttt.run_summary \
   outputs/guidance_ttt/erdos_gpt_oss_20b_5step \
-  --config guidance_ttt/config/erdos_gpt_oss_20b_5step.yaml
+  --config guidance_ttt/config/backup/erdos_gpt_oss_20b_5step.yaml
 ```
 
 ## Tests

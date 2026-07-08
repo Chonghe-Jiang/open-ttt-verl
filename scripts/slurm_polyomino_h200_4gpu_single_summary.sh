@@ -29,7 +29,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 export START_FRONTIER_JUDGE="${START_FRONTIER_JUDGE:-1}"
-export CONFIG="${CONFIG:-guidance_ttt/config/polyomino_h200_4gpu_single_summary.yaml}"
+export CONFIG="${CONFIG:-guidance_ttt/config/backup/polyomino_h200_4gpu_single_summary.yaml}"
 export OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_single_summary}"
 export FRONTIERCS_DIR="${FRONTIERCS_DIR:-/home/qua/code/reference/Frontier-CS}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-8B}"

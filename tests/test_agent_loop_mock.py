@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from omegaconf import OmegaConf
 
@@ -10,7 +12,7 @@ from guidance_ttt.agent_loop import (
     build_agent_loop_output,
     build_execution_summary,
 )
-from guidance_ttt.state import VerificationResult
+from guidance_ttt.state import LLMRequest, LLMResponse, VerificationResult
 from guidance_ttt.tasks import get_task_spec
 from guidance_ttt.verifier.frontiercs_adapter import FrontierCSResult
 
@@ -154,6 +156,32 @@ continue
     assert "helper_only" not in result.solution
     assert result.model_summary is not None
     assert "The summary includes a non-solution code example." in result.model_summary
+
+
+def test_terminal_unclosed_summary_is_extracted_for_model_summary():
+    execution_text = """<execution_thinking>
+Use tagged solution.
+</execution_thinking>
+
+<solution>
+```python
+def run(seed=42, budget_s=1, **kwargs):
+    return ([0.5, 0.5], 0.5, 2)
+```
+</solution>
+
+<summary>
+This final summary reaches EOF without a closing tag."""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        guidance="Use tagged solution.",
+        timeout_s=20,
+    )
+
+    assert result.verification.valid is True
+    assert result.model_summary == "This final summary reaches EOF without a closing tag."
+    assert "This final summary reaches EOF without a closing tag." in result.summary
 
 
 def test_polyomino_execution_verification_uses_cpp_task_spec(monkeypatch):
@@ -433,3 +461,43 @@ async def test_empty_guidance_generation_retries_with_min_tokens():
     assert loop.server_manager.calls[0] == {"temperature": 1.0}
     assert loop.server_manager.calls[1]["min_tokens"] >= 16
     assert loop.server_manager.calls[1]["max_tokens"] <= 128
+
+
+@pytest.mark.anyio
+async def test_execution_llm_concurrency_limit_is_shared_across_loop_instances():
+    class SlowExecutionClient:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+
+        async def complete(self, request):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.02)
+            self.active -= 1
+            return LLMResponse(text="ok", model=request.model, finish_reason="stop")
+
+    client = SlowExecutionClient()
+    loops = []
+    for _ in range(2):
+        loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+        loop.execution_client = client
+        loop.execution_concurrency = 1
+        loop.execution_llm_config = {
+            "provider": "openai_compatible",
+            "model": "openai/gpt-oss-120b",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        loops.append(loop)
+
+    request = LLMRequest(
+        system="system",
+        user="user",
+        model="openai/gpt-oss-120b",
+        temperature=0.0,
+        max_tokens=None,
+    )
+
+    await asyncio.gather(*(loop._complete_execution(request) for loop in loops))
+
+    assert client.max_active == 1

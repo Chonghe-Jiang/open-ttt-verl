@@ -20,7 +20,7 @@ def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
         return raw_model_summary
     execution_text = metadata.get("execution_text")
     if isinstance(execution_text, str) and execution_text:
-        parsed_summary = extract_tag_or_none(execution_text, "summary")
+        parsed_summary = extract_terminal_tag_or_none(execution_text, "summary")
         if parsed_summary:
             return parsed_summary
     return None
@@ -264,6 +264,24 @@ def extract_tag_or_none(text: str, tag: str) -> str | None:
             return text[start + len(open_tag) : next_close].strip()
         cursor = next_close + len(close_tag)
     return None
+
+
+def extract_terminal_tag_or_none(text: str, tag: str) -> str | None:
+    tagged = extract_tag_or_none(text, tag)
+    if tagged is not None:
+        return tagged
+
+    open_tag = f"<{tag}>"
+    start = text.rfind(open_tag)
+    if start == -1:
+        return None
+    value_start = start + len(open_tag)
+    tail = text[value_start:].strip()
+    if not tail:
+        return None
+    if "<" in tail:
+        return None
+    return tail
 
 
 def _unwrap_redundant_tag(text: str, tag: str) -> str:

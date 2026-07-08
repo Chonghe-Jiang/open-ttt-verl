@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-CONFIG="${CONFIG:-guidance_ttt/config/erdos_gpt_oss_20b_5step.yaml}"
+CONFIG="${CONFIG:-guidance_ttt/config/backup/erdos_gpt_oss_20b_5step.yaml}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/erdos_gpt_oss_20b_5step}"
 export NCCL_NET="${NCCL_NET:-Socket}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"

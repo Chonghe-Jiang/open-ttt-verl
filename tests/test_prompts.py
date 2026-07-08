@@ -4,6 +4,7 @@ from guidance_ttt.prompts import (
     extract_guidance_or_format_error,
     extract_tag,
     extract_tag_or_none,
+    extract_terminal_tag_or_none,
     extract_text_outside_tag,
 )
 from guidance_ttt.state import LibraryEntry, LibraryNode
@@ -120,7 +121,7 @@ Recovered raw summary from the execution response.
     assert "def run(): return None" not in prompt.user
 
 
-def test_prompt_context_rejects_raw_summary_when_model_omits_closing_summary_tag():
+def test_prompt_context_recovers_terminal_raw_summary_when_model_omits_closing_summary_tag():
     entry = _entry()
     entry.summary = "Canonical summary should not be attached when execution_text has raw summary content."
     entry.metadata = {
@@ -145,9 +146,9 @@ It should remain raw model text, not the canonical summary.""",
         raw_score_label="FrontierCS score",
     )
 
-    assert "No previous summary is attached." in prompt.user
-    assert "Recovered raw summary from a model response that ended without the closing tag." not in prompt.user
-    assert "It should remain raw model text, not the canonical summary." not in prompt.user
+    assert "No previous summary is attached." not in prompt.user
+    assert "Recovered raw summary from a model response that ended without the closing tag." in prompt.user
+    assert "It should remain raw model text, not the canonical summary." in prompt.user
     assert "FrontierCS score: 0.4" in prompt.user
     assert "Canonical summary should not be attached" not in prompt.user
     assert "int main()" not in prompt.user
@@ -814,3 +815,38 @@ def test_execution_prompt_unwraps_guidance_before_wrapping_once():
     assert prompt.user.count("<guidance>") == 1
     assert prompt.user.count("</guidance>") == 1
     assert "<guidance>\nUse skyline packing.\n</guidance>" in prompt.user
+
+
+def test_extract_terminal_tag_accepts_unclosed_final_summary_block():
+    text = """<solution>
+code
+</solution>
+<summary>
+The final model summary reaches EOF without a closing tag."""
+
+    assert extract_tag_or_none(text, "summary") is None
+    assert extract_terminal_tag_or_none(text, "summary") == (
+        "The final model summary reaches EOF without a closing tag."
+    )
+
+
+def test_extract_terminal_tag_rejects_unclosed_non_terminal_block():
+    text = """<summary>
+unfinished summary
+<extra>
+trailing structured content
+</extra>"""
+
+    assert extract_terminal_tag_or_none(text, "summary") is None
+
+
+def test_extract_terminal_tag_does_not_relax_solution_parsing():
+    text = """<solution>
+```cpp
+int main(){return 0;}
+```
+<summary>
+summary
+</summary>"""
+
+    assert extract_tag_or_none(text, "solution") is None
