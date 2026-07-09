@@ -267,6 +267,13 @@ Actions:
   `guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`,
   so it does not call the bootstrap-only API path before training. This action
   requires a Modal secret named `openrouter-api-key` with `OPENROUTER_API_KEY`.
+- `bootstrap_gpt_oss_120b_seed`: runs a 1xH200 bootstrap-only Polyomino pass
+  with local `openai/gpt-oss-120b` execution and FrontierCS verification. It
+  writes a fresh seed candidate to
+  `/runs/guidance_ttt/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed/library.json`;
+  copy that file to
+  `guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`
+  when refreshing the static seed used by the recommended 120B recipe.
 - `train_gpt_oss_120b_3gpu_group16_h200_tuned`: current recommended 50-step
   Polyomino training recipe. It uses 2 H200s for the Qwen3-8B guidance actor
   and one H200 for the local `openai/gpt-oss-120b` execution server. The active
@@ -275,6 +282,13 @@ Actions:
   The run uses `groups_per_batch: 4`, `group_size: 16`, execution concurrency
   8, `max_prompt_length: 4096`, `max_response_length: 8192`,
   `filter_overlong_prompts: false`, and `truncation: middle`.
+- `train_gpt_oss_120b_3gpu_batch8_group8_temp09`: exploratory 20-step
+  Polyomino recipe with the same 2 H200 guidance actor plus 1 H200 local
+  `openai/gpt-oss-120b` execution layout. The active config is
+  `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09.yaml`.
+  It uses `groups_per_batch: 8`, `group_size: 8`, guidance rollout
+  `temperature: 0.9`, `top_p: 0.95`, greedy execution, execution concurrency
+  8, `max_prompt_length: 4096`, and `max_response_length: 8192`.
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -292,7 +306,9 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary
+/runs/guidance_ttt/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step
 ```
 
 For the 50-step GPT-OSS-120B recipe, guidance actor checkpoints are written to:
@@ -329,9 +345,10 @@ update the YAML config and the Modal script constants together.
 
 For seeded smoke runs, the initial candidate comes from the static library file,
 but the smoke shape still comes from the active YAML. The seed file does not
-carry `rollout_n` or PUCT config, so the OpenRouter GPT-5.5 seeded smoke uses the
-current YAML defaults: 2 H200 GPUs, `groups_per_batch: 1`, `group_size: 2`,
-`max_prompt_length: 8192`, and `max_response_length: 24576`.
+carry `rollout_n` or PUCT config. The recommended GPT-OSS-120B recipe uses
+`guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`;
+the older OpenRouter GPT-5.5 seeded smoke keeps using
+`guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`.
 
 ## Local gpt-oss-20b Execution
 

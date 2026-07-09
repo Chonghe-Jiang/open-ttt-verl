@@ -66,6 +66,18 @@ REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH = (
 REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
 )
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step"
+)
+REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml"
+)
+REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed"
+)
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 GPT_OSS_120B_SERVER_LOG_PATH = "/tmp/gpt_oss_120b_vllm.log"
 GPT_OSS_120B_XML_PROBE_OUTPUT_PATH = "/runs/guidance_ttt/gpt_oss_120b_xml_probe.json"
@@ -368,6 +380,27 @@ def gpt_oss_120b_3gpu_group16_h200_tuned_training_command() -> list[str]:
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_batch8_group8_temp09_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_bootstrap_seed_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH,
+        "--bootstrap-only",
     ]
 
 
@@ -1590,6 +1623,80 @@ def train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2")
+    judge = _start_judge()
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group8_temp09_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(
+            REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR
+        )
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B 3GPU batch8 group8 temp09 run did not write entries: {history_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG,
+    timeout=4 * 60 * 60,
+    cpu=32,
+    memory=196608,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def bootstrap_gpt_oss_120b_seed_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="0")
+    judge = _start_judge()
+    try:
+        _run_streaming(gpt_oss_120b_bootstrap_seed_command(), cwd=REMOTE_REPO_DIR)
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B bootstrap seed did not write any library entries: {merged_summary}")
+        if int(history_summary.get("raw_summary_ok_count", 0)) <= 0:
+            raise RuntimeError(f"GPT-OSS-120B bootstrap seed did not write a raw model summary: {merged_summary}")
+        statuses = set(summary.get("statuses") or [])
+        if "valid" not in statuses:
+            raise RuntimeError(f"GPT-OSS-120B bootstrap seed did not produce a valid candidate: {merged_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
     gpu=HISTORY_GPU_CONFIG,
     timeout=12 * 60 * 60,
     cpu=48,
@@ -1690,6 +1797,10 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_group16_smoke.remote())
     elif action == "train_gpt_oss_120b_3gpu_group16_h200_tuned":
         print(train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group8_temp09":
+        print(train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke.spawn())
+    elif action == "bootstrap_gpt_oss_120b_seed":
+        print(bootstrap_gpt_oss_120b_seed_smoke.remote())
     elif action == "gpt_oss_120b_xml_probe":
         print(gpt_oss_120b_xml_probe_smoke.remote())
     elif action == "prune_single_summary":
@@ -1704,6 +1815,9 @@ def main(action: str = "train"):
             "'train_single_summary_openrouter_gpt55', 'train_single_summary_openrouter_gpt55_seeded', "
             "'train_openrouter_gpt55_4gpu_full_batch', 'train_evolvent_gpt55_4gpu_short_response', "
             "'train_gpt_oss_120b_5gpu_group64', 'train_gpt_oss_120b_3gpu_group16', "
-            "'train_gpt_oss_120b_3gpu_group16_h200_tuned', 'gpt_oss_120b_xml_probe', "
+            "'train_gpt_oss_120b_3gpu_group16_h200_tuned', "
+            "'train_gpt_oss_120b_3gpu_batch8_group8_temp09', "
+            "'bootstrap_gpt_oss_120b_seed', "
+            "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"
         )

@@ -1,9 +1,11 @@
 # Guidance TTT Configs
 
-The top-level config directory keeps only the current recommended Polyomino
-Packing Modal recipe:
+The top-level config directory keeps the current Polyomino Packing Modal
+recipes and seed utility:
 
 - `polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml`
+- `polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09.yaml`
+- `polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml`
 
 Older smoke, debug, and historical experiment recipes are preserved under
 `backup/`. Existing scripts that still target those recipes should point to the

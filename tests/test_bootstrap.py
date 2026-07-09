@@ -41,6 +41,10 @@ def test_bootstrap_prompt_has_no_guidance_or_library_context():
     assert "<local_failures>" not in prompt.user
     assert "initial bootstrap candidate" in prompt.user
     assert "exactly three top-level XML blocks" in prompt.user
+    assert "You must output all three XML blocks exactly as shown below" in prompt.user
+    assert "The <summary>...</summary> block is mandatory and must be closed" in prompt.user
+    assert "Do not omit angle brackets from XML tags" in prompt.user
+    assert "The final characters of your response must be </summary>" in prompt.user
     assert "<execution_thinking>" in prompt.user
     assert "<solution>" in prompt.user
     assert "```cpp" in prompt.user

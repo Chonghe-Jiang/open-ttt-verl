@@ -4,6 +4,9 @@ import math
 
 from guidance_ttt.state import LibraryNode
 
+OWN_VALUE_Q_WEIGHT = 0.8
+REACHABLE_VALUE_Q_WEIGHT = 0.2
+
 
 def compute_scale(nodes: list[LibraryNode], *, initial_ids: set[str] | None = None) -> float:
     """Reward scale used by TTT-Discover's PUCT sampler."""
@@ -41,14 +44,22 @@ def archive_puct_score(
     total_visits: int,
     puct_c: float,
 ) -> float:
-    """TTT-Discover archive PUCT score.
+    """Guidance-TTT archive PUCT score.
 
     score(i) = Q(i) + c * scale * P(i) * sqrt(1 + T) / (1 + n[i])
-    Q(i) = m[i] if n[i] > 0 else R(i)
+    Q(i) = R(i) if n[i] == 0
+    Q(i) = 0.8 * R(i) + 0.2 * m[i] if n[i] > 0 and m[i] exists
     """
-    q_value = float(best_reachable_value) if visit_count > 0 and best_reachable_value is not None else float(node.value)
+    q_value = _q_value(node=node, visit_count=visit_count, best_reachable_value=best_reachable_value)
     bonus = float(puct_c) * float(scale) * float(prior) * math.sqrt(1.0 + float(total_visits)) / (1.0 + float(visit_count))
     return q_value + bonus
+
+
+def _q_value(*, node: LibraryNode, visit_count: int, best_reachable_value: float | None) -> float:
+    own_value = float(node.value)
+    if visit_count <= 0 or best_reachable_value is None:
+        return own_value
+    return OWN_VALUE_Q_WEIGHT * own_value + REACHABLE_VALUE_Q_WEIGHT * float(best_reachable_value)
 
 
 def rank_archive_nodes(
@@ -60,7 +71,7 @@ def rank_archive_nodes(
     total_visits: int,
     puct_c: float,
 ) -> list[tuple[float, float, LibraryNode, int, float, float, float]]:
-    """Return nodes sorted by discover-style PUCT score.
+    """Return nodes sorted by Guidance-TTT archive PUCT score.
 
     Tuple layout mirrors discover's logging order:
     (score, value, node, n, Q, P, bonus).
@@ -70,10 +81,10 @@ def rank_archive_nodes(
     scored = []
     for node in nodes:
         n_visits = int(visit_counts.get(node.id, 0))
-        q_value = (
-            float(best_reachable_values[node.id])
-            if n_visits > 0 and node.id in best_reachable_values
-            else float(node.value)
+        q_value = _q_value(
+            node=node,
+            visit_count=n_visits,
+            best_reachable_value=best_reachable_values.get(node.id),
         )
         prior = float(priors.get(node.id, 0.0))
         bonus = float(puct_c) * scale * prior * math.sqrt(1.0 + float(total_visits)) / (1.0 + float(n_visits))

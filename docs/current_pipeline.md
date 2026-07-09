@@ -142,9 +142,9 @@ python -m guidance_ttt.main_erdos \
 如果 `library.json` 不存在，初始化逻辑分两种：
 
 - 配置里有 `ttt.bootstrap.seed_library_path` 时，直接把该固定 JSON library
-  拷贝到 run directory。当前 OpenRouter GPT-5.5 Polyomino Modal smoke 使用
-  `guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`，
-  因此训练前不需要再执行动态 bootstrap API 调用。
+  拷贝到 run directory。当前推荐的 GPT-OSS-120B Polyomino Modal recipe 使用
+  `guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`，
+  因此训练前不需要在每次 launch 时再执行动态 bootstrap 调用。
 - 没有 seed library 时，按 task spec 创建 root node。Erdos baseline 是常数
   `h = 0.5` profile，raw C5 由 verifier 公式计算，root reward 为：
 
@@ -188,7 +188,7 @@ actor_rollout_ref.rollout.agent.agent_loop_config_path=<run>/agent_loop.yaml
 3. 打开 `library.json`。
 4. 调用 `GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)`。
 5. 选中一个 parent node；同一 group 的 32 个 rollouts 共用这个 parent node。
-6. 读取 selected entry 和 local failure entries；global best entries 只可用于目标分数计算，不作为 prompt summary attach。
+6. 读取 selected entry；global best entries 不作为 prompt summary attach，也不再用于 objective 文本。
 7. 调用 `build_guidance_prompt(...)` 构造 actor prompt。
 8. actor 生成 guidance tokens。
 9. 用 `extract_guidance_or_format_error(...)` 提取 `<guidance>...</guidance>`。
@@ -237,9 +237,9 @@ guidance_ttt/prompts.py::build_guidance_prompt
 
 - 让 actor 输出高层 guidance，不输出最终代码
 - actor 的输出 token 是唯一进入训练梯度路径的部分
-- prompt 会包含 problem、selected/failure raw model summary + verifier score context、目标 raw score、
-  输出格式和推荐搜索策略
-- selected/failure context 优先来自 `entry.metadata["raw_model_summary"]`，
+- prompt 会包含 problem、PUCT-selected raw model summary + verifier score context、
+  task-specific objective / score direction、输出格式和推荐搜索策略
+- selected context 优先来自 `entry.metadata["raw_model_summary"]`，
   其次从 `entry.metadata["execution_text"]` 解析 `<summary>`；不会 fallback 到
   `entry.summary`。有 entry 但缺 raw summary 时只 attach 占位文本，并追加 verifier status、
   task raw score label、reward 和 verifier message。
@@ -272,16 +272,12 @@ as run-local context when deciding the next step.
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
 
-<local_failures>
-{failure_text or "No local failure summaries yet."}
-</local_failures>
-
 # Objective
-Your task is to provide the next **evolutionary guidance** to beat the current visible target raw score ({best_valid_target}). Lower raw C5 is better.
+{objective}
 
 # Evolutionary Guidelines
 1. Analyze the search history.
-   Use `<selected_summary>` and `<local_failures>` to identify what has already been tried, what worked, what failed, and what bottleneck the next attempt should address.
+   Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
 
 2. Stay at the algorithmic-strategy level.
    Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
@@ -370,14 +366,29 @@ The next sections describe the current search state for this problem.
 </selected_summary>
 
 <guidance>
-{guidance}
+{prompt_guidance}
 </guidance>
 
 Use the problem statement as the authoritative task specification.
 Use the attached library context as historical evidence, not as code to copy blindly.
+Score direction: {score_direction}.
+
+# Guidance Adherence Contract
+Treat the guidance block as the primary design constraint for this attempt.
+Implement at least one concrete mechanism that directly realizes the guidance, not just a generic baseline.
+Do not silently fall back to a generic baseline or only repeat the selected summary.
+If any important guidance component is simplified or omitted, explain that explicitly in both `<execution_thinking>` and `<summary>`.
+
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
+{solution_contract}
 
 Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+You must output all three XML blocks exactly as shown below.
+The <execution_thinking>...</execution_thinking> block is mandatory and must use angle brackets.
+The <solution> block is mandatory and must contain a fenced ```{python_or_cpp} code block.
+The <summary>...</summary> block is mandatory and must be closed.
+Do not output only execution_thinking, only a summary, or plain natural language.
+Do not omit angle brackets from XML tags.
 
 Required output format:
 
@@ -393,11 +404,17 @@ Do not include code.
 </solution>
 
 <summary>
-A concise natural-language summary of the candidate.
+Write a concise natural-language summary of the candidate.
 
-This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+The summary should explain:
 
-Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+1. the implemented algorithmic idea;
+2. how it changes from the prior candidate in response to the given guidance;
+3. the main search, refinement, or optimization mechanisms actually used.
+
+Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
+
+Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code.
 
 </summary>
 
@@ -426,7 +443,7 @@ Any response that does not follow this exact three-block structure should be tre
 </solution>
 
 <summary>
-A concise natural-language summary of the candidate.
+Write a concise natural-language summary of the candidate.
 </summary>
 ````
 
@@ -566,6 +583,13 @@ reward：
 ## PUCT 选择
 
 新 group 创建时，library 从可见 children 中用 PUCT 选 parent。node value 来自 verifier reward，visits 用于 exploration。
+未访问 node 的 Q 值等于自身 reward；已访问且有 reachable child score 的 node 使用混合值：
+
+```text
+Q = 0.8 * own_reward + 0.2 * best_reachable_child_reward
+```
+
+这样 parent 不会完全被子节点历史覆盖，同时仍保留少量 tree improvement 信号。
 
 当前实现选的是 best root 的 immediate children，不做任意深度 tree traversal。完整 lineage 仍通过 `parent_id` 保留，后续可以扩展 prompt context。
 

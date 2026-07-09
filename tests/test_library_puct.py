@@ -4,6 +4,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.puct import archive_puct_score, rank_archive_nodes
 from guidance_ttt.state import LibraryEntry, make_root_node
 
 
@@ -147,6 +148,58 @@ def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path)
     picked = library.acquire_group("1:slot-a")
 
     assert picked.id == fresh.id
+
+
+def test_archive_puct_score_blends_own_value_with_best_child_after_visit():
+    node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
+
+    score = archive_puct_score(
+        node=node,
+        visit_count=1,
+        best_reachable_value=50.0,
+        prior=0.0,
+        scale=1.0,
+        total_visits=1,
+        puct_c=0.0,
+    )
+
+    assert score == 90.0
+
+
+def test_archive_puct_score_uses_own_value_before_first_visit():
+    node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
+
+    score = archive_puct_score(
+        node=node,
+        visit_count=0,
+        best_reachable_value=50.0,
+        prior=0.0,
+        scale=1.0,
+        total_visits=1,
+        puct_c=0.0,
+    )
+
+    assert score == 100.0
+
+
+def test_rank_archive_nodes_reports_blended_q_value_for_visited_node():
+    visited = make_root_node(problem_id="polyomino_packing", raw_score=50.0, reward=50.0)
+    fresh = make_root_node(problem_id="polyomino_packing", raw_score=40.0, reward=40.0)
+    visited.id = "visited"
+    fresh.id = "fresh"
+
+    ranked = rank_archive_nodes(
+        [visited, fresh],
+        initial_ids=set(),
+        visit_counts={"visited": 1},
+        best_reachable_values={"visited": 100.0},
+        total_visits=1,
+        puct_c=0.0,
+    )
+
+    ranked_by_id = {item[2].id: item for item in ranked}
+    assert ranked_by_id["visited"][4] == 60.0
+    assert ranked[0][2].id == "visited"
 
 
 def test_library_restores_puct_config_from_archive_config(tmp_path):

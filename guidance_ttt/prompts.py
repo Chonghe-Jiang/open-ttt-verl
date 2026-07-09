@@ -57,24 +57,9 @@ def build_guidance_prompt(
     objective_text: str | None = None,
     raw_score_label: str = "Score",
 ) -> Prompt:
-    failure_text = "\n\n".join(
-        _raw_summary_for_prompt(
-            entry,
-            fallback="No previous summary is attached.",
-            raw_score_label=raw_score_label,
-        )
-        for entry in local_failure_entries
-    )
-    best_valid = _best_valid_entry(global_best_entries, selected_entry)
-    best_valid_raw_score = (
-        best_valid.verifier_raw_score
-        if best_valid is not None and best_valid.verifier_raw_score is not None
-        else selected_node.raw_score
-    )
-    best_valid_target = best_valid_raw_score if best_valid_raw_score is not None else selected_node.raw_score
+    _ = selected_node, global_best_entries, local_failure_entries
     objective = objective_text or (
-        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
-        f"target raw score ({best_valid_target}). Lower raw C5 is better."
+        "Your task is to provide the next **evolutionary guidance** to reach a higher score."
     )
     user = f"""<problem>
 {problem_prompt}
@@ -87,16 +72,12 @@ as run-local context when deciding the next step.
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.", raw_score_label=raw_score_label)}
 </selected_summary>
 
-<local_failures>
-{failure_text or "No local failure summaries yet."}
-</local_failures>
-
 # Objective
 {objective}
 
 # Evolutionary Guidelines
 1. Analyze the search history.
-   Use `<selected_summary>` and `<local_failures>` to identify what has already been tried, what worked, what failed, and what bottleneck the next attempt should address.
+   Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
 
 2. Stay at the algorithmic-strategy level.
    Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
@@ -122,31 +103,6 @@ Provide the final evolutionary guidance for the next execution attempt. Describe
         ),
         user=user,
     )
-
-
-def _best_valid_entry(
-    *entry_groups: list[LibraryEntry] | LibraryEntry | None,
-    score_direction: str = "min",
-) -> LibraryEntry | None:
-    entries: list[LibraryEntry] = []
-    for group in entry_groups:
-        if group is None:
-            continue
-        if isinstance(group, list):
-            entries.extend(group)
-        else:
-            entries.append(group)
-    valid_entries = [
-        entry
-        for entry in entries
-        if entry.verifier_status == "valid" and entry.verifier_raw_score is not None
-    ]
-    if not valid_entries:
-        return None
-    key = lambda entry: float(entry.verifier_raw_score)
-    if score_direction == "max":
-        return max(valid_entries, key=key)
-    return min(valid_entries, key=key)
 
 
 def build_execution_prompt(
@@ -190,6 +146,13 @@ The next sections describe the current search state for this problem.
 Use the problem statement as the authoritative task specification.
 Use the attached library context as historical evidence, not as code to copy blindly.
 Score direction: {score_direction}.
+
+# Guidance Adherence Contract
+Treat the guidance block as the primary design constraint for this attempt.
+Implement at least one concrete mechanism that directly realizes the guidance, not just a generic baseline.
+Do not silently fall back to a generic baseline or only repeat the selected summary.
+If any important guidance component is simplified or omitted, explain that explicitly in both `<execution_thinking>` and `<summary>`.
+
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
 {contract}
 
@@ -215,11 +178,17 @@ Do not include code.
 </solution>
 
 <summary>
-A concise natural-language summary of the candidate.
+Write a concise natural-language summary of the candidate.
 
-This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+The summary should explain:
 
-Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+1. the implemented algorithmic idea;
+2. how it changes from the prior candidate in response to the given guidance;
+3. the main search, refinement, or optimization mechanisms actually used.
+
+Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
+
+Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code.
 
 </summary>
 

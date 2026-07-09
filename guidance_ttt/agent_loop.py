@@ -234,13 +234,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             selected_entry=selected_entry,
             global_best_entries=context["global_best_entries"],
             local_failure_entries=context["local_failure_entries"],
-            objective_text=task_spec.guidance_objective(
-                task_spec.best_target(
-                    selected_node,
-                    selected_entry,
-                    context["global_best_entries"],
-                )
-            ),
+            objective_text=task_spec.guidance_objective(None),
             raw_score_label=task_spec.raw_score_label,
         )
         prompt_ids = await self.apply_chat_template(

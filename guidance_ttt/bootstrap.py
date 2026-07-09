@@ -41,6 +41,13 @@ There is no previous library summary and no guidance yet. Produce one concrete b
 {task_spec.execution_solution_contract}
 
 Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+You must output all three XML blocks exactly as shown below.
+The <execution_thinking>...</execution_thinking> block is mandatory and must use angle brackets.
+The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
+The <summary>...</summary> block is mandatory and must be closed.
+Do not output only execution_thinking, only a summary, or plain natural language.
+Do not omit angle brackets from XML tags.
+The final characters of your response must be </summary>.
 
 Required output format:
 

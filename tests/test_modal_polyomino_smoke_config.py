@@ -595,7 +595,7 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_config_matches_req
     assert config["ttt"]["groups_per_batch"] == 4
     assert config["ttt"]["group_size"] == 16
     assert config["ttt"]["bootstrap"]["seed_library_path"] == (
-        "guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json"
+        "guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json"
     )
     assert config["task"]["id"] == "polyomino_packing"
 
@@ -630,6 +630,48 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_config_matches_req
     assert "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2" in overrides
 
 
+def test_modal_polyomino_gpt_oss_120b_bootstrap_seed_config_creates_fresh_library():
+    config_path = Path("guidance_ttt/config/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml")
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_gpt_oss_120b_bootstrap_seed")
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["task"]["id"] == "polyomino_packing"
+    assert config["ttt"]["groups_per_batch"] == 1
+    assert config["ttt"]["group_size"] == 1
+    assert config["ttt"]["bootstrap"] == {
+        "enabled": True,
+        "required": False,
+        "max_attempts": 4,
+        "overwrite_existing": True,
+    }
+
+    execution = config["llm"]["execution"]
+    assert execution["provider"] == "openai_compatible"
+    assert execution["model"] == "openai/gpt-oss-120b"
+    assert execution["base_url"] == "http://127.0.0.1:8000/v1"
+    assert execution["api_key"] == "local-vllm"
+    assert execution["temperature"] == 0.0
+    assert execution["max_tokens"] is None
+    assert execution["timeout_s"] == 1200
+
+
+def test_polyomino_gpt_oss_120b_seed_library_is_valid_and_model_matched():
+    seed_path = Path("guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json")
+    data = json.loads(seed_path.read_text())
+    entries = list(data["entries"].values())
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["verifier_status"] == "valid"
+    assert entry["verifier_raw_score"] is not None
+    assert entry["verifier_reward"] == entry["verifier_raw_score"]
+    assert entry["metadata"]["execution_model"] == "openai/gpt-oss-120b"
+    assert entry["metadata"]["execution_provider"] == "openai_compatible"
+    assert entry["metadata"]["raw_model_summary"]
+    assert entry["metadata"]["execution_text"].strip().endswith("</summary>")
+
+
 def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_script_targets_requested_config():
     module = _load_modal_smoke_module()
     script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
@@ -648,6 +690,116 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_script_targets_req
         "--config",
         module.REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH,
     ]
+
+
+def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group8_temp09_config_matches_requested_shape():
+    config_path = Path("guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09.yaml")
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["num_steps"] == 20
+    assert config["run"]["total_epochs"] == 20
+    assert config["run"]["save_freq"] == 5
+    assert config["run"]["temperature"] == 0.9
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step")
+    assert config["run"]["max_prompt_length"] == 4096
+    assert config["run"]["max_response_length"] == 8192
+    assert config["run"]["n_gpus_per_node"] == 2
+    assert config["run"]["tensor_model_parallel_size"] == 1
+    assert config["run"]["ppo_mini_batch_size"] == 4
+    assert config["run"]["ppo_micro_batch_size_per_gpu"] == 2
+    assert config["ttt"]["groups_per_batch"] == 8
+    assert config["ttt"]["group_size"] == 8
+    assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 64
+    assert config["ttt"]["bootstrap"]["seed_library_path"] == (
+        "guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json"
+    )
+    assert config["task"]["id"] == "polyomino_packing"
+
+    execution = config["llm"]["execution"]
+    assert execution == {
+        "provider": "openai_compatible",
+        "model": "openai/gpt-oss-120b",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "local-vllm",
+        "temperature": 0.0,
+        "max_tokens": None,
+        "phase1_max_tokens": None,
+        "timeout_s": 1200,
+        "concurrency": 8,
+    }
+
+    overrides = set(config["verl_overrides"])
+    assert "actor_rollout_ref.rollout.top_p=0.95" in overrides
+    assert "actor_rollout_ref.rollout.val_kwargs.do_sample=False" in overrides
+    assert "actor_rollout_ref.rollout.val_kwargs.temperature=0" in overrides
+    assert "actor_rollout_ref.rollout.val_kwargs.top_p=1.0" in overrides
+    assert "actor_rollout_ref.rollout.agent.num_workers=4" in overrides
+    assert "actor_rollout_ref.rollout.max_num_seqs=16" in overrides
+    assert "actor_rollout_ref.rollout.max_num_batched_tokens=32768" in overrides
+
+
+def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group8_temp09_script_targets_requested_config():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.GPT_OSS_120B_3GPU_CONFIG == "H200:3"
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09.yaml"
+    )
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step"
+    )
+    assert module.gpt_oss_120b_3gpu_batch8_group8_temp09_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_CONFIG_PATH,
+    ]
+    function_start = script.rindex(
+        "@app.function",
+        0,
+        script.index("def train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke"),
+    )
+    source = script[function_start:]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "gpu=GPT_OSS_120B_3GPU_CONFIG" in source
+    assert "_reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR)" in source
+    assert '_start_gpt_oss_120b_server(cuda_visible_devices="2")' in source
+    assert '"CUDA_VISIBLE_DEVICES": "0,1"' in source
+    assert "gpt_oss_120b_3gpu_batch8_group8_temp09_training_command()" in source
+    assert "train_gpt_oss_120b_3gpu_batch8_group8_temp09" in script
+
+
+def test_modal_polyomino_gpt_oss_120b_bootstrap_seed_script_targets_single_h200():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.GPT_OSS_120B_SINGLE_GPU_CONFIG == "H200:1"
+    assert module.REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml"
+    )
+    assert module.REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_gpt_oss_120b_bootstrap_seed"
+    )
+    assert module.gpt_oss_120b_bootstrap_seed_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH,
+        "--bootstrap-only",
+    ]
+
+    function_start = script.rindex("@app.function", 0, script.index("def bootstrap_gpt_oss_120b_seed_smoke"))
+    source = script[function_start:]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG" in source
+    assert "_reset_output_dir(REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_OUTPUT_DIR)" in source
+    assert '_start_gpt_oss_120b_server(cuda_visible_devices="0")' in source
+    assert "gpt_oss_120b_bootstrap_seed_command()" in source
+    assert "bootstrap_gpt_oss_120b_seed" in script
     function_start = script.rindex(
         "@app.function",
         0,

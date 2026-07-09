@@ -237,7 +237,8 @@ Preserve this exact raw text."""
     assert "next **evolutionary guidance**" in prompt.user
     assert "# Evolutionary Guidelines" in prompt.user
     assert "1. Analyze the search history." in prompt.user
-    assert "what has already been tried, what worked, what failed" in prompt.user
+    assert "what has already been tried, what worked" in prompt.user
+    assert "what failed" not in prompt.user
     assert "2. Stay at the algorithmic-strategy level." in prompt.user
     assert "Propose high-level algorithmic directions and ideas." in prompt.user
     assert "Do not write code, implementation details, or parameter schedules." in prompt.user
@@ -262,11 +263,13 @@ Preserve this exact raw text."""
     assert "Directional Search Strategy" not in prompt.user
     assert "Progress Target" not in prompt.user
     assert "Do not write code, implementation details, or parameter schedules." in prompt.user
-    assert "current visible target raw score (0.4)" in prompt.user
+    assert "reach a higher score" in prompt.user
+    assert "current visible target raw score" not in prompt.user
+    assert "(0.4)" not in prompt.user
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
 
 
-def test_guidance_prompt_omits_global_best_and_keeps_local_failure_history():
+def test_guidance_prompt_omits_global_best_and_local_failure_history():
     global_best = _entry()
     global_best.id = "best-entry"
     global_best.summary = "best history used mirror minimax"
@@ -290,16 +293,16 @@ def test_guidance_prompt_omits_global_best_and_keeps_local_failure_history():
 
     assert "<global_best>" not in prompt.user
     assert "best history used mirror minimax" not in prompt.user
-    assert "<local_failures>" in prompt.user
-    assert "failed because sum drifted" in prompt.user
+    assert "<local_failures>" not in prompt.user
+    assert "failed because sum drifted" not in prompt.user
     assert "best-entry" not in prompt.user
     assert "failure-entry" not in prompt.user
     assert "reuse best projection repair" not in prompt.user
-    assert "sum(h) must equal n_points / 2" in prompt.user
+    assert "sum(h) must equal n_points / 2" not in prompt.user
     assert "Failure mode: invalid" not in prompt.user
 
 
-def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
+def test_guidance_prompt_uses_static_improvement_objective_without_global_best_target():
     global_best = _entry()
     global_best.id = "best-entry"
     global_best.verifier_raw_score = 0.3821438682282878
@@ -315,9 +318,13 @@ def test_guidance_prompt_targets_controlled_improvement_from_best_valid_entry():
         local_failure_entries=[],
     )
 
-    assert "current visible target raw score (0.3821438682282878)" in prompt.user
-    assert "Lower raw C5 is better" in prompt.user
+    assert "reach a higher score" in prompt.user
+    assert "current visible target raw score" not in prompt.user
+    assert "0.3821438682282878" not in prompt.user
+    assert "Lower raw C5 is better" not in prompt.user
     assert "what bottleneck the next attempt should address" in prompt.user
+    assert "<local_failures>" not in prompt.user
+    assert "`<local_failures>`" not in prompt.user
     assert "high-level algorithmic directions" in prompt.user
     assert "Propose high-level algorithmic directions and ideas." in prompt.user
     assert "Do not write code, implementation details, or parameter schedules." in prompt.user
@@ -348,11 +355,11 @@ def test_guidance_prompt_accepts_task_specific_objective_text():
         selected_entry=None,
         global_best_entries=[],
         local_failure_entries=[],
-        objective_text="Beat the current visible FrontierCS score target (0.0). Higher FrontierCS score is better.",
+        objective_text="Reach a higher FrontierCS score. Higher FrontierCS score is better.",
     )
 
     assert "Pack the Polyominoes" in prompt.user
-    assert "Beat the current visible FrontierCS score target (0.0)" in prompt.user
+    assert "Reach a higher FrontierCS score" in prompt.user
     assert "Higher FrontierCS score is better" in prompt.user
     assert "Lower raw C5 is better" not in prompt.user
 
@@ -457,7 +464,9 @@ Try pairwise mass transfer around the first five coordinates.
         local_failure_entries=[code_entry],
     )
 
-    assert "current visible target raw score (0.5)" in prompt.user
+    assert "reach a higher score" in prompt.user
+    assert "current visible target raw score" not in prompt.user
+    assert "(0.5)" not in prompt.user
     assert "The following notes explain what each block should contain" not in prompt.user
     assert "Provide the final evolutionary guidance for the next execution attempt" in prompt.user
     assert "Current initial construction (reference state to improve)" not in prompt.user
@@ -465,9 +474,10 @@ Try pairwise mass transfer around the first five coordinates.
     assert "h=[0.2, 0.4, 0.6, 0.8]" not in prompt.user
     assert "Extracted attached-code facts" not in prompt.user
     assert "[code omitted" not in prompt.user
-    assert "```python" in prompt.user
-    assert "result = minimize(c5_score, h0, method=\"SLSQP\", options={\"maxiter\": 300, \"ftol\": 1e-13})" in prompt.user
-    assert "Try pairwise mass transfer around the first five coordinates." in prompt.user
+    assert "<local_failures>" not in prompt.user
+    assert "```python" not in prompt.user
+    assert "result = minimize(c5_score, h0, method=\"SLSQP\", options={\"maxiter\": 300, \"ftol\": 1e-13})" not in prompt.user
+    assert "Try pairwise mass transfer around the first five coordinates." not in prompt.user
 
 
 def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_raw_summaries():
@@ -515,6 +525,14 @@ def selected_candidate():
     assert "Use the attached library context as historical evidence" in prompt.user
     assert "Score direction: min." in prompt.user
     assert "Implement one concrete solution that follows the guidance" in prompt.user
+    assert "# Guidance Adherence Contract" in prompt.user
+    assert "Treat the guidance block as the primary design constraint" in prompt.user
+    assert "Implement at least one concrete mechanism that directly realizes the guidance" in prompt.user
+    assert "Do not silently fall back to a generic baseline or only repeat the selected summary" in prompt.user
+    assert "If any important guidance component is simplified or omitted" in prompt.user
+    assert "explain that explicitly in both `<execution_thinking>` and `<summary>`" in prompt.user
+    assert prompt.user.index("</guidance>") < prompt.user.index("# Guidance Adherence Contract")
+    assert prompt.user.index("# Guidance Adherence Contract") < prompt.user.index("Implement one concrete solution")
     assert "Return exactly these three blocks" not in prompt.user
     assert "Your response must contain exactly three top-level XML blocks" in prompt.user
     assert "Required output format:" in prompt.user
@@ -525,11 +543,18 @@ def selected_candidate():
     assert contract.find("</solution>") < contract.find("<summary>")
     assert "A short explanation of how the guidance was converted into the submitted algorithm" in prompt.user
     assert "Do not include code." in prompt.user
-    assert "A concise natural-language summary of the candidate" in prompt.user
-    assert "guidance-driven change from the prior idea" in prompt.user
-    assert "If a suggested guidance component was not actually implemented" in prompt.user
-    assert "placement ordering, orientation normalization, feasibility checks" in prompt.user
-    assert "Do not include source code, code fences, copied constants" in prompt.user
+    assert "Write a concise natural-language summary of the candidate." in prompt.user
+    assert "The summary should explain:" in prompt.user
+    assert "1. the implemented algorithmic idea;" in prompt.user
+    assert "2. how it changes from the prior candidate in response to the given guidance;" in prompt.user
+    assert "3. the main search, refinement, or optimization mechanisms actually used." in prompt.user
+    assert "Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone." in prompt.user
+    assert "Only describe mechanisms that are present in the implementation." in prompt.user
+    assert "simplified, approximated, or omitted" in prompt.user
+    assert "do not include source code" in prompt.user
+    assert "copied constants" not in contract
+    assert "benchmark-specific profile values" not in contract
+    assert "placement ordering, orientation normalization" not in contract
     assert "Any response that does not follow this exact three-block structure should be treated as invalid" in prompt.user
     assert "You must output all three XML blocks exactly as shown below" in prompt.user
     assert "The <solution> block is mandatory and must contain a fenced ```python code block" in prompt.user

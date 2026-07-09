@@ -21,8 +21,7 @@ flowchart TD
     B[(GuidanceLibrary JSON)] --> C
 
     C --> D[selected_node]
-    C --> E[selected_entry / local_failure_entries]
-    C --> X[global_best_entries<br/>target score only]
+    C --> E[selected_entry]
 
     A --> F[build_guidance_prompt]
     D --> F
@@ -72,8 +71,6 @@ GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)
 
 GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=global_step)
   -> selected_entry
-  -> global_best_entries (objective target only; not prompt summary attach)
-  -> local_failure_entries
 
 build_guidance_prompt(...)
   -> guidance chat messages
@@ -108,8 +105,6 @@ Guidance prompt 和 execution prompt 来自同一次 PUCT selection 的同一个
 selected_node = library.acquire_group(...)
 context = library.context_for_node(selected_node, ...)
 selected_entry = context["selected_entry"]
-global_best_entries = context["global_best_entries"]  # target score only
-local_failure_entries = context["local_failure_entries"]
 ```
 
 - Guidance prompt 和 execution prompt 都 attach lightweight context: raw model
@@ -117,12 +112,12 @@ local_failure_entries = context["local_failure_entries"]
   `entry.summary` 的 6-section 大块内容；老 library entry 缺少 raw summary 时只 attach
   占位文本和 verifier score/status/message。
 - Guidance prompt 和 execution prompt 都不 attach global best summary。当前实现只把
-  PUCT-selected entry 的 raw summary + 分数作为主历史上下文；guidance prompt 另外保留
-  local failure raw summaries。
+  PUCT-selected entry 的 raw summary + 分数作为主历史上下文。
 - 两个 prompt 都不 attach node id、visits、verified artifacts、previous guidance、
   reusable idea、failure mode 或 root initial construction facts。
 - Execution prompt 额外 attach 当前 parsed `<guidance>`，用于把 guidance 落成具体代码。
-- 当前 `lineage_entries` 会由 library context 返回，但没有直接写入 prompt。
+- 当前 `global_best_entries`、`lineage_entries` 和 `local_failure_entries` 会由 library context
+  返回，但没有直接写入 prompt，也不再用于 guidance objective 文本。
 
 ## Summary Attach Rules
 
@@ -229,16 +224,12 @@ as run-local context when deciding the next step.
 {_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
 </selected_summary>
 
-<local_failures>
-{failure_text or "No local failure summaries yet."}
-</local_failures>
-
 # Objective
 {objective_text}
 
 # Evolutionary Guidelines
 1. Analyze the search history.
-   Use `<selected_summary>` and `<local_failures>` to identify what has already been tried, what worked, what failed, and what bottleneck the next attempt should address.
+   Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
 
 2. Stay at the algorithmic-strategy level.
    Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
@@ -255,32 +246,19 @@ Provide the final evolutionary guidance for the next execution attempt. Describe
 
 ### Guidance Runtime Variables
 
-`failure_text`:
+`objective_text`:
 
 ```python
-failure_text = "\n\n".join(
-    _raw_summary_for_prompt(
-        entry,
-        fallback="No previous summary is attached.",
-        raw_score_label=task_spec.raw_score_label,
-    )
-    for entry in local_failure_entries
-)
-```
-
-`best_valid_target` / `objective_text`:
-
-```python
-target = task_spec.best_target(selected_node, selected_entry, global_best_entries)
-objective_text = task_spec.guidance_objective(target)
+objective_text = task_spec.guidance_objective(None)
 ```
 
 所以 guidance prompt 的历史内容是 raw model summary + verifier score。objective 文案和
 score 方向由 task spec 控制。Erdos 使用 “Lower raw C5 is better”；Polyomino 使用
 “Higher FrontierCS score is better”。
 
-注意：`global_best_entries` 可以继续用于 task objective 计算当前目标分数，但 global
-best 的 summary 不再 attach 到 guidance prompt。
+注意：`global_best_entries` 目前只为接口兼容和 library context 保留；global best 的
+summary/code/method 不 attach，global best 的 score 也不再写入 objective。`local_failure_entries`
+同样不展示给 guidance model。
 
 ### Guidance Parsing
 
@@ -353,15 +331,29 @@ The next sections describe the current search state for this problem.
 </selected_summary>
 
 <guidance>
-{guidance}
+{prompt_guidance}
 </guidance>
 
 Use the problem statement as the authoritative task specification.
 Use the attached library context as historical evidence, not as code to copy blindly.
+Score direction: {score_direction}.
+
+# Guidance Adherence Contract
+Treat the guidance block as the primary design constraint for this attempt.
+Implement at least one concrete mechanism that directly realizes the guidance, not just a generic baseline.
+Do not silently fall back to a generic baseline or only repeat the selected summary.
+If any important guidance component is simplified or omitted, explain that explicitly in both `<execution_thinking>` and `<summary>`.
+
 Implement one concrete solution that follows the guidance while satisfying the problem specification.
 {solution_contract}
 
 Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+You must output all three XML blocks exactly as shown below.
+The <execution_thinking>...</execution_thinking> block is mandatory and must use angle brackets.
+The <solution> block is mandatory and must contain a fenced ```{python_or_cpp} code block.
+The <summary>...</summary> block is mandatory and must be closed.
+Do not output only execution_thinking, only a summary, or plain natural language.
+Do not omit angle brackets from XML tags.
 
 Required output format:
 
@@ -377,11 +369,17 @@ Do not include code.
 </solution>
 
 <summary>
-A concise natural-language summary of the candidate.
+Write a concise natural-language summary of the candidate.
 
-This summary must describe the implemented algorithm, the guidance-driven change from the prior idea, and the main search/refinement/optimization mechanisms used. If a suggested guidance component was not actually implemented, explicitly state that it was simplified or omitted. Mention implementation details only when they are conceptually important, such as placement ordering, orientation normalization, feasibility checks, local search, restart strategy, board-size selection, or constraint handling.
+The summary should explain:
 
-Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+1. the implemented algorithmic idea;
+2. how it changes from the prior candidate in response to the given guidance;
+3. the main search, refinement, or optimization mechanisms actually used.
+
+Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
+
+Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code.
 
 </summary>
 
@@ -397,10 +395,10 @@ summary.
 
 For Polyomino Modal experiments that should not spend an execution call on
 every launch, `ttt.bootstrap.seed_library_path` can point to a fixed JSON
-library. The OpenRouter GPT-5.5 2xH200 smoke config uses:
+library. The recommended GPT-OSS-120B recipe uses:
 
 ```text
-guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
+guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json
 ```
 
 When the output `library.json` does not exist, `prepare_run(...)` copies that
@@ -622,6 +620,16 @@ puct_n: visit counts
 puct_m: best reachable values
 puct_T: total completed group visits
 ```
+
+PUCT 的 Q 值现在不是纯 child-best。未访问 node 使用自身 reward；已访问且存在
+`puct_m` 时使用：
+
+```text
+Q = 0.8 * own_reward + 0.2 * best_reachable_child_reward
+```
+
+这样可以避免高分 parent 只因为一次较差 child 就被子树分数完全覆盖，同时仍保留子树
+改进信号。
 
 ## Training Signal
 

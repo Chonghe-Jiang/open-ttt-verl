@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from guidance_ttt.state import LibraryEntry, LibraryNode, VerificationResult
+from guidance_ttt.state import LibraryNode, VerificationResult
 from guidance_ttt.tasks.erdos import ERDOS_PROBLEM_PROMPT, create_root_node as create_erdos_root_node
 from guidance_ttt.tasks.polyomino import POLYOMINO_PROBLEM_PROMPT, create_root_node as create_polyomino_root_node
 from guidance_ttt.verifier.erdos import verify_erdos_solution_text
@@ -37,24 +37,6 @@ class TaskSpec:
     ) -> VerificationResult:
         return self.verifier(text, timeout_s=timeout_s, config=config or {})
 
-    def best_target(
-        self,
-        selected_node: LibraryNode,
-        selected_entry: LibraryEntry | None,
-        global_best_entries: list[LibraryEntry],
-    ) -> float | None:
-        candidates = [
-            entry.verifier_raw_score
-            for entry in [selected_entry, *global_best_entries]
-            if entry is not None and entry.verifier_status == "valid" and entry.verifier_raw_score is not None
-        ]
-        if not candidates:
-            return selected_node.raw_score
-        if self.score_direction == "max":
-            return max(float(score) for score in candidates)
-        return min(float(score) for score in candidates)
-
-
 def _verify_erdos(text: str, *, timeout_s: int, config: dict[str, Any] | None = None) -> VerificationResult:
     return verify_erdos_solution_text(text, timeout_s=timeout_s)
 
@@ -66,16 +48,18 @@ def _verify_polyomino(text: str, *, timeout_s: int, config: dict[str, Any] | Non
 
 
 def _erdos_objective(target: float | None) -> str:
+    _ = target
     return (
-        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
-        f"target raw score ({target}). Lower raw C5 is better."
+        "Your task is to provide the next **evolutionary guidance** to reach a higher reward score "
+        "by lowering raw C5. Lower raw C5 is better."
     )
 
 
 def _polyomino_objective(target: float | None) -> str:
+    _ = target
     return (
-        "Your task is to provide the next **evolutionary guidance** to beat the current visible "
-        f"FrontierCS score target ({target}). Higher FrontierCS score is better."
+        "Your task is to provide the next **evolutionary guidance** to reach a higher FrontierCS "
+        "score. Higher FrontierCS score is better."
     )
 
 
