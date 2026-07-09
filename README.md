@@ -289,6 +289,19 @@ Actions:
   It uses `groups_per_batch: 8`, `group_size: 8`, guidance rollout
   `temperature: 0.9`, `top_p: 0.95`, greedy execution, execution concurrency
   8, `max_prompt_length: 4096`, and `max_response_length: 8192`.
+- `train_gpt_oss_120b_3gpu_batch8_group16_concurrency16`: one-step
+  Polyomino stress recipe for checking whether an 8x16 rollout shape can run
+  on the same 3 H200 layout. The active config is
+  `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step.yaml`.
+  It uses `groups_per_batch: 8`, `group_size: 16`, one agent worker,
+  execution concurrency 16, local GPT-OSS-120B vLLM `max_num_seqs=16`, and
+  FrontierCS/go-judge workers/parallelism 16.
+- `train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step`: 50-step
+  Polyomino training recipe using the same 8x16 rollout shape and 3 H200 layout
+  as the stress test. The active config is
+  `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml`.
+  It saves guidance actor checkpoints every 5 steps and keeps execution/judge
+  concurrency at 16.
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -309,6 +322,8 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step
 ```
 
 For the 50-step GPT-OSS-120B recipe, guidance actor checkpoints are written to:

@@ -72,6 +72,20 @@ REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_CONFIG_PATH = (
 REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP8_TEMP09_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step"
 )
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step"
+)
 REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml"
 )
@@ -393,6 +407,26 @@ def gpt_oss_120b_3gpu_batch8_group8_temp09_training_command() -> list[str]:
     ]
 
 
+def gpt_oss_120b_3gpu_batch8_group16_concurrency16_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_CONFIG_PATH,
+    ]
+
+
 def gpt_oss_120b_bootstrap_seed_command() -> list[str]:
     return [
         "python",
@@ -507,13 +541,14 @@ def _print_judge_log(max_bytes: int = 20000) -> None:
     _print_log_tail(JUDGE_LOG_PATH, label="judge", max_bytes=max_bytes)
 
 
-def _start_judge() -> subprocess.Popen:
+def _start_judge(*, workers: int = 8) -> subprocess.Popen:
+    workers = max(1, int(workers))
     env = {
         **__import__("os").environ,
         "PORT": "8081",
         "GJ_ADDR": "http://127.0.0.1:5050",
-        "JUDGE_WORKERS": "8",
-        "GJ_PARALLELISM": "8",
+        "JUDGE_WORKERS": str(workers),
+        "GJ_PARALLELISM": str(workers),
         "ES_PRE_FORK": "0",
         "SAVE_OUTPUTS": "false",
     }
@@ -538,7 +573,8 @@ def _stop_judge(process: subprocess.Popen) -> None:
         log_file.close()
 
 
-def _start_gpt_oss_120b_server(*, cuda_visible_devices: str = "4") -> subprocess.Popen:
+def _start_gpt_oss_120b_server(*, cuda_visible_devices: str = "4", max_num_seqs: int = 8) -> subprocess.Popen:
+    max_num_seqs = max(1, int(max_num_seqs))
     env = {
         **os.environ,
         "CUDA_VISIBLE_DEVICES": cuda_visible_devices,
@@ -566,7 +602,7 @@ def _start_gpt_oss_120b_server(*, cuda_visible_devices: str = "4") -> subprocess
         "--max-model-len",
         "32768",
         "--max-num-seqs",
-        "8",
+        str(max_num_seqs),
         "--enforce-eager",
         "--download-dir",
         "/cache/huggingface/hub",
@@ -1661,6 +1697,91 @@ def train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_concurrency16_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(
+            REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR
+        )
+        dump_summary = _dump_prompt_answer_artifacts(
+            REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR
+        )
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(
+                f"GPT-OSS-120B 3GPU batch8 group16 concurrency16 run did not write entries: {history_summary}"
+            )
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(
+            REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR
+        )
+        dump_summary = _dump_prompt_answer_artifacts(
+            REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR
+        )
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(
+                f"GPT-OSS-120B 3GPU batch8 group16 concurrency16 50-step run did not write entries: "
+                f"{history_summary}"
+            )
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
     gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG,
     timeout=4 * 60 * 60,
     cpu=32,
@@ -1799,6 +1920,10 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke.spawn())
     elif action == "train_gpt_oss_120b_3gpu_batch8_group8_temp09":
         print(train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke.spawn())
     elif action == "bootstrap_gpt_oss_120b_seed":
         print(bootstrap_gpt_oss_120b_seed_smoke.remote())
     elif action == "gpt_oss_120b_xml_probe":
@@ -1817,6 +1942,8 @@ def main(action: str = "train"):
             "'train_gpt_oss_120b_5gpu_group64', 'train_gpt_oss_120b_3gpu_group16', "
             "'train_gpt_oss_120b_3gpu_group16_h200_tuned', "
             "'train_gpt_oss_120b_3gpu_batch8_group8_temp09', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_concurrency16', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step', "
             "'bootstrap_gpt_oss_120b_seed', "
             "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"
