@@ -6,6 +6,7 @@ from omegaconf import OmegaConf
 from guidance_ttt.agent_loop import (
     EXECUTION_SUMMARY_SECTIONS,
     GuidanceExecutionAgentLoop,
+    PolyominoDiscoverAgentLoop,
     _normalize_task_config,
     _verifier_config_from_task_config,
     _verify_execution_without_fallback,
@@ -501,3 +502,104 @@ async def test_execution_llm_concurrency_limit_is_shared_across_loop_instances()
     await asyncio.gather(*(loop._complete_execution(request) for loop in loops))
 
     assert client.max_active == 1
+
+
+@pytest.mark.anyio
+async def test_polyomino_discover_loop_trains_actor_solution_tokens_and_updates_library(tmp_path, monkeypatch):
+    cpp_response = """<think>
+Try a compact shelf baseline directly from the actor.
+</think>
+
+<solution>
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+int main() { return 0; }
+```
+</solution>"""
+
+    def fake_evaluate_cpp_solution(code, *, problem_id, config=None):
+        assert problem_id == "0"
+        assert config == {
+            "base_dir": "/opt/Frontier-CS",
+            "judge_url": "http://127.0.0.1:8081",
+            "n_cases": 70,
+        }
+        assert "int main()" in code
+        return FrontierCSResult(valid=True, score=42.0, message="accepted", artifacts={"cases": 70})
+
+    monkeypatch.setattr("guidance_ttt.verifier.polyomino.evaluate_cpp_solution", fake_evaluate_cpp_solution)
+
+    class FakeTokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            return cpp_response
+
+    class FakeServerManager:
+        async def generate(self, *, request_id, prompt_ids, sampling_params):
+            assert prompt_ids == [1, 2, 3]
+            assert sampling_params["temperature"] == 1.0
+            return type(
+                "Output",
+                (),
+                {"token_ids": [10, 11, 12, 13], "log_probs": [-0.1, -0.2, -0.3, -0.4], "stop_reason": "stop"},
+            )()
+
+    from guidance_ttt.library import GuidanceLibrary
+
+    library_path = tmp_path / "library.json"
+    root = get_task_spec("polyomino_packing").create_root_node()
+    GuidanceLibrary(library_path, initial_nodes=[root], rollout_n=1)
+
+    loop = PolyominoDiscoverAgentLoop.__new__(PolyominoDiscoverAgentLoop)
+    loop.server_manager = FakeServerManager()
+    loop.tokenizer = FakeTokenizer()
+    loop.response_length = 26000
+    loop.task_config = {
+        "id": "polyomino_packing",
+        "frontiercs": {
+            "base_dir": "/opt/Frontier-CS",
+            "judge_url": "http://127.0.0.1:8081",
+            "problem_id": "0",
+            "n_cases": 70,
+        },
+    }
+    loop.task_spec = get_task_spec("polyomino_packing")
+    loop.problem_prompt_override = None
+    loop.verifier_timeout_s = 1000
+
+    async def fake_apply_chat_template(messages):
+        assert messages[0]["role"] == "system"
+        assert "direct TTT-Discover policy" in messages[0]["content"]
+        assert "Polyomino Packing" in messages[1]["content"]
+        assert "<solution>" in messages[1]["content"]
+        return [1, 2, 3]
+
+    loop.apply_chat_template = fake_apply_chat_template
+
+    output = await loop.run(
+        {"temperature": 1.0},
+        uid="slot-a",
+        global_step=1,
+        extra_info={
+            "library_path": str(library_path),
+            "task": "polyomino_packing",
+            "task_config": loop.task_config,
+            "group_size": 1,
+            "rollout_n": 1,
+            "puct_c": 1.0,
+        },
+    )
+
+    assert output.response_ids == [10, 11, 12, 13]
+    assert output.response_mask == [1, 1, 1, 1]
+    assert output.response_logprobs == [-0.1, -0.2, -0.3, -0.4]
+    assert output.reward_score == 42.0
+    assert output.extra_fields["direct_discover"] is True
+    assert output.extra_fields["verification"]["status"] == "valid"
+    assert output.extra_fields["solution"].startswith("#include <bits/stdc++.h>")
+
+    snapshot = GuidanceLibrary(library_path).snapshot()
+    entry = next(iter(snapshot["entries"].values()))
+    assert entry["verifier_reward"] == 42.0
+    assert entry["metadata"]["direct_discover"] is True
+    assert entry["metadata"]["raw_action_text"] == cpp_response

@@ -1,0 +1,105 @@
+# Local 4x H200 direct TTT-Discover recipe for FrontierCS Polyomino Packing.
+#
+# Parameter alignment:
+# - Model: Qwen/Qwen3-8B, per user request; this intentionally replaces the
+#   official hosted large-model setting and is not a hardware limitation.
+# - Steps: 50, groups_per_batch: 8, group_size: 32, rollouts/step: 256.
+#   The official source uses group size 64 / 512 rollouts per step; this local
+#   recipe conservatively halves group size for 4x H200 throughput.
+# - Temperature: 1.0, LoRA rank: 32, LR: 4e-5.
+# - Adam: beta1=0.9, beta2=0.95, eps=1e-8.
+# - KL coefficient: 0.1. Objective: entropic_adaptive_beta, target KL ln(2)
+#   as implemented in guidance_ttt.verl_ext.
+# - Reuse: PUCT c=1.0. Context: 32768. Response/thinking cap: 26000.
+# - Checkpoint interval: save_freq=2, matching the source default.
+
+run:
+  output_dir: outputs/guidance_ttt/polyomino_h200_4gpu_qwen3_8b_discover
+  project_name: guidance_ttt
+  experiment_name: polyomino_qwen3_8b_direct_discover_h200_4gpu
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  agent_loop: polyomino_discover_task
+  adv_estimator: entropic_adaptive_beta
+  num_steps: 50
+  total_epochs: 50
+  max_prompt_length: 6768
+  max_response_length: 26000
+  filter_overlong_prompts: false
+  truncation: middle
+  learning_rate: 4.0e-5
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_eps: 1.0e-8
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0.1
+  temperature: 1.0
+  rollout_engine: vllm
+  tensor_model_parallel_size: 4
+  gpu_memory_utilization: 0.82
+  n_gpus_per_node: 4
+  nnodes: 1
+  save_freq: 2
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: .hf_cache
+  ray_temp_dir: .ray_tmp
+  tmp_dir: .tmp
+  triton_cache_dir: .triton_cache
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: /home/qua/code/reference/Frontier-CS
+    judge_url: http://127.0.0.1:8081
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 1000
+
+ttt:
+  agent_loop: polyomino_discover_task
+  groups_per_batch: 8
+  group_size: 32
+  eval_timeout: 1000
+  puct_c: 1.0
+  bootstrap:
+    enabled: false
+    required: false
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.load_format=auto
+  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  - actor_rollout_ref.rollout.agent.num_workers=4
+  - actor_rollout_ref.rollout.max_model_len=32768
+  - actor_rollout_ref.rollout.max_num_seqs=32
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768
+  - +actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu=32768
+  - actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=32768
+  - actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=32768
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

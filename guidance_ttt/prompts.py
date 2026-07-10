@@ -234,6 +234,91 @@ Any response that does not follow this exact three-block structure should be tre
     )
 
 
+def build_direct_discover_prompt(
+    *,
+    problem_prompt: str,
+    selected_node: LibraryNode,
+    selected_entry: LibraryEntry | None,
+    global_best_entries: list[LibraryEntry],
+    local_failure_entries: list[LibraryEntry],
+    score_direction: str = "max",
+    raw_score_label: str = "Score",
+) -> Prompt:
+    failure_text = "\n\n".join(
+        _raw_summary_for_prompt(
+            entry,
+            fallback="No previous summary is attached.",
+            raw_score_label=raw_score_label,
+        )
+        for entry in local_failure_entries
+    )
+    best_valid = _best_valid_entry(global_best_entries, selected_entry, score_direction=score_direction)
+    best_text = _raw_summary_for_prompt(
+        best_valid,
+        fallback="No valid global-best solution is visible yet.",
+        raw_score_label=raw_score_label,
+    )
+    selected_text = _raw_summary_for_prompt(
+        selected_entry,
+        fallback="No previous summary is attached; this is an empty/trivial root state.",
+        raw_score_label=raw_score_label,
+    )
+    user = f"""<problem>
+{problem_prompt}
+</problem>
+
+<selected_state>
+Node id: {selected_node.id}
+Parent id: {selected_node.parent_id}
+Visible node reward: {selected_node.value}
+Visible node raw score: {selected_node.raw_score}
+
+{selected_text}
+</selected_state>
+
+<global_best>
+{best_text}
+</global_best>
+
+<local_failures>
+{failure_text or "No local failure summaries yet."}
+</local_failures>
+
+Use the problem statement as the authoritative specification and the search-state
+sections only as historical context. Generate one new complete C++17 solver for
+this Polyomino Packing task. The solver must read the instance from stdin and
+write a valid placement to stdout.
+
+Score direction: {score_direction}; higher FrontierCS score means a better packing.
+
+Your response must contain exactly these two top-level XML blocks and no extra
+text before, between, or after them:
+
+<think>
+Briefly reason about the packing strategy, how it differs from visible history,
+and why it may improve the FrontierCS score.
+</think>
+
+<solution>
+```cpp
+// complete self-contained C++17 program
+```
+</solution>
+
+The <solution> block is mandatory and must contain exactly one fenced cpp code
+block with the full program. Do not emit a separate summary block.
+"""
+    return Prompt(
+        system=(
+            "You are a direct TTT-Discover policy. Your action is the entire response: "
+            "private strategy reasoning in <think> followed by one complete C++17 solution "
+            "in <solution>. The verifier will compile and evaluate only the C++ program, "
+            "and the reward will train the tokens you emit."
+        ),
+        user=user,
+    )
+
+
 def extract_tag(text: str, tag: str) -> str:
     start = text.find(f"<{tag}>")
     end = text.find(f"</{tag}>")

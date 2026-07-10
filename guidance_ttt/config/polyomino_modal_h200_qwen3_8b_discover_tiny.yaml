@@ -1,0 +1,98 @@
+# Modal 1x H200 direct TTT-Discover smoke for FrontierCS Polyomino Packing.
+#
+# This is intentionally the smallest Modal execution of the main local recipe:
+# same direct policy action loop, Qwen3-8B actor, Polyomino verifier, LoRA/Adam/
+# KL/objective settings, and context budget; only steps and rollout geometry are
+# reduced to one 1-sample group so the path can be tested on a single H200.
+
+run:
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny
+  project_name: guidance_ttt
+  experiment_name: polyomino_qwen3_8b_direct_discover_modal_h200_tiny
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  agent_loop: polyomino_discover_task
+  adv_estimator: entropic_adaptive_beta
+  num_steps: 1
+  total_epochs: 1
+  max_prompt_length: 6768
+  max_response_length: 26000
+  filter_overlong_prompts: false
+  truncation: middle
+  learning_rate: 4.0e-5
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_eps: 1.0e-8
+  ppo_mini_batch_size: 1
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0.1
+  temperature: 1.0
+  rollout_engine: vllm
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.82
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: /cache/huggingface
+  ray_temp_dir: /tmp/ray
+  tmp_dir: /tmp/guidance-ttt-tmp
+  triton_cache_dir: /cache/triton
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: /opt/Frontier-CS
+    judge_url: http://127.0.0.1:8081
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 1000
+
+ttt:
+  agent_loop: polyomino_discover_task
+  groups_per_batch: 1
+  group_size: 1
+  eval_timeout: 1000
+  puct_c: 1.0
+  bootstrap:
+    enabled: false
+    required: false
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.load_format=auto
+  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=32768
+  - actor_rollout_ref.rollout.max_num_seqs=1
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768
+  - +actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu=32768
+  - actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=32768
+  - actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=32768
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

@@ -11,6 +11,7 @@ from uuid import uuid4
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
+    build_direct_discover_prompt,
     build_execution_prompt,
     build_guidance_prompt,
     extract_guidance_or_format_error,
@@ -123,6 +124,28 @@ def _decode_response_with_specials(tokenizer: Any, response_ids: list[int]) -> s
     return "".join(str(token_id) for token_id in response_ids)
 
 
+def _agent_loop_config_from_rollout_config(
+    rollout_config: Any,
+    *,
+    candidate_names: list[str],
+) -> dict[str, Any] | None:
+    agent_config = _config_get(rollout_config, "agent")
+    agent_loop_config_path = _config_get(agent_config, "agent_loop_config_path")
+    if not agent_loop_config_path:
+        return None
+    try:
+        from omegaconf import OmegaConf
+
+        loaded = OmegaConf.load(Path(str(agent_loop_config_path)).expanduser())
+        for agent_loop_config in loaded:
+            if _config_get(agent_loop_config, "name") not in candidate_names:
+                continue
+            return _jsonable(OmegaConf.to_container(agent_loop_config, resolve=True))
+    except Exception:
+        return None
+    return None
+
+
 @register("guidance_execution_erdos")
 @register("guidance_execution_task")
 class GuidanceExecutionAgentLoop(AgentLoopBase):
@@ -156,22 +179,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
     def _agent_loop_config_from_rollout_config(self) -> dict[str, Any] | None:
         rollout_config = getattr(self, "rollout_config", None)
         agent_config = _config_get(rollout_config, "agent")
-        agent_loop_config_path = _config_get(agent_config, "agent_loop_config_path")
-        if not agent_loop_config_path:
-            return None
         default_agent_loop = _config_get(agent_config, "default_agent_loop") or "guidance_execution_task"
         candidate_names = list(dict.fromkeys([default_agent_loop, "guidance_execution_task", "guidance_execution_erdos"]))
-        try:
-            from omegaconf import OmegaConf
-
-            loaded = OmegaConf.load(Path(str(agent_loop_config_path)).expanduser())
-            for agent_loop_config in loaded:
-                if _config_get(agent_loop_config, "name") not in candidate_names:
-                    continue
-                return _jsonable(OmegaConf.to_container(agent_loop_config, resolve=True))
-        except Exception:
-            return None
-        return None
+        return _agent_loop_config_from_rollout_config(rollout_config, candidate_names=candidate_names)
 
     def _execution_llm_from_rollout_config(self) -> dict[str, Any] | None:
         agent_loop_config = self._agent_loop_config_from_rollout_config()
@@ -395,6 +405,210 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         return task_config
 
     async def _generate_guidance_response(self, prompt_ids: list[int], sampling_params: dict[str, Any]) -> GuidanceGeneration:
+        first = await self.server_manager.generate(
+            request_id=uuid4().hex,
+            prompt_ids=prompt_ids,
+            sampling_params=dict(sampling_params),
+        )
+        first_response_ids = first.token_ids[: self.response_length]
+        first_text = _decode_response(self.tokenizer, first_response_ids)
+        first_raw_text = _decode_response_with_specials(self.tokenizer, first_response_ids)
+        if first_text.strip():
+            return GuidanceGeneration(
+                text=first_text,
+                response_ids=first_response_ids,
+                response_logprobs=first.log_probs[: len(first_response_ids)] if first.log_probs else None,
+                attempts=1,
+                raw_text=first_raw_text,
+                stop_reason=getattr(first, "stop_reason", None),
+            )
+
+        retry_sampling_params = dict(sampling_params)
+        retry_max_tokens = int(retry_sampling_params.get("max_tokens", retry_sampling_params.get("max_new_tokens", self.response_length)))
+        retry_max_tokens = max(1, min(int(self.response_length), retry_max_tokens))
+        retry_sampling_params["max_tokens"] = retry_max_tokens
+        retry_sampling_params.pop("max_new_tokens", None)
+        retry_sampling_params["min_tokens"] = min(16, retry_max_tokens)
+        retry_sampling_params["ignore_eos"] = False
+        retry = await self.server_manager.generate(
+            request_id=uuid4().hex,
+            prompt_ids=prompt_ids,
+            sampling_params=retry_sampling_params,
+        )
+        retry_response_ids = retry.token_ids[: self.response_length]
+        retry_text = _decode_response(self.tokenizer, retry_response_ids)
+        retry_raw_text = _decode_response_with_specials(self.tokenizer, retry_response_ids)
+        return GuidanceGeneration(
+            text=retry_text,
+            response_ids=retry_response_ids,
+            response_logprobs=retry.log_probs[: len(retry_response_ids)] if retry.log_probs else None,
+            attempts=2,
+            raw_text=retry_raw_text or first_raw_text,
+            stop_reason=getattr(retry, "stop_reason", None),
+        )
+
+
+@register("polyomino_discover_task")
+class PolyominoDiscoverAgentLoop(AgentLoopBase):
+    """verl agent loop: train actor tokens that directly contain thinking + C++ solution."""
+
+    def __init__(
+        self,
+        *args,
+        verifier_timeout_s: int = 60,
+        problem_prompt: str | None = None,
+        task: dict[str, Any] | str | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        fallback_task = task if task is not None else self._task_config_from_rollout_config()
+        self.task_config = _normalize_task_config(fallback_task or {"id": "polyomino_packing"})
+        self.task_spec = get_task_spec(str(self.task_config.get("id", "polyomino_packing")))
+        if self.task_spec.task_id != "polyomino_packing":
+            raise ValueError("polyomino_discover_task only supports task.id=polyomino_packing")
+        self.verifier_timeout_s = int(verifier_timeout_s)
+        self.problem_prompt_override = problem_prompt
+        self.problem_prompt = problem_prompt or self.task_spec.problem_prompt
+        if hasattr(self, "rollout_config"):
+            self.response_length = self.rollout_config.response_length
+
+    def _agent_loop_config_from_rollout_config(self) -> dict[str, Any] | None:
+        rollout_config = getattr(self, "rollout_config", None)
+        agent_config = _config_get(rollout_config, "agent")
+        default_agent_loop = _config_get(agent_config, "default_agent_loop") or "polyomino_discover_task"
+        candidate_names = list(dict.fromkeys([default_agent_loop, "polyomino_discover_task"]))
+        return _agent_loop_config_from_rollout_config(rollout_config, candidate_names=candidate_names)
+
+    def _task_config_from_rollout_config(self) -> dict[str, Any] | None:
+        agent_loop_config = self._agent_loop_config_from_rollout_config()
+        if agent_loop_config is None:
+            return None
+        task_config = _config_get(agent_loop_config, "task")
+        if task_config:
+            return _normalize_task_config(task_config)
+        return None
+
+    def _task_config_for_extra_info(self, extra_info: dict[str, Any]) -> dict[str, Any]:
+        extra_task_config = extra_info.get("task_config")
+        if extra_task_config is not None:
+            normalized = _normalize_task_config(extra_task_config)
+            normalized["id"] = str(normalized.get("id") or "polyomino_packing")
+            return normalized
+        return dict(self.task_config)
+
+    async def run(self, sampling_params: dict[str, Any], **kwargs) -> Any:
+        if not hasattr(self, "server_manager"):
+            raise RuntimeError("verl dependencies are required to run PolyominoDiscoverAgentLoop")
+
+        extra_info = dict(kwargs.get("extra_info") or {})
+        task_config = self._task_config_for_extra_info(extra_info)
+        problem_prompt = self.problem_prompt_override or self.task_spec.problem_prompt
+        library_path = extra_info.get("library_path") or extra_info.get("archive_path")
+        if not library_path:
+            raise ValueError("extra_info must include library_path")
+        uid = str(kwargs.get("uid") or extra_info.get("uid") or extra_info.get("slot_id") or uuid4().hex)
+        trajectory = dict(kwargs.get("trajectory") or {})
+        global_step = kwargs.get("global_steps", kwargs.get("global_step", trajectory.get("step", 0)))
+        group_uid = f"{global_step}:{uid}"
+
+        library = GuidanceLibrary(
+            library_path,
+            rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
+            puct_c=float(extra_info.get("puct_c", 1.0)),
+            max_buffer_size=int(extra_info.get("max_buffer_size", 1000)),
+            topk_children=int(extra_info.get("topk_children", 2)),
+        )
+        selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
+        context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
+        selected_entry = context["selected_entry"]
+        direct_prompt = build_direct_discover_prompt(
+            problem_prompt=problem_prompt,
+            selected_node=selected_node,
+            selected_entry=selected_entry,
+            global_best_entries=context["global_best_entries"],
+            local_failure_entries=context["local_failure_entries"],
+            score_direction=self.task_spec.score_direction,
+            raw_score_label=self.task_spec.raw_score_label,
+        )
+        prompt_ids = await self.apply_chat_template(
+            [
+                {"role": "system", "content": direct_prompt.system},
+                {"role": "user", "content": direct_prompt.user},
+            ]
+        )
+        generation = await self._generate_direct_response(prompt_ids, sampling_params)
+        action_text = generation.text
+        verification = self.task_spec.verify_execution_text(
+            action_text,
+            timeout_s=self.verifier_timeout_s,
+            config=_verifier_config_from_task_config(task_config),
+        )
+        thinking = extract_tag_or_none(action_text, "think") or extract_tag_or_none(action_text, "execution_thinking") or ""
+        solution = _extract_solution_code(action_text, task_spec=self.task_spec)
+        guidance = thinking.strip() or "Direct discover actor generated a complete Polyomino C++ solution."
+        summary = build_execution_summary(
+            model_summary=None,
+            execution_thinking=thinking,
+            solution=solution,
+            guidance=guidance,
+            verification=verification,
+            solution_language=self.task_spec.solution_language,
+            raw_score_label=self.task_spec.raw_score_label,
+        )
+        entry = LibraryEntry(
+            id=str(uuid4()),
+            parent_id=selected_node.id,
+            problem_id=selected_node.problem_id,
+            timestep=int(global_step),
+            guidance=guidance,
+            execution_thinking=thinking,
+            solution=solution,
+            verifier_reward=verification.reward,
+            verifier_raw_score=verification.raw_score,
+            verifier_status=verification.status,
+            verifier_message=verification.message,
+            summary=summary,
+            reusable_idea=_extract_reusable_idea(summary),
+            failure_mode=None if verification.valid else verification.status,
+            metadata={
+                "group_uid": group_uid,
+                "selected_node_id": selected_node.id,
+                "direct_discover": True,
+                "raw_action_text": action_text,
+                "raw_action_with_specials": generation.raw_text,
+                "action_generation_attempts": generation.attempts,
+                "action_stop_reason": generation.stop_reason,
+                "direct_prompt": {"system": direct_prompt.system, "user": direct_prompt.user},
+                "task": task_config,
+                "verification_artifacts": verification.artifacts,
+            },
+        )
+        child = library.submit_child(group_uid, entry)
+
+        return build_agent_loop_output(
+            prompt_ids=prompt_ids,
+            response_ids=generation.response_ids,
+            response_logprobs=generation.response_logprobs,
+            reward=verification.reward,
+            extra_fields={
+                "group_uid": group_uid,
+                "selected_node_id": selected_node.id,
+                "child_node_id": child.id,
+                "direct_discover": True,
+                "raw_action_text": action_text,
+                "raw_action_with_specials": generation.raw_text,
+                "action_generation_attempts": generation.attempts,
+                "action_stop_reason": generation.stop_reason,
+                "thinking": thinking,
+                "solution": solution,
+                "verification": verification.to_dict(),
+                "summary": summary,
+                "library_entry_id": entry.id,
+                "task": task_config,
+            },
+        )
+
+    async def _generate_direct_response(self, prompt_ids: list[int], sampling_params: dict[str, Any]) -> GuidanceGeneration:
         first = await self.server_manager.generate(
             request_id=uuid4().hex,
             prompt_ids=prompt_ids,

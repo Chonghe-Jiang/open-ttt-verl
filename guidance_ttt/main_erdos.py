@@ -98,19 +98,28 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         topk_children=int(ttt_cfg.get("topk_children", 2)),
     )
 
+    agent_loop_name = str(ttt_cfg.get("agent_loop", run_cfg.get("agent_loop", "guidance_execution_task")))
+    if agent_loop_name == "polyomino_discover_task":
+        agent_loop_entry = {
+            "name": "polyomino_discover_task",
+            "_target_": "guidance_ttt.agent_loop.PolyominoDiscoverAgentLoop",
+            "task": task_cfg,
+            "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
+            "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
+        }
+    else:
+        agent_loop_entry = {
+            "name": agent_loop_name,
+            "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
+            "task": task_cfg,
+            "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
+            "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
+            "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
+        }
     agent_loop_config = output_dir / "agent_loop.yaml"
     agent_loop_config.write_text(
         yaml.safe_dump(
-            [
-                {
-                    "name": "guidance_execution_task",
-                    "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
-                    "task": task_cfg,
-                    "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
-                    "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
-                    "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
-                }
-            ],
+            [agent_loop_entry],
             sort_keys=False,
         )
     )
@@ -137,7 +146,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     tmp_dir.mkdir(parents=True, exist_ok=True)
     triton_cache_dir.mkdir(parents=True, exist_ok=True)
     overrides = [
-        "algorithm.adv_estimator=grpo",
+        f"algorithm.adv_estimator={run_cfg.get('adv_estimator', 'grpo')}",
         "algorithm.use_kl_in_reward=False",
         "algorithm.rollout_correction.rollout_is=token",
         "algorithm.rollout_correction.rollout_is_threshold=2.0",
@@ -165,7 +174,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         "actor_rollout_ref.rollout.calculate_log_probs=True",
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={int(run_cfg.get('tensor_model_parallel_size', 1))}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={float(run_cfg.get('gpu_memory_utilization', 0.5))}",
-        "actor_rollout_ref.rollout.agent.default_agent_loop=guidance_execution_task",
+        f"actor_rollout_ref.rollout.agent.default_agent_loop={ttt_cfg.get('agent_loop', run_cfg.get('agent_loop', 'guidance_execution_task'))}",
         f"actor_rollout_ref.rollout.agent.agent_loop_config_path={prepared['agent_loop_config']}",
         "actor_rollout_ref.model.external_lib=guidance_ttt.verl_ext",
         f"trainer.project_name={run_cfg.get('project_name', 'guidance_ttt')}",
@@ -192,6 +201,12 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         "+ray_kwargs.ray_init.runtime_env.env_vars.VLLM_NO_USAGE_STATS='1'",
         f"+ray_kwargs.ray_init.runtime_env.env_vars.VERL_VLLM_ZMQ_SUFFIX={zmq_suffix}",
     ]
+    if "adam_beta1" in run_cfg or "adam_beta2" in run_cfg:
+        overrides.append(
+            f"actor_rollout_ref.actor.optim.betas=[{float(run_cfg.get('adam_beta1', 0.9))},{float(run_cfg.get('adam_beta2', 0.999))}]"
+        )
+    if "adam_eps" in run_cfg:
+        overrides.append(f"actor_rollout_ref.actor.optim.override_optimizer_config={{eps:{float(run_cfg['adam_eps'])}}}")
     for env_name in ("CC", "CXX", "CUDAHOSTCXX"):
         env_value = os.environ.get(env_name)
         if env_value:

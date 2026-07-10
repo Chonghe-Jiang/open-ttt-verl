@@ -9,6 +9,7 @@ import pytest
 from guidance_ttt.main_erdos import (
     _default_verl_config_dir,
     build_verl_overrides,
+    load_recipe_config,
     prepare_run,
     validate_bootstrap_requirement,
 )
@@ -432,3 +433,114 @@ def test_gpt_oss_recipes_initialize_fsdp_models_in_bfloat16():
 
         assert "actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16" in overrides
         assert "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16" in overrides
+
+
+def test_polyomino_h200_qwen_discover_recipe_is_direct_policy_mode(tmp_path):
+    config_path = Path("guidance_ttt/config/polyomino_h200_4gpu_qwen3_8b_discover.yaml")
+    config_text = config_path.read_text()
+    config = load_recipe_config(config_path)
+    config["run"]["output_dir"] = str(tmp_path / "outputs" / "polyomino_discover")
+
+    prepared = prepare_run(config)
+    overrides = build_verl_overrides(config, prepared, [])
+    agent_loop = yaml.safe_load(Path(prepared["agent_loop_config"]).read_text())[0]
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["agent_loop"] == "polyomino_discover_task"
+    assert config["run"]["adv_estimator"] == "entropic_adaptive_beta"
+    assert config["run"]["temperature"] == 1.0
+    assert config["run"]["kl_loss_coef"] == 0.1
+    assert config["run"]["save_freq"] == 2
+    assert config["run"]["adam_beta1"] == 0.9
+    assert config["run"]["adam_beta2"] == 0.95
+    assert config["run"]["adam_eps"] == 1.0e-8
+    assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 256
+    assert config["ttt"]["bootstrap"] == {"enabled": False, "required": False}
+    assert config["task"]["frontiercs"]["total_timeout_s"] == 1000
+    assert "rollouts/step: 256" in config_text
+    assert "group size 64 / 512 rollouts per step" in config_text
+    assert "target KL ln(2)" in config_text
+
+    lowered = config_text.lower()
+    assert "modal" not in lowered
+    assert "openrouter" not in lowered
+    assert "gpt-oss" not in lowered
+
+    assert agent_loop["name"] == "polyomino_discover_task"
+    assert agent_loop["_target_"] == "guidance_ttt.agent_loop.PolyominoDiscoverAgentLoop"
+    assert "execution_llm" not in agent_loop
+    assert "actor_rollout_ref.rollout.agent.default_agent_loop=polyomino_discover_task" in overrides
+    assert "algorithm.adv_estimator=entropic_adaptive_beta" in overrides
+    assert "actor_rollout_ref.rollout.n=32" in overrides
+    assert "actor_rollout_ref.rollout.temperature=1.0" in overrides
+    assert "actor_rollout_ref.actor.kl_loss_coef=0.1" in overrides
+    assert "actor_rollout_ref.actor.optim.lr=4e-05" in overrides
+    assert "actor_rollout_ref.actor.optim.betas=[0.9,0.95]" in overrides
+    assert "actor_rollout_ref.actor.optim.override_optimizer_config={eps:1e-08}" in overrides
+
+
+def test_entropic_adaptive_beta_registration_name_is_available():
+    from guidance_ttt.verl_ext import compute_entropic_adaptive_beta, compute_ttt_reinforce_is, register_ttt_algorithms
+
+    registered_adv = {}
+    registered_loss = {}
+
+    def register_adv(name):
+        def decorator(fn):
+            registered_adv[name] = fn
+            return fn
+
+        return decorator
+
+    def register_loss(name):
+        def decorator(fn):
+            registered_loss[name] = fn
+            return fn
+
+        return decorator
+
+    register_ttt_algorithms(register_adv_est=register_adv, register_policy_loss=register_loss)
+
+    assert registered_adv["entropic_adaptive_beta"] is compute_entropic_adaptive_beta
+    assert registered_loss["ttt_reinforce_is"] is compute_ttt_reinforce_is
+
+
+def test_polyomino_qwen_discover_staged_submission_scripts_are_ordered():
+    stage_runner = Path("scripts/run_local_polyomino_h200_qwen3_8b_discover_stage.sh").read_text()
+    local_runner = Path("scripts/run_local_polyomino_h200_qwen3_8b_discover.sh").read_text()
+    launcher = Path("scripts/launch_polyomino_h200_qwen3_8b_discover_staged.sh").read_text()
+    slurm = Path("scripts/slurm_polyomino_h200_qwen3_8b_discover.sh").read_text()
+
+    assert "tiny_smoke)" in stage_runner
+    assert '"run.num_steps=1"' in stage_runner
+    assert '"run.total_epochs=1"' in stage_runner
+    assert '"run.n_gpus_per_node=1"' in stage_runner
+    assert '"run.tensor_model_parallel_size=1"' in stage_runner
+    assert 'EXPECTED_ROLLOUT_N="${EXPECTED_ROLLOUT_N:-1}"' in stage_runner
+    assert 'EXPECTED_TENSOR_MODEL_PARALLEL_SIZE="${EXPECTED_TENSOR_MODEL_PARALLEL_SIZE:-1}"' in stage_runner
+    assert '"ttt.groups_per_batch=1"' in stage_runner
+    assert '"ttt.group_size=1"' in stage_runner
+    assert '"actor_rollout_ref.rollout.tensor_model_parallel_size=1"' in stage_runner
+    assert "one_step)" in stage_runner
+    assert 'EXPECTED_ROLLOUT_N="${EXPECTED_ROLLOUT_N:-32}"' in stage_runner
+    assert "polyomino_qwen3_8b_direct_discover_h200_4gpu_one_step_full_batch" in stage_runner
+    one_step_block = stage_runner.split("one_step)", 1)[1].split("full)", 1)[0]
+    assert "ttt.groups_per_batch" not in one_step_block
+    assert "ttt.group_size" not in one_step_block
+
+    assert "submit_stage tiny_smoke" in launcher
+    assert "submit_stage one_step" in launcher
+    assert "submit_stage full" in launcher
+    assert 'TINY_GRES="${TINY_GRES:-gpu:h200:1}"' in launcher
+    assert 'ONE_STEP_GRES="${ONE_STEP_GRES:-gpu:h200:4}"' in launcher
+    assert 'FULL_GRES="${FULL_GRES:-gpu:h200:4}"' in launcher
+    assert '--gres="$gres"' in launcher
+    assert '--dependency="afterok:$dependency"' in launcher
+    assert "one_step_job" in launcher
+
+    assert "#SBATCH --gres=gpu:h200:4" in slurm
+    assert "scripts/run_local_polyomino_h200_qwen3_8b_discover_stage.sh" in slurm
+    assert "APPTAINER_IMAGE" in slurm
+    assert "CONTAINER_PYTHON_BIN" in slurm
+    assert "apptainer exec --nv" in local_runner
+    assert '"${APPTAINER_EXEC[@]}" "$CONTAINER_PYTHON_BIN" -m guidance_ttt.main_erdos' in local_runner

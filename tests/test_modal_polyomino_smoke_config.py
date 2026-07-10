@@ -678,12 +678,96 @@ def test_modal_train_image_installs_and_checks_flash_attn_for_remove_padding():
         "train_gpt_oss_120b_5gpu_group64_smoke",
         "train_gpt_oss_120b_3gpu_group16_smoke",
         "train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke",
+        "train_qwen3_8b_discover_tiny_smoke",
     ]:
         function_start = script.index(f"def {function_name}")
         source = script[function_start:]
         next_function = source.find("\ndef ", 1)
         source = source[:next_function] if next_function != -1 else source
         assert "_assert_training_packages_available()" in source
+
+
+def test_modal_polyomino_qwen3_8b_discover_tiny_config_matches_direct_recipe_shape():
+    config_path = Path("guidance_ttt/config/polyomino_modal_h200_qwen3_8b_discover_tiny.yaml")
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["model_path"] == "Qwen/Qwen3-8B"
+    assert config["run"]["agent_loop"] == "polyomino_discover_task"
+    assert config["run"]["adv_estimator"] == "entropic_adaptive_beta"
+    assert config["run"]["num_steps"] == 1
+    assert config["run"]["total_epochs"] == 1
+    assert config["run"]["n_gpus_per_node"] == 1
+    assert config["run"]["tensor_model_parallel_size"] == 1
+    assert config["run"]["max_prompt_length"] == 6768
+    assert config["run"]["max_response_length"] == 26000
+    assert config["run"]["temperature"] == 1.0
+    assert config["run"]["kl_loss_coef"] == 0.1
+    assert config["run"]["adam_beta1"] == 0.9
+    assert config["run"]["adam_beta2"] == 0.95
+    assert config["run"]["adam_eps"] == 1.0e-8
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_qwen3_8b_discover_tiny")
+    assert config["run"]["hf_cache_dir"] == "/cache/huggingface"
+    assert config["ttt"]["agent_loop"] == "polyomino_discover_task"
+    assert config["ttt"]["groups_per_batch"] == 1
+    assert config["ttt"]["group_size"] == 1
+    assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 1
+    assert config["ttt"]["bootstrap"] == {"enabled": False, "required": False}
+    assert config["task"]["id"] == "polyomino_packing"
+    assert config["task"]["frontiercs"]["base_dir"] == "/opt/Frontier-CS"
+    assert config["task"]["frontiercs"]["judge_url"] == "http://127.0.0.1:8081"
+    assert config["task"]["frontiercs"]["n_cases"] == 70
+    assert config["task"]["frontiercs"]["total_timeout_s"] == 1000
+    assert "llm" not in config
+
+    overrides = set(config["verl_overrides"])
+    assert "actor_rollout_ref.model.lora_rank=32" in overrides
+    assert "actor_rollout_ref.rollout.tensor_model_parallel_size=1" in overrides
+    assert "actor_rollout_ref.rollout.max_model_len=32768" in overrides
+    assert "actor_rollout_ref.rollout.max_num_seqs=1" in overrides
+    assert "actor_rollout_ref.rollout.max_num_batched_tokens=32768" in overrides
+    assert "actor_rollout_ref.actor.use_remove_padding=True" in overrides
+    assert "actor_rollout_ref.actor.use_torch_compile=False" in overrides
+    assert "actor_rollout_ref.ref.use_torch_compile=False" in overrides
+    assert "+ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'" in overrides
+
+
+def test_modal_polyomino_qwen3_8b_discover_tiny_script_targets_requested_config():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.QWEN3_8B_DISCOVER_TINY_GPU_CONFIG == "H200:1"
+    assert module.REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_qwen3_8b_discover_tiny.yaml"
+    )
+    assert module.REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_qwen3_8b_discover_tiny"
+    )
+    assert module.qwen3_8b_discover_tiny_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH,
+    ]
+
+    function_start = script.rindex("@app.function", 0, script.index("def train_qwen3_8b_discover_tiny_smoke"))
+    source = script[function_start:]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "gpu=QWEN3_8B_DISCOVER_TINY_GPU_CONFIG" in source
+    assert "secrets=" not in source
+    assert "_assert_training_packages_available()" in source
+    assert "_reset_output_dir(REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR)" in source
+    assert "judge = _start_judge()" in source
+    assert '"CUDA_VISIBLE_DEVICES": "0"' in source
+    assert "qwen3_8b_discover_tiny_training_command()" in source
+    assert "_start_gpt_oss_120b_server" not in source
+    assert "train_qwen3_8b_discover_tiny" in script
+
+
+def test_modal_polyomino_qwen3_8b_discover_tiny_launcher_detaches_training():
+    launcher = Path("scripts/run_modal_polyomino_qwen3_8b_discover_tiny.sh").read_text()
+
+    assert "modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_qwen3_8b_discover_tiny" in launcher
 
 
 def test_modal_train_image_uses_spawn_for_local_vllm_workers():
@@ -779,6 +863,58 @@ def test_modal_polyomino_prompt_answer_dump_includes_all_entries(tmp_path):
     assert "guidance system" in markdown
     assert "execution user" in markdown
     assert "<execution_thinking>guided</execution_thinking>" in markdown
+
+
+def test_modal_polyomino_prompt_answer_dump_includes_direct_discover_fields(tmp_path):
+    module = _load_modal_smoke_module()
+    output_dir = tmp_path / "direct"
+    output_dir.mkdir()
+    library_path = output_dir / "library.json"
+    library_path.write_text(
+        json.dumps(
+            {
+                "nodes": {},
+                "entries": {
+                    "entry-direct": {
+                        "id": "entry-direct",
+                        "timestep": 1,
+                        "guidance": "direct thinking",
+                        "summary": "direct canonical summary",
+                        "solution": "int main(){return 0;}",
+                        "execution_thinking": "direct thinking",
+                        "verifier_reward": 1.0,
+                        "verifier_raw_score": 1.0,
+                        "verifier_status": "valid",
+                        "metadata": {
+                            "direct_discover": True,
+                            "direct_prompt": {"system": "direct system", "user": "direct user"},
+                            "raw_action_text": "<think>direct</think><solution>int main(){return 0;}</solution>",
+                            "raw_action_with_specials": "<|assistant|><think>direct</think>",
+                            "action_stop_reason": "stop",
+                            "verification_artifacts": {"ok": True},
+                        },
+                    },
+                },
+                "best_node_id": None,
+            }
+        )
+    )
+
+    dump_summary = module._dump_prompt_answer_artifacts(str(output_dir))
+    markdown = Path(dump_summary["markdown_path"]).read_text()
+    data = json.loads(Path(dump_summary["json_path"]).read_text())
+
+    entry = data["entries"][0]
+    assert entry["direct_discover"] is True
+    assert entry["direct_prompt"] == {"system": "direct system", "user": "direct user"}
+    assert entry["raw_action_text"] == "<think>direct</think><solution>int main(){return 0;}</solution>"
+    assert entry["action_stop_reason"] == "stop"
+    assert "### Direct Prompt System" in markdown
+    assert "direct system" in markdown
+    assert "### Direct Actor Answer" in markdown
+    assert "<think>direct</think><solution>int main(){return 0;}</solution>" in markdown
+    assert "### Solution" in markdown
+    assert "int main(){return 0;}" in markdown
 
 
 def test_modal_polyomino_train_smoke_resets_output_dir(tmp_path):

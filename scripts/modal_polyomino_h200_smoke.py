@@ -18,6 +18,7 @@ HISTORY_GPU_CONFIG = "H200:2"
 GPT_OSS_120B_GPU_CONFIG = "H200:5"
 GPT_OSS_120B_3GPU_CONFIG = "H200:3"
 GPT_OSS_120B_SINGLE_GPU_CONFIG = "H200:1"
+QWEN3_8B_DISCOVER_TINY_GPU_CONFIG = "H200:1"
 REMOTE_REPO_DIR = "/root/guidance"
 REMOTE_FRONTIER_DIR = "/opt/Frontier-CS"
 REMOTE_CONFIG_PATH = f"{REMOTE_REPO_DIR}/guidance_ttt/config/backup/polyomino_modal_h200_4gpu_smoke.yaml"
@@ -65,6 +66,12 @@ REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH = (
 )
 REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
+)
+REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_qwen3_8b_discover_tiny.yaml"
+)
+REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny"
 )
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 GPT_OSS_120B_SERVER_LOG_PATH = "/tmp/gpt_oss_120b_vllm.log"
@@ -368,6 +375,16 @@ def gpt_oss_120b_3gpu_group16_h200_tuned_training_command() -> list[str]:
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH,
+    ]
+
+
+def qwen3_8b_discover_tiny_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH,
     ]
 
 
@@ -834,6 +851,11 @@ def _prompt_answer_entry_record(entry: dict[str, object]) -> dict[str, object]:
         "raw_guidance_text": metadata.get("raw_guidance_text", ""),
         "raw_guidance_with_specials": metadata.get("raw_guidance_with_specials", ""),
         "guidance_prompt": metadata.get("guidance_prompt") or {},
+        "direct_discover": bool(metadata.get("direct_discover")),
+        "direct_prompt": metadata.get("direct_prompt") or {},
+        "raw_action_text": metadata.get("raw_action_text", ""),
+        "raw_action_with_specials": metadata.get("raw_action_with_specials", ""),
+        "action_stop_reason": metadata.get("action_stop_reason"),
         "execution_prompt": metadata.get("execution_prompt") or {},
         "execution_output": metadata.get("execution_text", ""),
         "raw_model_summary": metadata.get("raw_model_summary", ""),
@@ -873,11 +895,17 @@ def _prompt_answer_dump_markdown(dump: dict[str, object]) -> str:
                 f"- Reward: `{entry.get('reward')}`",
                 f"- Raw score: `{entry.get('raw_score')}`",
                 f"- Guidance format ok: `{entry.get('guidance_format_ok')}`",
+                f"- Direct discover: `{entry.get('direct_discover')}`",
+                f"- Action stop reason: `{entry.get('action_stop_reason')}`",
                 f"- Execution model: `{entry.get('execution_model')}`",
                 f"- Execution finish reason: `{entry.get('execution_finish_reason')}`",
                 "",
             ]
         )
+        _append_prompt_answer_section(lines, "Direct Prompt System", _prompt_part(entry, "direct_prompt", "system"))
+        _append_prompt_answer_section(lines, "Direct Prompt User", _prompt_part(entry, "direct_prompt", "user"))
+        _append_prompt_answer_section(lines, "Direct Actor Answer", entry.get("raw_action_text"))
+        _append_prompt_answer_section(lines, "Direct Actor Answer With Specials", entry.get("raw_action_with_specials"))
         _append_prompt_answer_section(lines, "Guidance Prompt System", _prompt_part(entry, "guidance_prompt", "system"))
         _append_prompt_answer_section(lines, "Guidance Prompt User", _prompt_part(entry, "guidance_prompt", "user"))
         _append_prompt_answer_section(lines, "Guidance Answer", entry.get("guidance"))
@@ -886,6 +914,8 @@ def _prompt_answer_dump_markdown(dump: dict[str, object]) -> str:
         _append_prompt_answer_section(lines, "Execution Prompt System", _prompt_part(entry, "execution_prompt", "system"))
         _append_prompt_answer_section(lines, "Execution Prompt User", _prompt_part(entry, "execution_prompt", "user"))
         _append_prompt_answer_section(lines, "Execution Answer", entry.get("execution_output"))
+        _append_prompt_answer_section(lines, "Execution Thinking", entry.get("execution_thinking"))
+        _append_prompt_answer_section(lines, "Solution", entry.get("solution"))
         _append_prompt_answer_section(lines, "Raw Model Summary", entry.get("raw_model_summary"))
         _append_prompt_answer_section(lines, "Canonical Library Summary", entry.get("canonical_summary"))
         lines.extend(
@@ -1590,6 +1620,36 @@ def train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=QWEN3_8B_DISCOVER_TINY_GPU_CONFIG,
+    timeout=12 * 60 * 60,
+    cpu=32,
+    memory=131072,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_qwen3_8b_discover_tiny_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR)
+    judge = _start_judge()
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
+        _run_streaming(qwen3_8b_discover_tiny_training_command(), cwd=REMOTE_REPO_DIR, env=training_env)
+        summary = _summarize_output(REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR)
+        history_summary = _summarize_history_extraction(REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR)
+        dump_summary = _dump_prompt_answer_artifacts(REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"Qwen3-8B direct-discover tiny smoke did not write entries: {merged_summary}")
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+
+
+@app.function(
+    image=train_image,
     gpu=HISTORY_GPU_CONFIG,
     timeout=12 * 60 * 60,
     cpu=48,
@@ -1690,6 +1750,8 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_group16_smoke.remote())
     elif action == "train_gpt_oss_120b_3gpu_group16_h200_tuned":
         print(train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke.spawn())
+    elif action == "train_qwen3_8b_discover_tiny":
+        print(train_qwen3_8b_discover_tiny_smoke.remote())
     elif action == "gpt_oss_120b_xml_probe":
         print(gpt_oss_120b_xml_probe_smoke.remote())
     elif action == "prune_single_summary":
@@ -1704,6 +1766,7 @@ def main(action: str = "train"):
             "'train_single_summary_openrouter_gpt55', 'train_single_summary_openrouter_gpt55_seeded', "
             "'train_openrouter_gpt55_4gpu_full_batch', 'train_evolvent_gpt55_4gpu_short_response', "
             "'train_gpt_oss_120b_5gpu_group64', 'train_gpt_oss_120b_3gpu_group16', "
-            "'train_gpt_oss_120b_3gpu_group16_h200_tuned', 'gpt_oss_120b_xml_probe', "
+            "'train_gpt_oss_120b_3gpu_group16_h200_tuned', 'train_qwen3_8b_discover_tiny', "
+            "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"
         )
