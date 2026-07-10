@@ -2,15 +2,6 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -23,12 +14,10 @@ import yaml
 
 from verl_ttt_discover.archive import PUCTArchive
 from verl_ttt_discover.data import write_slot_parquet
-from verl_ttt_discover.erdos_env import create_random_initial_state
+from verl_ttt_discover.polyomino_env import create_polyomino_initial_state
 
 
 class TTTTaskRunner:
-    """TaskRunner wrapper that registers TTT extensions inside the Ray actor."""
-
     def __init__(self):
         from verl.trainer.main_ppo import TaskRunner
 
@@ -58,7 +47,6 @@ def _split_overrides(overrides: list[str]) -> tuple[list[str], list[str]]:
 def _apply_recipe_overrides(config: dict, overrides: list[str]) -> dict:
     if not overrides:
         return config
-
     try:
         from omegaconf import OmegaConf
 
@@ -84,10 +72,7 @@ def _prepare_run(config: dict) -> dict[str, Path]:
 
     archive_path = output_dir / "archive.json"
     if not archive_path.exists():
-        initial_states = [
-            create_random_initial_state()
-            for i in range(int(run_cfg.get("num_initial_states", ttt_cfg["groups_per_batch"])))
-        ]
+        initial_states = [create_polyomino_initial_state() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
         PUCTArchive(
             archive_path,
             initial_states=initial_states,
@@ -95,33 +80,39 @@ def _prepare_run(config: dict) -> dict[str, Path]:
             puct_c=float(ttt_cfg.get("puct_c", 1.0)),
             topk_children=int(ttt_cfg.get("topk_children", 2)),
             max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
-            max_construction_len=ttt_cfg.get("max_construction_len", 1000),
+            max_construction_len=ttt_cfg.get("max_construction_len"),
+            update_puct_per_rollout=bool(ttt_cfg.get("update_puct_per_rollout", True)),
         )
 
     slot_parquet = output_dir / "ttt_slots.parquet"
-    write_slot_parquet(slot_parquet, num_slots=int(ttt_cfg["groups_per_batch"]), archive_path=str(archive_path))
+    write_slot_parquet(
+        slot_parquet,
+        num_slots=int(ttt_cfg["groups_per_batch"]),
+        archive_path=str(archive_path),
+        task="frontier_cs_polyomino",
+    )
 
     agent_loop_config = output_dir / "agent_loop.yaml"
     agent_loop_config.write_text(
         "\n".join(
             [
-                "- name: ttt_discover_erdos",
-                "  _target_: verl_ttt_discover.agent_loop.TTTDiscoverAgentLoop",
+                "- name: ttt_discover_polyomino",
+                "  _target_: verl_ttt_discover.agent_loop.TTTDiscoverPolyominoAgentLoop",
                 f"  budget_s: {int(ttt_cfg['eval_timeout'])}",
-                f"  cpus: {int(ttt_cfg.get('cpus', 1))}",
-                f"  target_c5: {float(ttt_cfg.get('target_c5', 0.3808))}",
                 f"  phase1_max_tokens: {int(ttt_cfg.get('phase1_max_tokens', 0))}",
+                f"  invalid_reward: {float(ttt_cfg.get('invalid_reward', 0.0))}",
+                f"  cpp_prefill_fallback: {bool(ttt_cfg.get('cpp_prefill_fallback', False))}",
+                f"  use_chat_template: {bool(ttt_cfg.get('use_chat_template', True))}",
+                f"  cpp_min_tokens: {int(ttt_cfg.get('cpp_min_tokens', 0))}",
+                f"  faithful_discover: {bool(ttt_cfg.get('faithful_discover', True))}",
+                f"  update_puct_per_rollout: {bool(ttt_cfg.get('update_puct_per_rollout', True))}",
+                f"  official_concurrency: {int(ttt_cfg.get('official_concurrency', 16))}",
             ]
         )
         + "\n"
     )
 
-    return {
-        "output_dir": output_dir,
-        "archive_path": archive_path,
-        "slot_parquet": slot_parquet,
-        "agent_loop_config": agent_loop_config,
-    }
+    return {"output_dir": output_dir, "archive_path": archive_path, "slot_parquet": slot_parquet, "agent_loop_config": agent_loop_config}
 
 
 def _build_verl_overrides(config: dict, prepared: dict[str, Path], extra_overrides: list[str]) -> list[str]:
@@ -145,6 +136,7 @@ def _build_verl_overrides(config: dict, prepared: dict[str, Path], extra_overrid
         f"data.max_response_length={int(run_cfg.get('max_response_length', 8192))}",
         "data.filter_overlong_prompts=True",
         "data.truncation=error",
+        f"+data.apply_chat_template_kwargs.enable_thinking={bool(ttt_cfg.get('enable_thinking', True))}",
         f"actor_rollout_ref.model.path={model_path}",
         f"actor_rollout_ref.model.use_remove_padding={bool(run_cfg.get('use_remove_padding', True))}",
         f"actor_rollout_ref.actor.optim.lr={float(run_cfg.get('learning_rate', 4e-5))}",
@@ -163,7 +155,7 @@ def _build_verl_overrides(config: dict, prepared: dict[str, Path], extra_overrid
         "actor_rollout_ref.rollout.calculate_log_probs=True",
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={int(run_cfg.get('tensor_model_parallel_size', 1))}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={float(run_cfg.get('gpu_memory_utilization', 0.7))}",
-        f"actor_rollout_ref.rollout.agent.default_agent_loop=ttt_discover_erdos",
+        "actor_rollout_ref.rollout.agent.default_agent_loop=ttt_discover_polyomino",
         f"actor_rollout_ref.rollout.agent.agent_loop_config_path={prepared['agent_loop_config']}",
         f"trainer.project_name={project_name}",
         f"trainer.experiment_name={experiment_name}",
@@ -185,8 +177,8 @@ def _build_verl_overrides(config: dict, prepared: dict[str, Path], extra_overrid
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run TTT-Discover Erdos on top of verl.")
-    parser.add_argument("--config", default="verl_ttt_discover/config/erdos_smoke.yaml")
+    parser = argparse.ArgumentParser(description="Run TTT-Discover Frontier-CS Polyomino on top of verl.")
+    parser.add_argument("--config", default="verl_ttt_discover/config/polyomino_2gpu_h200_qwen3_8b_g4_n16.yaml")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()

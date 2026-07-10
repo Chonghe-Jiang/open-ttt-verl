@@ -152,3 +152,27 @@ def test_archive_writes_step_snapshot_and_puct_stats(tmp_path):
     snapshot = archive.snapshot()
     assert "sample_stats" in snapshot
     assert snapshot["last_sampled_stats"][0]["state_id"] == "parent"
+
+
+def test_discover_mode_updates_puct_for_each_rollout(tmp_path):
+    parent = DiscoveryState(timestep=-1, value=1.0, raw_score=1.0, code="", construction=[0.5], id="parent")
+    archive = PUCTArchive(
+        tmp_path / "archive.json",
+        initial_states=[parent],
+        rollout_n=3,
+        update_puct_per_rollout=True,
+    )
+    archive.acquire_group("1:uid-0")
+
+    assert not archive.submit_child("1:uid-0", None)
+    assert not archive.submit_child(
+        "1:uid-0",
+        DiscoveryState(timestep=1, value=2.0, raw_score=2.0, code="child", construction=[0.6], id="child"),
+    )
+    assert archive.submit_child("1:uid-0", None)
+
+    snapshot = archive.snapshot()
+    assert snapshot["puct_T"] == 3
+    assert snapshot["puct_n"]["parent"] == 3
+    assert snapshot["puct_m"]["parent"] == 2.0
+    assert snapshot["update_puct_per_rollout"] is True

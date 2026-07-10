@@ -114,6 +114,22 @@ with 50 steps, `groups_per_batch=8`, `group_size=64`, LoRA rank/alpha 32, and
 `phase1_max_tokens=26000`. The Docker build stage does not download the model;
 `Qwen/Qwen3-8B` is fetched or loaded from `HF_HOME` during the run.
 
+For Modal, use the prepared container app:
+
+```bash
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh preflight
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh prepare
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh run
+```
+
+The Modal app is `polynomino-qwen3-8b-erdos`. It defaults to the
+`erdos_2gpu_h200_qwen3_8b_g4_n16.yaml` config, requests `H200:2`, and mounts
+persistent volumes at `/hf_cache` and `/workspace/open-ttt-verl/outputs`. The
+TTT batch shape is `groups_per_batch=4` and `group_size=16`. The wrapper reads
+`MODAL_TOKEN_ID` and `MODAL_SECRET_KEY` from `.env` before invoking Modal. Set
+`MODAL_GPU`, `MODAL_BASE_IMAGE`, or `MODAL_HF_SECRET` locally before the wrapper
+to override the defaults.
+
 If a Blackwell transformers/flash-attn stack errors on the GPT-OSS attention
 kernel, keep vLLM rollout enabled and override only actor/ref attention:
 

@@ -41,6 +41,7 @@ class PUCTArchive:
         topk_children: int = 2,
         max_buffer_size: int = 1000,
         max_construction_len: int | None = 1000,
+        update_puct_per_rollout: bool = False,
     ) -> None:
         self.path = Path(path)
         self.rollout_n = int(rollout_n)
@@ -48,6 +49,7 @@ class PUCTArchive:
         self.topk_children = int(topk_children)
         self.max_buffer_size = int(max_buffer_size)
         self.max_construction_len = max_construction_len
+        self.update_puct_per_rollout = bool(update_puct_per_rollout)
         self._lock = threading.RLock()
 
         self._states: list[DiscoveryState] = []
@@ -104,10 +106,14 @@ class PUCTArchive:
                     return False
 
                 group["submitted"] += 1
+                parent = self._state_by_id(group["state_id"])
                 if child is not None and child.value is not None:
-                    parent = self._state_by_id(group["state_id"])
                     self._set_parent(child, parent)
                     group["children"].append(child.to_dict())
+                    if self.update_puct_per_rollout:
+                        self._record_rollout(parent, float(child.value))
+                elif self.update_puct_per_rollout:
+                    self._record_rollout(parent, None)
 
                 finalized = group["submitted"] >= self.rollout_n
                 snapshot_step = None
@@ -129,15 +135,22 @@ class PUCTArchive:
 
         if children:
             best_value = float(children[0].value)
-            self._puct_m[parent.id] = max(self._puct_m.get(parent.id, best_value), best_value)
+            if not self.update_puct_per_rollout:
+                self._puct_m[parent.id] = max(self._puct_m.get(parent.id, best_value), best_value)
             self._add_states(kept_children)
 
+        if not self.update_puct_per_rollout:
+            self._record_rollout(parent, None)
+        group["finalized"] = True
+        self._refresh_best()
+
+    def _record_rollout(self, parent: DiscoveryState, child_value: float | None) -> None:
+        if child_value is not None:
+            self._puct_m[parent.id] = max(self._puct_m.get(parent.id, child_value), child_value)
         ancestor_ids = [parent.id] + [str(p["id"]) for p in parent.parents if p.get("id")]
         for state_id in ancestor_ids:
             self._puct_n[state_id] = self._puct_n.get(state_id, 0) + 1
         self._puct_T += 1
-        group["finalized"] = True
-        self._refresh_best()
 
     def _sample_state(self, *, blocked_ids: set[str] | None = None) -> tuple[DiscoveryState, dict[str, Any]]:
         if not self._states:
@@ -272,6 +285,7 @@ class PUCTArchive:
             "topk_children": self.topk_children,
             "max_buffer_size": self.max_buffer_size,
             "max_construction_len": self.max_construction_len,
+            "update_puct_per_rollout": self.update_puct_per_rollout,
             "sample_stats": self.sample_stats(),
             "last_sampled_stats": self._last_sampled_stats,
         }
@@ -285,6 +299,7 @@ class PUCTArchive:
         self._puct_T = int(store.get("puct_T", 0))
         self._best_state_id = store.get("best_state_id")
         self.max_construction_len = store.get("max_construction_len", self.max_construction_len)
+        self.update_puct_per_rollout = bool(store.get("update_puct_per_rollout", self.update_puct_per_rollout))
         self._last_sampled_stats = list(store.get("last_sampled_stats", []))
 
     def _reload_from_disk(self) -> None:

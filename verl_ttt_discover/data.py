@@ -20,9 +20,10 @@ from typing import Any
 
 
 def build_slot_records(num_slots: int, archive_path: str, task: str = "erdos_min_overlap") -> list[dict[str, Any]]:
+    data_source = "ttt_erdos" if task == "erdos_min_overlap" else f"ttt_{task}"
     return [
         {
-            "data_source": "ttt_erdos",
+            "data_source": data_source,
             "prompt": [{"role": "user", "content": ""}],
             "reward_model": {"ground_truth": ""},
             "extra_info": {
@@ -35,7 +36,13 @@ def build_slot_records(num_slots: int, archive_path: str, task: str = "erdos_min
     ]
 
 
-def write_slot_parquet(path: str | Path, *, num_slots: int, archive_path: str) -> Path:
+def write_slot_parquet(
+    path: str | Path,
+    *,
+    num_slots: int,
+    archive_path: str,
+    task: str = "erdos_min_overlap",
+) -> Path:
     """Write verl-compatible static slot data.
 
     Requires pandas/pyarrow at runtime. The JSON fallback is useful for quick inspection but
@@ -43,7 +50,7 @@ def write_slot_parquet(path: str | Path, *, num_slots: int, archive_path: str) -
     """
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    records = build_slot_records(num_slots=num_slots, archive_path=archive_path)
+    records = build_slot_records(num_slots=num_slots, archive_path=archive_path, task=task)
     try:
         import pandas as pd
 

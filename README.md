@@ -383,6 +383,35 @@ MODEL_PATH=/path/to/models--Qwen--Qwen3-8B/snapshots/<sha> \
 scripts/ttt_discover/docker_run_ttt_vllm.sh run-qwen8b
 ```
 
+### Modal Container
+
+The same Qwen3-8B Erdos run can be launched on Modal with the prepared app:
+
+```bash
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh preflight
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh prepare
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh run
+```
+
+By default this uses app `polynomino-qwen3-8b-erdos`, base image
+`verlai/verl:vllm017.latest`, GPU request `H200:2`, and
+`verl_ttt_discover/config/erdos_2gpu_h200_qwen3_8b_g4_n16.yaml`. The run shape
+is `groups_per_batch=4` and `group_size=16`. The app mounts two Modal volumes:
+`polynomino-qwen3-8b-hf-cache` at `/hf_cache` and `polynomino-qwen3-8b-outputs`
+at `/workspace/open-ttt-verl/outputs`.
+The wrapper loads `MODAL_TOKEN_ID` and `MODAL_SECRET_KEY` from `.env` and exports
+`MODAL_SECRET_KEY` as `MODAL_TOKEN_SECRET` for the Modal CLI.
+
+Useful overrides:
+
+```bash
+MODAL_GPU=H200:2 \
+MODAL_HF_SECRET=huggingface \
+scripts/ttt_discover/modal_run_qwen3_8b_erdos.sh \
+  prepare \
+  --model-path /hf_cache/hub/models--Qwen--Qwen3-8B/snapshots/<sha>
+```
+
 ## Qwen Smoke
 
 For a smaller model smoke:
