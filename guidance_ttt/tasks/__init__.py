@@ -21,6 +21,7 @@ class TaskSpec:
     problem_prompt: str
     solution_language: str
     execution_solution_contract: str
+    guidance_mechanism_constraint: str
     score_direction: ScoreDirection
     raw_score_label: str
     create_root_node: Callable[..., LibraryNode]
@@ -75,6 +76,12 @@ _TASKS: dict[str, TaskSpec] = {
         execution_solution_contract=(
             "The <solution> block must contain one complete executable Python candidate in a ```python fenced block."
         ),
+        guidance_mechanism_constraint=(
+            "Every proposed mechanism must be implementable inside one self-contained Python candidate using only "
+            "information and resources available in the task's permitted runtime. Do not rely on offline training "
+            "data, hidden benchmark access, external models or APIs, learned weights that are not supplied, or "
+            "unavailable precomputation."
+        ),
         score_direction="min",
         raw_score_label="Raw C5",
         create_root_node=create_erdos_root_node,
@@ -89,6 +96,11 @@ _TASKS: dict[str, TaskSpec] = {
         execution_solution_contract=(
             "The <solution> block must contain one complete C++17 program in a ```cpp fenced block. "
             "It must read the Polyomino Packing instance from stdin and write the placement to stdout."
+        ),
+        guidance_mechanism_constraint=(
+            "Every proposed mechanism must be implementable inside one self-contained C++17 program using only "
+            "the current input instance. Do not rely on offline training data, benchmark access, external models, "
+            "APIs, learned weights, or unavailable precomputation."
         ),
         score_direction="max",
         raw_score_label="FrontierCS score",

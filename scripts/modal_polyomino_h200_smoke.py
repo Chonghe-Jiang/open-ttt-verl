@@ -79,12 +79,26 @@ REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_CONFIG_PATH = (
 REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step"
 )
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_puct_fix_1step.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_puct_fix_1step"
+)
 REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
     "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml"
 )
 REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_prompt_refinement_50step.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_prompt_refinement_50step"
 )
 REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml"
@@ -417,6 +431,16 @@ def gpt_oss_120b_3gpu_batch8_group16_concurrency16_training_command() -> list[st
     ]
 
 
+def gpt_oss_120b_3gpu_batch8_group16_puct_fix_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_CONFIG_PATH,
+    ]
+
+
 def gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_training_command() -> list[str]:
     return [
         "python",
@@ -424,6 +448,16 @@ def gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_training_command() -> 
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CONCURRENCY16_50STEP_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH,
     ]
 
 
@@ -805,6 +839,132 @@ def _summarize_output(output_dir: str = REMOTE_OUTPUT_DIR) -> dict[str, object]:
             }
         )
     return summary
+
+
+def _summarize_puct_group_accounting(output_dir: str) -> dict[str, object]:
+    library_path = Path(output_dir) / "library.json"
+    if not library_path.exists():
+        return {"output_dir": output_dir, "library_exists": False}
+
+    data = json.loads(library_path.read_text())
+    config = data.get("config") or {}
+    groups = data.get("groups") or {}
+    nodes = data.get("nodes") or {}
+    puct_n = data.get("puct_n") or {}
+    selected_group_counts: dict[str, int] = {}
+    group_details: list[dict[str, object]] = []
+    for group_uid, group in sorted(groups.items()):
+        if not isinstance(group, dict):
+            group_details.append(
+                {
+                    "group_uid": str(group_uid),
+                    "selected_node_id": None,
+                    "submitted": None,
+                    "finalized": False,
+                    "child_count": None,
+                }
+            )
+            continue
+        selected_node_id = str(group.get("selected_node_id") or "")
+        selected_group_counts[selected_node_id] = selected_group_counts.get(selected_node_id, 0) + 1
+        children = group.get("children") or []
+        group_details.append(
+            {
+                "group_uid": str(group_uid),
+                "selected_node_id": selected_node_id,
+                "submitted": int(group.get("submitted", 0)),
+                "finalized": bool(group.get("finalized", False)),
+                "child_count": len(children) if isinstance(children, list) else None,
+            }
+        )
+
+    selected_node_stats = {}
+    for node_id, group_count in selected_group_counts.items():
+        node = nodes.get(node_id) or {}
+        selected_node_stats[node_id] = {
+            "group_count": group_count,
+            "node_visits": int(node.get("visits", 0)) if isinstance(node, dict) else None,
+            "puct_n": int(puct_n.get(node_id, 0)),
+        }
+
+    return {
+        "output_dir": output_dir,
+        "library_exists": True,
+        "rollout_n": int(config.get("rollout_n", data.get("rollout_n", 0))),
+        "group_count": len(groups),
+        "finalized_group_count": sum(1 for group in group_details if group["finalized"]),
+        "puct_T": int(data.get("puct_T", 0)),
+        "group_details": group_details,
+        "selected_node_stats": selected_node_stats,
+    }
+
+
+def _validate_puct_group_accounting(
+    summary: dict[str, object],
+    *,
+    expected_groups: int,
+    expected_rollout_n: int,
+) -> None:
+    errors: list[str] = []
+    if not summary.get("library_exists"):
+        errors.append("library.json was not created")
+    if summary.get("rollout_n") != expected_rollout_n:
+        errors.append(f"rollout_n={summary.get('rollout_n')!r}, expected {expected_rollout_n}")
+    if summary.get("group_count") != expected_groups:
+        errors.append(f"group_count={summary.get('group_count')!r}, expected {expected_groups}")
+    if summary.get("finalized_group_count") != expected_groups:
+        errors.append(
+            f"finalized_group_count={summary.get('finalized_group_count')!r}, expected {expected_groups}"
+        )
+    if summary.get("puct_T") != expected_groups:
+        errors.append(f"puct_T={summary.get('puct_T')!r}, expected {expected_groups}")
+
+    group_details = summary.get("group_details") or []
+    if isinstance(group_details, list):
+        for group in group_details:
+            if not isinstance(group, dict):
+                errors.append(f"malformed group record: {group!r}")
+                continue
+            if group.get("submitted") != expected_rollout_n:
+                errors.append(
+                    f"group {group.get('group_uid')!r} submitted={group.get('submitted')!r}, "
+                    f"expected {expected_rollout_n}"
+                )
+            if group.get("child_count") != expected_rollout_n:
+                errors.append(
+                    f"group {group.get('group_uid')!r} child_count={group.get('child_count')!r}, "
+                    f"expected {expected_rollout_n}"
+                )
+
+    selected_node_stats = summary.get("selected_node_stats") or {}
+    if isinstance(selected_node_stats, dict):
+        for node_id, stats in selected_node_stats.items():
+            if not isinstance(stats, dict):
+                errors.append(f"malformed selected-node record for {node_id!r}: {stats!r}")
+                continue
+            group_count = stats.get("group_count")
+            if stats.get("node_visits") != group_count:
+                errors.append(
+                    f"selected node {node_id!r} visits={stats.get('node_visits')!r}, "
+                    f"expected one acquisition per group ({group_count!r})"
+                )
+            puct_n = stats.get("puct_n")
+            if not isinstance(puct_n, int) or not isinstance(group_count, int):
+                errors.append(f"selected node {node_id!r} has malformed PUCT statistics: {stats!r}")
+            elif puct_n < group_count or puct_n > expected_groups:
+                errors.append(
+                    f"selected node {node_id!r} puct_n={puct_n}, expected between its "
+                    f"direct group count {group_count} and total group count {expected_groups}"
+                )
+        if len(selected_node_stats) == 1:
+            only_stats = next(iter(selected_node_stats.values()))
+            if isinstance(only_stats, dict) and only_stats.get("puct_n") != expected_groups:
+                errors.append(
+                    f"single selected node puct_n={only_stats.get('puct_n')!r}, expected {expected_groups}"
+                )
+
+    if errors:
+        raise RuntimeError("PUCT group-accounting acceptance failed: " + "; ".join(errors))
 
 
 def _summarize_history_extraction(output_dir: str = REMOTE_HISTORY_OUTPUT_DIR) -> dict[str, object]:
@@ -1745,6 +1905,54 @@ def train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_smoke() -> dict[str, ob
     memory=262144,
     volumes={"/runs": runs_volume, "/cache": cache_volume},
 )
+def train_gpt_oss_120b_3gpu_batch8_group16_puct_fix_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    output_dir = REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_OUTPUT_DIR
+    _reset_output_dir(output_dir)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_puct_fix_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(output_dir)
+        history_summary = _summarize_history_extraction(output_dir)
+        dump_summary = _dump_prompt_answer_artifacts(output_dir)
+        puct_summary = _summarize_puct_group_accounting(output_dir)
+        merged_summary = {
+            **summary,
+            "history_extraction": history_summary,
+            "prompt_answer_dump": dump_summary,
+            "puct_accounting": puct_summary,
+        }
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(f"PUCT-fix acceptance run did not write entries: {history_summary}")
+        _validate_puct_group_accounting(
+            puct_summary,
+            expected_groups=8,
+            expected_rollout_n=16,
+        )
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
 def train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke() -> dict[str, object]:
     _assert_training_packages_available()
     _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
@@ -1771,6 +1979,46 @@ def train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke() -> dict[
             raise RuntimeError(
                 f"GPT-OSS-120B 3GPU batch8 group16 concurrency16 50-step run did not write entries: "
                 f"{history_summary}"
+            )
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    _reset_output_dir(REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_OUTPUT_DIR)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        output_dir = REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_OUTPUT_DIR
+        summary = _summarize_output(output_dir)
+        history_summary = _summarize_history_extraction(output_dir)
+        dump_summary = _dump_prompt_answer_artifacts(output_dir)
+        merged_summary = {**summary, "history_extraction": history_summary, "prompt_answer_dump": dump_summary}
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        if int(history_summary.get("entry_count", 0)) <= 0:
+            raise RuntimeError(
+                "GPT-OSS-120B 3GPU batch8 group16 prompt-refinement 50-step run "
+                f"did not write entries: {history_summary}"
             )
         return merged_summary
     finally:
@@ -1922,8 +2170,12 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_batch8_group8_temp09_smoke.spawn())
     elif action == "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16":
         print(train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_puct_fix":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_puct_fix_smoke.spawn())
     elif action == "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step":
         print(train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_smoke.spawn())
     elif action == "bootstrap_gpt_oss_120b_seed":
         print(bootstrap_gpt_oss_120b_seed_smoke.remote())
     elif action == "gpt_oss_120b_xml_probe":
@@ -1943,7 +2195,9 @@ def main(action: str = "train"):
             "'train_gpt_oss_120b_3gpu_group16_h200_tuned', "
             "'train_gpt_oss_120b_3gpu_batch8_group8_temp09', "
             "'train_gpt_oss_120b_3gpu_batch8_group16_concurrency16', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_puct_fix', "
             "'train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step', "
             "'bootstrap_gpt_oss_120b_seed', "
             "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"

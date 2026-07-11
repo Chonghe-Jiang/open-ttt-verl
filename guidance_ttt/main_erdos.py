@@ -51,6 +51,15 @@ def apply_recipe_overrides(config: dict[str, Any], overrides: list[str]) -> dict
     return OmegaConf.to_container(merged, resolve=True)
 
 
+def _library_runtime_config(ttt_cfg: dict[str, Any]) -> dict[str, int | float]:
+    return {
+        "rollout_n": int(ttt_cfg["group_size"]),
+        "puct_c": float(ttt_cfg.get("puct_c", 1.0)),
+        "max_buffer_size": int(ttt_cfg.get("max_buffer_size", 1000)),
+        "topk_children": int(ttt_cfg.get("topk_children", 2)),
+    }
+
+
 def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     run_cfg = config["run"]
     ttt_cfg = config["ttt"]
@@ -60,6 +69,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     library_path = output_dir / "library.json"
+    library_config = _library_runtime_config(ttt_cfg)
     if not library_path.exists():
         bootstrap_cfg = dict(ttt_cfg.get("bootstrap") or {})
         seed_library_path = bootstrap_cfg.get("seed_library_path")
@@ -74,16 +84,18 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
             finally:
                 if temp_library_path.exists():
                     temp_library_path.unlink()
+            library = GuidanceLibrary(library_path)
+            library.configure_pristine_archive(**library_config)
         else:
             root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
-            GuidanceLibrary(
+            library = GuidanceLibrary(
                 library_path,
                 initial_nodes=root_nodes,
-                rollout_n=int(ttt_cfg["group_size"]),
-                puct_c=float(ttt_cfg.get("puct_c", 1.0)),
-                max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
-                topk_children=int(ttt_cfg.get("topk_children", 2)),
+                **library_config,
             )
+    else:
+        library = GuidanceLibrary(library_path, **library_config)
+    library.assert_runtime_config(**library_config)
 
     slot_parquet = output_dir / "ttt_slots.parquet"
     write_slot_parquet(
@@ -213,11 +225,20 @@ def validate_bootstrap_requirement(config: dict[str, Any], prepared: dict[str, P
         for node in (snapshot.get("nodes") or {}).values()
         if isinstance(node, dict) and node.get("parent_id") is None
     ]
-    has_root_entry = any(str(node.get("entry_id") or "") in entries for node in root_nodes)
-    if not has_root_entry:
+    valid_code_root_entries = []
+    for node in root_nodes:
+        entry = entries.get(str(node.get("entry_id") or ""))
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("verifier_status") != "valid":
+            continue
+        if not str(entry.get("solution") or "").strip():
+            continue
+        valid_code_root_entries.append(entry)
+    if not valid_code_root_entries:
         raise RuntimeError(
-            "Bootstrap history is required but no root-attached library entry exists. "
-            "Run this recipe once with --bootstrap-only before launching training."
+            "Bootstrap history is required but no valid root-attached library entry with non-empty solution "
+            "code exists. Run this recipe once with --bootstrap-only before launching training."
         )
 
 

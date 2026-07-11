@@ -32,18 +32,21 @@ Transformers model with `llm.execution.provider=local`.
 ## Current Approach
 
 The current Guidance-TTT design trains only the guidance actor. The execution
-model is treated as a frozen solver that converts a high-level guidance idea plus
-the selected library summary into one concrete candidate.
+model is treated as a frozen solver that applies a high-level guidance idea to
+the selected library node's runnable parent code.
 
 At rollout time:
 
-1. The JSON library uses PUCT to select one visible node.
+1. The JSON library uses PUCT to select one visible node with non-empty solution
+   code.
 2. The guidance actor receives the problem statement and the selected node's raw
    execution summary plus verifier score/status. It returns exactly one
    `<guidance>` block.
-3. The execution model receives the same selected summary/score context plus the
-   parsed guidance. It returns `<execution_thinking>`, `<solution>`, and
-   `<summary>` in one response.
+3. The execution model receives the selected node's complete solution code,
+   verifier score/status, and parsed guidance. It does not receive the selected
+   summary. It improves the parent implementation and returns
+   `<execution_thinking>`, a complete updated `<solution>`, and `<summary>` in
+   one response.
 4. The verifier scores the solution. For Polyomino, this always goes through
    FrontierCS/go-judge.
 5. The new entry is written as a child of the selected PUCT node. Its raw model
@@ -400,12 +403,14 @@ python -m compileall -q guidance_ttt verl
 ## Design Notes
 
 - PUCT selects one library node before prompt assembly.
-- Guidance and execution prompts attach raw execution-model summaries plus
-  verifier score/status for the PUCT-selected entry, not the full canonical
-  summary or global best summary.
-- Execution prompt also attaches the parsed `<guidance>`.
+- Guidance attaches the selected entry's raw execution summary plus verifier
+  score/status; execution instead attaches the complete parent code plus the
+  same verifier evidence and parsed `<guidance>`.
+- Nodes without extracted solution code remain available for reward/audit data
+  but are not eligible as future execution parents.
 - Execution LLM returns `<execution_thinking>`, one task-specific `<solution>`
-  code block, and `<summary>` in a single response.
+  code block containing the complete updated candidate, and `<summary>` in a
+  single response.
 - The verifier reward is assigned only to guidance model response tokens.
 - Execution failures are environment outcomes and become library entries with reward `0.0`.
 - The execution-provided summary is stored with verifier reward/status as structured library metadata; the summary should not claim verifier success before verification runs.

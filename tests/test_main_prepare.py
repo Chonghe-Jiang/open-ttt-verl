@@ -13,7 +13,7 @@ from guidance_ttt.main_erdos import (
     validate_bootstrap_requirement,
 )
 from guidance_ttt.library import GuidanceLibrary
-from guidance_ttt.state import LibraryEntry
+from guidance_ttt.state import LibraryEntry, make_root_node
 
 
 def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
@@ -155,6 +155,17 @@ def test_prepare_run_can_initialize_library_from_seed_path(tmp_path):
                 },
                 "groups": {},
                 "best_node_id": "seed-root",
+                "config": {
+                    "rollout_n": 1,
+                    "puct_c": 9.0,
+                    "max_buffer_size": 17,
+                    "topk_children": 1,
+                },
+                "rollout_n": 1,
+                "puct_c": 9.0,
+                "puct_n": {},
+                "puct_m": {},
+                "puct_T": 0,
             }
         )
     )
@@ -180,7 +191,69 @@ def test_prepare_run_can_initialize_library_from_seed_path(tmp_path):
     library = yaml.safe_load(Path(prepared["library_path"]).read_text())
     assert library["nodes"]["seed-root"]["entry_id"] == "seed-entry"
     assert library["entries"]["seed-entry"]["metadata"]["static_seed"] is True
+    assert library["config"] == {
+        "rollout_n": 2,
+        "puct_c": 1.0,
+        "max_buffer_size": 1000,
+        "topk_children": 2,
+    }
+    assert library["rollout_n"] == 2
     validate_bootstrap_requirement(config, prepared)
+
+
+def test_prepare_run_rejects_existing_library_runtime_config_mismatch(tmp_path):
+    output_dir = tmp_path / "outputs" / "existing_mismatch"
+    library_path = output_dir / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    GuidanceLibrary(library_path, initial_nodes=[root], rollout_n=1)
+    original = library_path.read_text()
+    config = {
+        "run": {
+            "output_dir": str(output_dir),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 16,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+
+    with pytest.raises(ValueError, match=r"rollout_n: archive=1, recipe=16"):
+        prepare_run(config)
+
+    assert library_path.read_text() == original
+    assert not (output_dir / "ttt_slots.parquet").exists()
+
+
+def test_prepare_run_rejects_non_pristine_seed_archive(tmp_path):
+    seed_library_path = tmp_path / "used_seed_library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    seed = GuidanceLibrary(seed_library_path, initial_nodes=[root], rollout_n=1)
+    seed.acquire_group("1:slot-a")
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "non_pristine_seed"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 16,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+            "bootstrap": {"seed_library_path": str(seed_library_path)},
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+
+    with pytest.raises(ValueError, match="Seed library .* is not pristine"):
+        prepare_run(config)
 
 
 def test_prepare_run_copies_seed_library_via_atomic_replace(tmp_path, monkeypatch):
@@ -420,6 +493,66 @@ def test_bootstrap_required_fails_when_library_has_only_roots(tmp_path):
     )
 
     validate_bootstrap_requirement(config, prepared)
+
+
+@pytest.mark.parametrize(
+    ("verifier_status", "solution"),
+    [
+        ("valid", ""),
+        ("invalid", "int main() { return 0; }"),
+    ],
+)
+def test_bootstrap_required_rejects_root_entry_without_valid_solution(
+    tmp_path,
+    verifier_status,
+    solution,
+):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / f"bootstrap-{verifier_status}-{bool(solution)}"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 1,
+            "puct_c": 1.0,
+            "eval_timeout": 5,
+            "bootstrap": {"enabled": True, "required": True},
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+    prepared = prepare_run(config)
+    library = GuidanceLibrary(prepared["library_path"])
+    root_id = next(
+        node_id
+        for node_id, node in library.snapshot()["nodes"].items()
+        if node["parent_id"] is None
+    )
+    library.attach_entry_to_root(
+        root_id,
+        LibraryEntry(
+            id="bootstrap-entry",
+            parent_id=root_id,
+            problem_id="polyomino_packing",
+            timestep=0,
+            guidance="Bootstrap execution without guidance.",
+            execution_thinking="thinking",
+            solution=solution,
+            verifier_reward=0.0,
+            verifier_raw_score=0.0,
+            verifier_status=verifier_status,
+            verifier_message="test bootstrap",
+            summary="Bootstrap summary",
+            reusable_idea="Bootstrap idea",
+            failure_mode=None if verifier_status == "valid" else verifier_status,
+            metadata={"bootstrap": True, "raw_model_summary": "Bootstrap raw summary"},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="valid root-attached library entry with non-empty solution code"):
+        validate_bootstrap_requirement(config, prepared)
 
 
 def test_gpt_oss_recipes_initialize_fsdp_models_in_bfloat16():

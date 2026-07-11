@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -852,6 +853,59 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group16_concurrency16_script_t
     assert "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16" in script
 
 
+def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group16_puct_fix_config_is_isolated_copy():
+    reference_path = Path(
+        "guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step.yaml"
+    )
+    config_path = Path(
+        "guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_puct_fix_1step.yaml"
+    )
+    reference = yaml.safe_load(reference_path.read_text())
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["output_dir"].endswith("batch8_group16_puct_fix_1step")
+    assert config["run"]["experiment_name"].endswith("batch8_group16_puct_fix_1step")
+    for run_key in ("output_dir", "experiment_name"):
+        reference["run"].pop(run_key)
+        config["run"].pop(run_key)
+    assert config == reference
+
+
+def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group16_puct_fix_script_runs_acceptance():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_puct_fix_1step.yaml"
+    )
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_OUTPUT_DIR.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_puct_fix_1step"
+    )
+    assert module.gpt_oss_120b_3gpu_batch8_group16_puct_fix_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PUCT_FIX_CONFIG_PATH,
+    ]
+    function_start = script.rindex(
+        "@app.function",
+        0,
+        script.index("def train_gpt_oss_120b_3gpu_batch8_group16_puct_fix_smoke"),
+    )
+    source = script[function_start:]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "gpu=GPT_OSS_120B_3GPU_CONFIG" in source
+    assert "_reset_output_dir(output_dir)" in source
+    assert '_start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)' in source
+    assert "_start_judge(workers=16)" in source
+    assert "_summarize_puct_group_accounting(output_dir)" in source
+    assert "_validate_puct_group_accounting(" in source
+    assert "expected_groups=8" in source
+    assert "expected_rollout_n=16" in source
+    assert "train_gpt_oss_120b_3gpu_batch8_group16_puct_fix" in script
+
+
 def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_config_matches_requested_shape():
     config_path = Path(
         "guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml"
@@ -932,6 +986,54 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_s
     assert '"CUDA_VISIBLE_DEVICES": "0,1"' in source
     assert "gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_training_command()" in source
     assert "train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step" in script
+
+
+def test_modal_polyomino_prompt_refinement_50step_matches_previous_setting_and_has_isolated_output():
+    baseline_path = Path(
+        "guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml"
+    )
+    config_path = Path(
+        "guidance_ttt/config/"
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_prompt_refinement_50step.yaml"
+    )
+    baseline = yaml.safe_load(baseline_path.read_text())
+    config = yaml.safe_load(config_path.read_text())
+
+    ignored_run_keys = {"output_dir", "experiment_name"}
+    assert {key: value for key, value in config["run"].items() if key not in ignored_run_keys} == {
+        key: value for key, value in baseline["run"].items() if key not in ignored_run_keys
+    }
+    assert config["task"] == baseline["task"]
+    assert config["ttt"] == baseline["ttt"]
+    assert config["llm"] == baseline["llm"]
+    assert config["verl_overrides"] == baseline["verl_overrides"]
+    assert config["run"]["output_dir"].endswith("batch8_group16_prompt_refinement_50step")
+    assert config["run"]["output_dir"] != baseline["run"]["output_dir"]
+
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_prompt_refinement_50step.yaml"
+    )
+    assert module.gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH,
+    ]
+    function_start = script.rindex(
+        "@app.function",
+        0,
+        script.index("def train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_smoke"),
+    )
+    source = script[function_start:]
+    source = source[: source.index("@app.function", 1) if "@app.function" in source[1:] else len(source)]
+    assert "gpu=GPT_OSS_120B_3GPU_CONFIG" in source
+    assert '_start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)' in source
+    assert "_start_judge(workers=16)" in source
+    assert '"CUDA_VISIBLE_DEVICES": "0,1"' in source
+    assert "train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step" in script
 
 
 def test_modal_polyomino_gpt_oss_120b_bootstrap_seed_script_targets_single_h200():
@@ -1093,6 +1195,56 @@ def test_modal_polyomino_prompt_answer_dump_includes_all_entries(tmp_path):
     assert "guidance system" in markdown
     assert "execution user" in markdown
     assert "<execution_thinking>guided</execution_thinking>" in markdown
+
+
+def test_modal_polyomino_puct_acceptance_detects_per_child_overcount(tmp_path):
+    module = _load_modal_smoke_module()
+    output_dir = tmp_path / "puct-fix"
+    output_dir.mkdir()
+    groups = {
+        f"1:slot-{index}": {
+            "selected_node_id": "root",
+            "submitted": 16,
+            "children": [f"child-{index}-{child}" for child in range(16)],
+            "finalized": True,
+            "visible_timestep_exclusive": 1,
+        }
+        for index in range(8)
+    }
+    library = {
+        "config": {
+            "rollout_n": 16,
+            "puct_c": 1.0,
+            "max_buffer_size": 1000,
+            "topk_children": 2,
+        },
+        "groups": groups,
+        "nodes": {"root": {"visits": 8}},
+        "puct_n": {"root": 8},
+        "puct_T": 8,
+    }
+    library_path = output_dir / "library.json"
+    library_path.write_text(json.dumps(library))
+
+    summary = module._summarize_puct_group_accounting(str(output_dir))
+    module._validate_puct_group_accounting(summary, expected_groups=8, expected_rollout_n=16)
+
+    assert summary["rollout_n"] == 16
+    assert summary["group_count"] == 8
+    assert summary["finalized_group_count"] == 8
+    assert summary["puct_T"] == 8
+    assert summary["selected_node_stats"]["root"] == {
+        "group_count": 8,
+        "node_visits": 8,
+        "puct_n": 8,
+    }
+
+    library["puct_T"] = 128
+    library["puct_n"]["root"] = 128
+    library_path.write_text(json.dumps(library))
+    overcounted = module._summarize_puct_group_accounting(str(output_dir))
+    with pytest.raises(RuntimeError, match="puct_T=128, expected 8"):
+        module._validate_puct_group_accounting(overcounted, expected_groups=8, expected_rollout_n=16)
 
 
 def test_modal_polyomino_train_smoke_resets_output_dir(tmp_path):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import threading
 from contextlib import contextmanager
 from fcntl import LOCK_EX, LOCK_UN, flock
@@ -66,16 +68,146 @@ class GuidanceLibrary:
                 self._reload()
                 return self._to_store()
 
-    def acquire_group(self, group_uid: str, *, visible_timestep_exclusive: int | None = None) -> LibraryNode:
+    def configure_pristine_archive(
+        self,
+        *,
+        rollout_n: int,
+        puct_c: float,
+        max_buffer_size: int,
+        topk_children: int,
+    ) -> None:
+        """Apply run-specific sampling config to an unused seed archive."""
+        expected = self._coerce_runtime_config(
+            rollout_n=rollout_n,
+            puct_c=puct_c,
+            max_buffer_size=max_buffer_size,
+            topk_children=topk_children,
+        )
+        with self._thread_lock:
+            with self._file_lock():
+                self._reload()
+                if self._groups or self._puct_T or self._puct_n or self._puct_m:
+                    raise ValueError(
+                        f"Seed library {self.path} is not pristine: run-local groups or PUCT statistics "
+                        "are already present. Use a clean bootstrap seed or a new output directory."
+                    )
+                self.rollout_n = expected["rollout_n"]
+                self.puct_c = expected["puct_c"]
+                self.max_buffer_size = expected["max_buffer_size"]
+                self.topk_children = expected["topk_children"]
+                self._save()
+
+    def assert_runtime_config(
+        self,
+        *,
+        rollout_n: int,
+        puct_c: float,
+        max_buffer_size: int,
+        topk_children: int,
+    ) -> None:
+        """Fail fast when a persisted archive disagrees with the active recipe."""
+        expected = self._coerce_runtime_config(
+            rollout_n=rollout_n,
+            puct_c=puct_c,
+            max_buffer_size=max_buffer_size,
+            topk_children=topk_children,
+        )
+        actual = self._runtime_config()
+        mismatches = []
+        for key, expected_value in expected.items():
+            actual_value = actual[key]
+            matches = (
+                math.isclose(actual_value, expected_value, rel_tol=0.0, abs_tol=1e-12)
+                if key == "puct_c"
+                else actual_value == expected_value
+            )
+            if not matches:
+                mismatches.append(f"{key}: archive={actual_value!r}, recipe={expected_value!r}")
+        if mismatches:
+            raise ValueError(
+                f"Guidance library runtime config mismatch for {self.path}: "
+                + "; ".join(mismatches)
+                + ". Existing run libraries are immutable with respect to sampling config; "
+                "use a new output directory."
+            )
+        self._assert_group_accounting()
+
+    @staticmethod
+    def _coerce_runtime_config(
+        *,
+        rollout_n: int,
+        puct_c: float,
+        max_buffer_size: int,
+        topk_children: int,
+    ) -> dict[str, int | float]:
+        config: dict[str, int | float] = {
+            "rollout_n": int(rollout_n),
+            "puct_c": float(puct_c),
+            "max_buffer_size": int(max_buffer_size),
+            "topk_children": int(topk_children),
+        }
+        if config["rollout_n"] <= 0:
+            raise ValueError(f"rollout_n must be positive, got {config['rollout_n']!r}")
+        return config
+
+    def _runtime_config(self) -> dict[str, int | float]:
+        return {
+            "rollout_n": self.rollout_n,
+            "puct_c": self.puct_c,
+            "max_buffer_size": self.max_buffer_size,
+            "topk_children": self.topk_children,
+        }
+
+    def _assert_group_accounting(self) -> None:
+        errors: list[str] = []
+        finalized_count = 0
+        for group_uid, group in self._groups.items():
+            submitted = int(group.get("submitted", 0))
+            finalized = bool(group.get("finalized", False))
+            if submitted < 0 or submitted > self.rollout_n:
+                errors.append(
+                    f"group {group_uid!r} has submitted={submitted}, expected 0..{self.rollout_n}"
+                )
+            if finalized:
+                finalized_count += 1
+                if submitted != self.rollout_n:
+                    errors.append(
+                        f"group {group_uid!r} is finalized with submitted={submitted}, "
+                        f"expected {self.rollout_n}"
+                    )
+            elif submitted >= self.rollout_n:
+                errors.append(
+                    f"group {group_uid!r} is not finalized with submitted={submitted}, "
+                    f"expected less than {self.rollout_n}"
+                )
+        if self._puct_T != finalized_count:
+            errors.append(f"puct_T={self._puct_T}, expected one update for each of {finalized_count} finalized groups")
+        if errors:
+            raise ValueError(f"Guidance library group accounting is inconsistent for {self.path}: " + "; ".join(errors))
+
+    def acquire_group(
+        self,
+        group_uid: str,
+        *,
+        visible_timestep_exclusive: int | None = None,
+        require_solution: bool = False,
+    ) -> LibraryNode:
         with self._thread_lock:
             with self._file_lock():
                 self._reload()
                 group = self._groups.get(group_uid)
                 if group is not None:
-                    return self._nodes[group["selected_node_id"]]
+                    selected = self._nodes[group["selected_node_id"]]
+                    if require_solution and not self._node_has_solution(selected):
+                        raise RuntimeError(
+                            f"Existing group {group_uid!r} is attached to node {selected.id!r}, which has no "
+                            "solution code. Start a new run from a code-bearing bootstrap library."
+                        )
+                    return selected
                 selected = self._select_node(
                     visible_timestep_exclusive=visible_timestep_exclusive,
                     blocked_node_ids=self._same_step_blocked_node_ids(visible_timestep_exclusive),
+                    require_solution=require_solution,
                 )
                 selected.visits += 1
                 self._groups[group_uid] = {
@@ -95,6 +227,12 @@ class GuidanceLibrary:
                 if group_uid not in self._groups:
                     raise KeyError(f"Unknown group_uid: {group_uid}")
                 group = self._groups[group_uid]
+                submitted = int(group.get("submitted", 0))
+                if bool(group.get("finalized", False)) or submitted >= self.rollout_n:
+                    raise RuntimeError(
+                        f"Group {group_uid!r} is already complete: submitted={submitted}, "
+                        f"rollout_n={self.rollout_n}. Refusing an extra child submission."
+                    )
                 parent_id = entry.parent_id if entry.parent_id in self._nodes else group["selected_node_id"]
                 parent = self._nodes[parent_id]
 
@@ -113,9 +251,9 @@ class GuidanceLibrary:
                 )
                 self._nodes[child.id] = child
                 parent.children.append(child.id)
-                group["submitted"] += 1
+                group["submitted"] = submitted + 1
                 group["children"].append(child.id)
-                if group["submitted"] >= self.rollout_n:
+                if group["submitted"] == self.rollout_n:
                     group["finalized"] = True
                     self._update_puct_stats_for_group(group)
                     self._filter_archive()
@@ -215,13 +353,20 @@ class GuidanceLibrary:
         *,
         visible_timestep_exclusive: int | None = None,
         blocked_node_ids: set[str] | None = None,
+        require_solution: bool = False,
     ) -> LibraryNode:
         visible_nodes = [
             node
             for node in self._nodes.values()
             if self._node_is_visible(node, visible_timestep_exclusive=visible_timestep_exclusive)
+            and (not require_solution or self._node_has_solution(node))
         ]
         if not visible_nodes:
+            if require_solution:
+                raise RuntimeError(
+                    "GuidanceLibrary has no visible node with solution code. "
+                    "Initialize the run from a valid code-bearing bootstrap library."
+                )
             raise ValueError("GuidanceLibrary requires at least one root node")
         initial_ids = {node.id for node in visible_nodes if node.parent_id is None}
         ranked = rank_archive_nodes(
@@ -237,6 +382,12 @@ class GuidanceLibrary:
             if node.id not in blocked_node_ids:
                 return node
         return ranked[0][2]
+
+    def _node_has_solution(self, node: LibraryNode) -> bool:
+        if not node.entry_id:
+            return False
+        entry = self._entries.get(node.entry_id)
+        return entry is not None and bool(entry.solution.strip())
 
     def _same_step_blocked_node_ids(self, visible_timestep_exclusive: int | None) -> set[str]:
         if visible_timestep_exclusive is None:
@@ -313,6 +464,10 @@ class GuidanceLibrary:
                 sort_keys=True,
                 separators=(",", ":"),
             )
+        solution = entry.solution.strip()
+        if solution:
+            digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
+            return f"solution-sha256:{digest}"
         return entry.summary or None
 
     def _filter_archive(self) -> None:

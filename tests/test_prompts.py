@@ -1,3 +1,5 @@
+import pytest
+
 from guidance_ttt.prompts import (
     build_execution_prompt,
     build_guidance_prompt,
@@ -8,6 +10,7 @@ from guidance_ttt.prompts import (
     extract_text_outside_tag,
 )
 from guidance_ttt.state import LibraryEntry, LibraryNode
+from guidance_ttt.tasks import get_task_spec
 
 
 def _node() -> LibraryNode:
@@ -89,7 +92,7 @@ Raw C5: 0.4
     assert "canonical_solution_code_should_not_be_attached" not in prompt.user
 
 
-def test_prompt_context_can_recover_raw_summary_from_execution_text_metadata():
+def test_execution_prompt_uses_parent_code_instead_of_recovered_raw_summary():
     entry = _entry()
     entry.summary = "Canonical summary should not be attached when execution_text is available."
     entry.metadata = {
@@ -114,14 +117,15 @@ Recovered raw summary from the execution response.
         raw_score_label="Raw C5",
     )
 
-    assert "Recovered raw summary from the execution response." in prompt.user
+    assert "Recovered raw summary from the execution response." not in prompt.user
     assert "Raw C5: 0.4" in prompt.user
     assert "Reward: 2.5" in prompt.user
     assert "Canonical summary should not be attached" not in prompt.user
-    assert "def run(): return None" not in prompt.user
+    assert entry.solution in prompt.user
+    assert "<parent_code>" in prompt.user
 
 
-def test_prompt_context_recovers_terminal_raw_summary_when_model_omits_closing_summary_tag():
+def test_execution_prompt_ignores_terminal_raw_summary_and_attaches_solution():
     entry = _entry()
     entry.summary = "Canonical summary should not be attached when execution_text has raw summary content."
     entry.metadata = {
@@ -146,15 +150,14 @@ It should remain raw model text, not the canonical summary.""",
         raw_score_label="FrontierCS score",
     )
 
-    assert "No previous summary is attached." not in prompt.user
-    assert "Recovered raw summary from a model response that ended without the closing tag." in prompt.user
-    assert "It should remain raw model text, not the canonical summary." in prompt.user
+    assert "Recovered raw summary from a model response that ended without the closing tag." not in prompt.user
+    assert "It should remain raw model text, not the canonical summary." not in prompt.user
     assert "FrontierCS score: 0.4" in prompt.user
     assert "Canonical summary should not be attached" not in prompt.user
-    assert "int main()" not in prompt.user
+    assert entry.solution in prompt.user
 
 
-def test_prompt_context_never_falls_back_to_canonical_summary_when_raw_summary_is_missing():
+def test_execution_prompt_never_attaches_canonical_summary():
     entry = _entry()
     entry.summary = """Execution Interpretation
 canonical thinking should not be attached
@@ -175,13 +178,13 @@ def canonical_solution_code_should_not_be_attached():
         raw_score_label="Raw C5",
     )
 
-    assert "No previous summary is attached." in prompt.user
     assert "Raw C5: 0.4" in prompt.user
     assert "Reward: 2.5" in prompt.user
     assert "Verifier status: valid" in prompt.user
     assert "Verifier message: C5 bound: 0.400000" in prompt.user
     assert "canonical thinking should not be attached" not in prompt.user
     assert "canonical_solution_code_should_not_be_attached" not in prompt.user
+    assert entry.solution in prompt.user
 
 
 def test_guidance_prompt_attaches_selected_raw_summary_but_not_library_details():
@@ -232,7 +235,7 @@ Preserve this exact raw text."""
     assert "You are the Guidance Model" in prompt.system
     assert "evolutionary guidance" in prompt.system
     assert "Do not write final code" in prompt.system
-    assert "escape local optima" in prompt.system
+    assert "escape local optima" not in prompt.system
     assert "# Objective" in prompt.user
     assert "next **evolutionary guidance**" in prompt.user
     assert "# Evolutionary Guidelines" in prompt.user
@@ -240,9 +243,13 @@ Preserve this exact raw text."""
     assert "what has already been tried, what worked" in prompt.user
     assert "what failed" not in prompt.user
     assert "2. Stay at the algorithmic-strategy level." in prompt.user
-    assert "Propose high-level algorithmic directions and ideas." in prompt.user
-    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
-    assert "3. Produce exactly the required XML structure." in prompt.user
+    assert "Propose high-level algorithmic directions, strategic refinements, or changes" in prompt.user
+    assert "does not need to replace" in prompt.user
+    assert "equally valuable to improve specific strategies, mechanisms, or design choices" in prompt.user
+    assert "Do not write code, low-level" in prompt.user
+    assert "3. Propose only executable mechanisms." in prompt.user
+    assert "Every proposed mechanism must be implementable within the task's required self-contained solution" in prompt.user
+    assert "4. Produce exactly the required XML structure." in prompt.user
     assert "Provide internal reasoning and return exactly one `<guidance>` block" in prompt.user
     assert "Analyze History, Do Not Repeat It" not in prompt.user
     assert "High-Level Mutations, No Low-Level Details" not in prompt.user
@@ -262,11 +269,32 @@ Preserve this exact raw text."""
     assert "Evolutionary Mutation" not in prompt.user
     assert "Directional Search Strategy" not in prompt.user
     assert "Progress Target" not in prompt.user
-    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
+    assert "implementation details, or parameter schedules." in prompt.user
     assert "reach a higher score" in prompt.user
     assert "current visible target raw score" not in prompt.user
     assert "(0.4)" not in prompt.user
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
+
+
+def test_guidance_prompt_includes_task_specific_mechanism_constraint():
+    spec = get_task_spec("polyomino_packing")
+
+    prompt = build_guidance_prompt(
+        problem_prompt=spec.problem_prompt,
+        selected_node=_node(),
+        selected_entry=None,
+        global_best_entries=[],
+        local_failure_entries=[],
+        mechanism_constraint=spec.guidance_mechanism_constraint,
+        raw_score_label=spec.raw_score_label,
+    )
+
+    assert "3. Propose only executable mechanisms." in prompt.user
+    assert (
+        "Every proposed mechanism must be implementable inside one self-contained C++17 program using only "
+        "the current input instance." in prompt.user
+    )
+    assert "offline training data, benchmark access, external models, APIs, learned weights" in prompt.user
 
 
 def test_guidance_prompt_omits_global_best_and_local_failure_history():
@@ -326,8 +354,11 @@ def test_guidance_prompt_uses_static_improvement_objective_without_global_best_t
     assert "<local_failures>" not in prompt.user
     assert "`<local_failures>`" not in prompt.user
     assert "high-level algorithmic directions" in prompt.user
-    assert "Propose high-level algorithmic directions and ideas." in prompt.user
-    assert "Do not write code, implementation details, or parameter schedules." in prompt.user
+    assert "Propose high-level algorithmic directions, strategic refinements, or changes" in prompt.user
+    assert "does not need to replace" in prompt.user
+    assert "equally valuable to improve specific strategies, mechanisms, or design choices" in prompt.user
+    assert "Do not write code, low-level" in prompt.user
+    assert "implementation details, or parameter schedules." in prompt.user
     assert "The following notes explain what each block should contain" not in prompt.user
     assert "Provide the final evolutionary guidance for the next execution attempt" in prompt.user
     assert "The preferred submitted guidance" not in prompt.user
@@ -480,7 +511,7 @@ Try pairwise mass transfer around the first five coordinates.
     assert "Try pairwise mass transfer around the first five coordinates." not in prompt.user
 
 
-def test_execution_prompt_is_thin_wrapper_around_problem_guidance_and_raw_summaries():
+def test_execution_prompt_attaches_complete_parent_code_score_and_guidance_without_summary():
     selected_entry = _entry()
     selected_entry.metadata = {
         "raw_model_summary": """Selected raw summary.
@@ -500,13 +531,17 @@ def selected_candidate():
 
     assert "Find better C5" in prompt.user
     assert "Try deterministic coordinate descent." in prompt.user
-    assert "The next sections describe the current search state for this problem" in prompt.user
+    assert "The next sections provide the selected parent candidate and the guidance" in prompt.user
     assert "run-local context when implementing the guided candidate" not in prompt.user
-    assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
-    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
-    assert "<selected_summary>" in prompt.user
-    assert "Selected raw summary." in prompt.user
-    assert "def selected_candidate()" in prompt.user
+    assert prompt.user.index("</problem>") < prompt.user.index("The next sections provide")
+    assert prompt.user.index("The next sections provide") < prompt.user.index("<selected_parent>")
+    assert "<selected_summary>" not in prompt.user
+    assert "Selected raw summary." not in prompt.user
+    assert "def selected_candidate()" not in prompt.user
+    assert "<selected_parent>" in prompt.user
+    assert "<parent_code>" in prompt.user
+    assert selected_entry.solution in prompt.user
+    assert prompt.user.count(selected_entry.solution) == 1
     assert "Node id:" not in prompt.user
     assert "Timestep:" not in prompt.user
     assert "Value:" not in prompt.user
@@ -516,23 +551,25 @@ def selected_candidate():
     assert "Previous guidance:" not in prompt.user
     assert "Reusable idea:" not in prompt.user
     assert "Previous solution code excerpt" not in prompt.user
-    assert "return ([0.5, 0.5], 0.5, 2)" not in prompt.user
+    assert "return ([0.5, 0.5], 0.5, 2)" in prompt.user
     assert "<execution_thinking>" in prompt.user
     assert "<solution>" in prompt.user
     assert "</solution>" in prompt.user
     assert "<summary>" in prompt.user
     assert "Use the problem statement as the authoritative task specification" in prompt.user
-    assert "Use the attached library context as historical evidence" in prompt.user
+    assert "Use the selected parent code as the runnable baseline" in prompt.user
     assert "Score direction: min." in prompt.user
-    assert "Implement one concrete solution that follows the guidance" in prompt.user
     assert "# Guidance Adherence Contract" in prompt.user
-    assert "Treat the guidance block as the primary design constraint" in prompt.user
-    assert "Implement at least one concrete mechanism that directly realizes the guidance" in prompt.user
-    assert "Do not silently fall back to a generic baseline or only repeat the selected summary" in prompt.user
-    assert "If any important guidance component is simplified or omitted" in prompt.user
-    assert "explain that explicitly in both `<execution_thinking>` and `<summary>`" in prompt.user
+    assert "Treat the guidance as the binding specification for improving the selected parent" in prompt.user
+    assert "Modify the supplied parent code rather than replacing it with a generic baseline" in prompt.user
+    assert "Preserve its input/output contract and unaffected working mechanisms" in prompt.user
+    assert "Every important actionable component in the guidance must be reflected concretely" in prompt.user
+    assert "must interact as intended" in prompt.user
+    assert "Return one complete updated program, not a patch or diff" in prompt.user
+    assert "Implement at least one concrete mechanism" not in prompt.user
+    assert "If any important guidance component is simplified or omitted" not in prompt.user
     assert prompt.user.index("</guidance>") < prompt.user.index("# Guidance Adherence Contract")
-    assert prompt.user.index("# Guidance Adherence Contract") < prompt.user.index("Implement one concrete solution")
+    assert prompt.user.index("# Guidance Adherence Contract") < prompt.user.index("Modify the supplied parent code")
     assert "Return exactly these three blocks" not in prompt.user
     assert "Your response must contain exactly three top-level XML blocks" in prompt.user
     assert "Required output format:" in prompt.user
@@ -546,7 +583,8 @@ def selected_candidate():
     assert "Write a concise natural-language summary of the candidate." in prompt.user
     assert "The summary should explain:" in prompt.user
     assert "1. the implemented algorithmic idea;" in prompt.user
-    assert "2. how it changes from the prior candidate in response to the given guidance;" in prompt.user
+    assert "2. exactly what was changed from the supplied parent code" in prompt.user
+    assert "what important mechanisms were preserved" in prompt.user
     assert "3. the main search, refinement, or optimization mechanisms actually used." in prompt.user
     assert "Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone." in prompt.user
     assert "Only describe mechanisms that are present in the implementation." in prompt.user
@@ -584,6 +622,8 @@ def selected_candidate():
 
 
 def test_execution_prompt_accepts_cpp_solution_contract():
+    selected_entry = _entry()
+    selected_entry.solution = "#include <iostream>\nint main() { return 0; }"
     prompt = build_execution_prompt(
         problem_prompt="Pack polyominoes from stdin.",
         selected_node=LibraryNode(
@@ -598,7 +638,7 @@ def test_execution_prompt_accepts_cpp_solution_contract():
             children=[],
             metadata={},
         ),
-        selected_entry=None,
+        selected_entry=selected_entry,
         guidance="Use skyline placement with rotations.",
         solution_language="cpp",
         solution_contract=(
@@ -613,7 +653,14 @@ def test_execution_prompt_accepts_cpp_solution_contract():
     assert "Score direction: max." in prompt.user
     assert "```cpp" in prompt.user
     assert "```python" not in prompt.user
-    assert "Turn guidance into one concrete runnable C++17 candidate" in prompt.system
+    assert selected_entry.solution in prompt.user
+    assert "Improve the supplied parent C++17 candidate" in prompt.system
+    assert "Use the parent code as the implementation baseline" in prompt.system
+    assert "Follow the guidance faithfully" in prompt.system
+    assert "Implement all specified algorithmic mechanisms and strategic details" in prompt.system
+    assert "Do not silently omit, replace, or substantially simplify" in prompt.system
+    assert "use the closest valid alternative and explain the deviation in the summary" in prompt.system
+    assert "Output execution thinking first, then the code block, then the summary" in prompt.system
 
 
 def test_execution_prompt_omits_global_best_valid_summary():
@@ -639,7 +686,7 @@ def best_candidate():
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
-        selected_entry=None,
+        selected_entry=_entry(),
         global_best_entries=[global_best],
         guidance="Preserve current best and perturb locally.",
     )
@@ -649,10 +696,10 @@ def best_candidate():
     assert "def best_candidate()" not in prompt.user
     assert "Entry id: best-entry" not in prompt.user
     assert "Score: 0.3821438682282878" not in prompt.user
-    assert "Reward: 2.5" not in prompt.user
+    assert "Score: 0.4" in prompt.user
     assert "Verified returned profile artifacts" not in prompt.user
     assert "h=[0.4, 0.6]" not in prompt.user
-    assert "def run(seed=42, budget_s=1, **kwargs)" not in prompt.user
+    assert _entry().solution in prompt.user
     assert "Initialize from verified profile artifacts when available" not in prompt.user
     assert "Use the problem statement as the authoritative task specification" in prompt.user
 
@@ -679,7 +726,7 @@ def test_execution_prompt_without_visible_best_omits_root_metadata_and_task_spec
     prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=root_node,
-        selected_entry=None,
+        selected_entry=_entry(),
         guidance="Perturb the current initial construction.",
     )
 
@@ -701,7 +748,7 @@ def test_prompts_do_not_embed_removed_known_good_seed():
     execution_prompt = build_execution_prompt(
         problem_prompt="Find better C5",
         selected_node=_node(),
-        selected_entry=None,
+        selected_entry=_entry(),
         guidance="Try a new projected perturbation.",
     )
 
@@ -828,10 +875,12 @@ def test_extract_text_outside_tag_drops_unclosed_think_block():
 
 
 def test_execution_prompt_unwraps_guidance_before_wrapping_once():
+    entry = _entry()
+    entry.solution = "int main() { return 0; }"
     prompt = build_execution_prompt(
         problem_prompt="Pack the pieces.",
         selected_node=_node(),
-        selected_entry=_entry(),
+        selected_entry=entry,
         guidance="<guidance>\nUse skyline packing.\n</guidance>",
         solution_language="cpp",
         solution_contract="Return C++.",
@@ -840,6 +889,20 @@ def test_execution_prompt_unwraps_guidance_before_wrapping_once():
     assert prompt.user.count("<guidance>") == 1
     assert prompt.user.count("</guidance>") == 1
     assert "<guidance>\nUse skyline packing.\n</guidance>" in prompt.user
+
+
+def test_execution_prompt_requires_non_empty_parent_solution():
+    entry = _entry()
+    entry.solution = ""
+
+    with pytest.raises(ValueError, match="non-empty solution code"):
+        build_execution_prompt(
+            problem_prompt="Pack the pieces.",
+            selected_node=_node(),
+            selected_entry=entry,
+            guidance="Use skyline packing.",
+            solution_language="cpp",
+        )
 
 
 def test_extract_terminal_tag_accepts_unclosed_final_summary_block():

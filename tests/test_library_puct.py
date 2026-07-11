@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from omegaconf import OmegaConf
+import pytest
 
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.puct import archive_puct_score, rank_archive_nodes
@@ -244,10 +245,10 @@ def test_same_step_selection_does_not_see_child_created_in_same_step(tmp_path):
     assert next_step_context["global_best_entries"][0].id == "entry-same-step"
 
 
-def test_archive_dedup_does_not_use_solution_text_without_artifacts(tmp_path):
+def test_archive_dedup_uses_solution_identity_without_artifacts(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=1.0)
-    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, topk_children=2)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2, topk_children=2)
 
     selected = library.acquire_group("1:slot-a")
     first = _entry(selected.id, reward=2.0, suffix="a")
@@ -255,11 +256,10 @@ def test_archive_dedup_does_not_use_solution_text_without_artifacts(tmp_path):
     first.summary = "distinct summary a"
     library.submit_child("1:slot-a", first)
 
-    selected = library.acquire_group("2:slot-a")
     second = _entry(selected.id, reward=3.0, suffix="b")
     second.solution = "same legacy solution text"
     second.summary = "distinct summary b"
-    library.submit_child("2:slot-a", second)
+    library.submit_child("1:slot-a", second)
 
     snapshot = library.snapshot()
 
@@ -268,7 +268,44 @@ def test_archive_dedup_does_not_use_solution_text_without_artifacts(tmp_path):
         for node in snapshot["nodes"].values()
         if node["entry_id"] in {"entry-a", "entry-b"}
     }
-    assert child_entry_ids == {"entry-a", "entry-b"}
+    assert child_entry_ids == {"entry-b"}
+
+
+def test_code_bearing_selection_skips_higher_value_node_without_solution(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=1.0, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, topk_children=2)
+    root_entry = _entry(root.id, reward=1.0, suffix="root-code")
+    library.attach_entry_to_root(root.id, root_entry)
+
+    selected = library.acquire_group("1:slot-a", require_solution=True)
+    missing_code = _entry(selected.id, reward=100.0, suffix="missing-code")
+    missing_code.solution = ""
+    library.submit_child("1:slot-a", missing_code)
+
+    next_selected = library.acquire_group("2:slot-a", require_solution=True)
+
+    assert next_selected.id == root.id
+    assert library.get_entry(next_selected.entry_id).solution == root_entry.solution
+
+
+def test_code_bearing_selection_fails_when_no_visible_node_has_solution(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=0.0, reward=0.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+
+    with pytest.raises(RuntimeError, match="no visible node with solution code"):
+        library.acquire_group("1:slot-a", require_solution=True)
+
+
+def test_existing_group_cannot_switch_from_parent_without_solution(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=0.0, reward=0.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2)
+    library.acquire_group("1:slot-a")
+
+    with pytest.raises(RuntimeError, match="Existing group .* has no solution code"):
+        library.acquire_group("1:slot-a", require_solution=True)
 
 
 def test_archive_pruning_preserves_ancestors_of_kept_nodes(tmp_path):
@@ -308,6 +345,91 @@ def test_group_finalization_updates_discover_puct_stats(tmp_path):
     assert snapshot["puct_T"] == 1
     assert snapshot["puct_n"][selected.id] == 1
     assert snapshot["puct_m"][selected.id] == 3.0
+
+
+def test_group_of_sixteen_finalizes_once_and_rejects_extra_child(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=16, puct_c=1.0)
+    selected = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+
+    for index in range(15):
+        library.submit_child(
+            "1:slot-a",
+            _entry(selected.id, reward=float(index + 1), suffix=f"partial-{index}"),
+        )
+    partial = library.snapshot()
+
+    assert partial["groups"]["1:slot-a"]["submitted"] == 15
+    assert partial["groups"]["1:slot-a"]["finalized"] is False
+    assert partial["puct_T"] == 0
+    assert selected.id not in partial["puct_n"]
+    assert selected.id not in partial["puct_m"]
+
+    library.submit_child("1:slot-a", _entry(selected.id, reward=16.0, suffix="final"))
+    finalized = library.snapshot()
+
+    assert finalized["groups"]["1:slot-a"]["submitted"] == 16
+    assert finalized["groups"]["1:slot-a"]["finalized"] is True
+    assert finalized["puct_T"] == 1
+    assert finalized["puct_n"][selected.id] == 1
+    assert finalized["puct_m"][selected.id] == 16.0
+
+    with pytest.raises(RuntimeError, match="already complete"):
+        library.submit_child("1:slot-a", _entry(selected.id, reward=100.0, suffix="extra"))
+
+    assert library.snapshot() == finalized
+
+
+def test_pristine_archive_can_adopt_recipe_runtime_config(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=[root],
+        rollout_n=1,
+        puct_c=9.0,
+        max_buffer_size=17,
+        topk_children=1,
+    )
+
+    library.configure_pristine_archive(
+        rollout_n=16,
+        puct_c=1.0,
+        max_buffer_size=1000,
+        topk_children=2,
+    )
+    snapshot = library.snapshot()
+
+    assert snapshot["config"] == {
+        "rollout_n": 16,
+        "puct_c": 1.0,
+        "max_buffer_size": 1000,
+        "topk_children": 2,
+    }
+    assert set(snapshot["nodes"]) == {root.id}
+
+
+def test_runtime_config_validation_rejects_corrupt_group_accounting(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2)
+    selected = library.acquire_group("1:slot-a")
+    library.submit_child("1:slot-a", _entry(selected.id, reward=1.0, suffix="low"))
+    library.submit_child("1:slot-a", _entry(selected.id, reward=2.0, suffix="high"))
+
+    store = json.loads(path.read_text())
+    store["puct_T"] = 2
+    path.write_text(json.dumps(store))
+    corrupted = GuidanceLibrary(path, rollout_n=2)
+
+    with pytest.raises(ValueError, match="puct_T=2, expected one update"):
+        corrupted.assert_runtime_config(
+            rollout_n=2,
+            puct_c=1.0,
+            max_buffer_size=1000,
+            topk_children=2,
+        )
 
 
 def test_same_step_batch_blocks_selected_lineages(tmp_path):

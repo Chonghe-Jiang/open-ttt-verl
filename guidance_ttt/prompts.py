@@ -47,6 +47,21 @@ def _raw_summary_for_prompt(entry: LibraryEntry | None, *, fallback: str, raw_sc
     return f"{raw_summary}\n\n{_score_for_prompt(entry, raw_score_label=raw_score_label)}"
 
 
+def _parent_code_for_prompt(
+    entry: LibraryEntry | None,
+    *,
+    solution_language: str,
+    raw_score_label: str,
+) -> str:
+    if entry is None or not entry.solution.strip():
+        raise ValueError("Execution prompt requires a selected library entry with non-empty solution code")
+    fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
+    return (
+        f"{_score_for_prompt(entry, raw_score_label=raw_score_label)}\n\n"
+        f"<parent_code>\n```{fenced_language}\n{entry.solution.strip()}\n```\n</parent_code>"
+    )
+
+
 def build_guidance_prompt(
     *,
     problem_prompt: str,
@@ -55,11 +70,18 @@ def build_guidance_prompt(
     global_best_entries: list[LibraryEntry],
     local_failure_entries: list[LibraryEntry],
     objective_text: str | None = None,
+    mechanism_constraint: str | None = None,
     raw_score_label: str = "Score",
 ) -> Prompt:
     _ = selected_node, global_best_entries, local_failure_entries
     objective = objective_text or (
         "Your task is to provide the next **evolutionary guidance** to reach a higher score."
+    )
+    executable_mechanism_constraint = mechanism_constraint or (
+        "Every proposed mechanism must be implementable within the task's required self-contained solution using "
+        "only information and resources available at execution time. Do not rely on offline training data, hidden "
+        "benchmark access, external models or APIs, learned weights that are not supplied, or unavailable "
+        "precomputation."
     )
     user = f"""<problem>
 {problem_prompt}
@@ -80,9 +102,17 @@ as run-local context when deciding the next step.
    Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
 
 2. Stay at the algorithmic-strategy level.
-   Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
+   Propose high-level algorithmic directions, strategic refinements, or changes
+   to important algorithmic components. The next attempt does not need to replace
+   the current algorithm entirely: if the overall approach is promising, it is
+   equally valuable to improve specific strategies, mechanisms, or design choices
+   that may address the identified bottleneck. Do not write code, low-level
+   implementation details, or parameter schedules.
 
-3. Produce exactly the required XML structure.
+3. Propose only executable mechanisms.
+   {executable_mechanism_constraint}
+
+4. Produce exactly the required XML structure.
    Provide internal reasoning and return exactly one `<guidance>` block and no other custom XML blocks, commentary, code, or markdown.
 
 Please do internal reasoning and provide your response exactly in the following format:
@@ -97,9 +127,7 @@ Provide the final evolutionary guidance for the next execution attempt. Describe
             "discovery process.\n\n"
             "Your primary objective is to provide **evolutionary guidance**. Do not write final code "
             "or focus on low-level implementation details. Instead, your task is to propose high-level "
-            "directional shifts, conceptual mutations, and novel pathways to explore the search space.\n\n"
-            "Focus on how the current ideas can *evolve* to escape local optima and discover "
-            "fundamentally new mechanisms."
+            "directional shifts, conceptual mutations, and novel pathways to explore the search space."
         ),
         user=user,
     )
@@ -129,31 +157,34 @@ def build_execution_prompt(
     contract = solution_contract or (
         "The <solution> block must contain one complete executable Python candidate in a ```python fenced block."
     )
+    selected_parent = _parent_code_for_prompt(
+        selected_entry,
+        solution_language=solution_language,
+        raw_score_label=raw_score_label,
+    )
     user = f"""<problem>
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem.
+The next sections provide the selected parent candidate and the guidance for improving it.
 
-<selected_summary>
-{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.", raw_score_label=raw_score_label)}
-</selected_summary>
+<selected_parent>
+{selected_parent}
+</selected_parent>
 
 <guidance>
 {prompt_guidance}
 </guidance>
 
 Use the problem statement as the authoritative task specification.
-Use the attached library context as historical evidence, not as code to copy blindly.
+Use the selected parent code as the runnable baseline for this attempt.
 Score direction: {score_direction}.
 
 # Guidance Adherence Contract
-Treat the guidance block as the primary design constraint for this attempt.
-Implement at least one concrete mechanism that directly realizes the guidance, not just a generic baseline.
-Do not silently fall back to a generic baseline or only repeat the selected summary.
-If any important guidance component is simplified or omitted, explain that explicitly in both `<execution_thinking>` and `<summary>`.
+Treat the guidance as the binding specification for improving the selected parent. Apply its proposed algorithmic mechanisms and strategic refinements as faithfully and completely as possible while preserving the parent candidate's working behavior outside the requested changes.
 
-Implement one concrete solution that follows the guidance while satisfying the problem specification.
+Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended. Return one complete updated program, not a patch or diff.
+
 {contract}
 
 Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
@@ -183,7 +214,7 @@ Write a concise natural-language summary of the candidate.
 The summary should explain:
 
 1. the implemented algorithmic idea;
-2. how it changes from the prior candidate in response to the given guidance;
+2. exactly what was changed from the supplied parent code in response to the guidance and what important mechanisms were preserved;
 3. the main search, refinement, or optimization mechanisms actually used.
 
 Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
@@ -196,8 +227,15 @@ Any response that does not follow this exact three-block structure should be tre
 """
     return Prompt(
         system=(
-            f"You are the execution model. Turn guidance into one concrete runnable {language_name} "
-            "candidate. Output execution thinking first, then the code block, then the summary."
+            f"You are the execution model. Improve the supplied parent {language_name} candidate by applying "
+            "the guidance, then return one complete runnable candidate.\n\n"
+            "Use the parent code as the implementation baseline. Follow the guidance faithfully, preserve "
+            "unaffected working mechanisms, and keep the required input/output contract. Implement all specified "
+            "algorithmic mechanisms and strategic details as precisely as possible. Do not silently omit, replace, "
+            "or substantially simplify any "
+            "important component. If an exact implementation is infeasible, use the closest valid alternative "
+            "and explain the deviation in the summary.\n\n"
+            "Output execution thinking first, then the code block, then the summary."
         ),
         user=user,
     )

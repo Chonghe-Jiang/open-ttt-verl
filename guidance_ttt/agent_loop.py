@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 from dataclasses import dataclass, field
@@ -218,16 +219,25 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         global_step = kwargs.get("global_steps", kwargs.get("global_step", trajectory.get("step", 0)))
         group_uid = f"{global_step}:{uid}"
 
-        library = GuidanceLibrary(
-            library_path,
-            rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
-            puct_c=float(extra_info.get("puct_c", 1.0)),
-            max_buffer_size=int(extra_info.get("max_buffer_size", 1000)),
-            topk_children=int(extra_info.get("topk_children", 2)),
+        library_runtime_config = {
+            "rollout_n": int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
+            "puct_c": float(extra_info.get("puct_c", 1.0)),
+            "max_buffer_size": int(extra_info.get("max_buffer_size", 1000)),
+            "topk_children": int(extra_info.get("topk_children", 2)),
+        }
+        library = GuidanceLibrary(library_path, **library_runtime_config)
+        library.assert_runtime_config(**library_runtime_config)
+        selected_node = library.acquire_group(
+            group_uid,
+            visible_timestep_exclusive=int(global_step),
+            require_solution=True,
         )
-        selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
         context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
         selected_entry = context["selected_entry"]
+        if selected_entry is None or not selected_entry.solution.strip():
+            raise RuntimeError(
+                f"Selected node {selected_node.id!r} does not expose non-empty solution code at step {global_step}"
+            )
         guidance_prompt = build_guidance_prompt(
             problem_prompt=problem_prompt,
             selected_node=selected_node,
@@ -235,6 +245,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             global_best_entries=context["global_best_entries"],
             local_failure_entries=context["local_failure_entries"],
             objective_text=task_spec.guidance_objective(None),
+            mechanism_constraint=task_spec.guidance_mechanism_constraint,
             raw_score_label=task_spec.raw_score_label,
         )
         prompt_ids = await self.apply_chat_template(
@@ -312,6 +323,11 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             metadata={
                 "group_uid": group_uid,
                 "selected_node_id": selected_node.id,
+                "selected_parent_entry_id": selected_entry.id,
+                "selected_parent_solution_sha256": hashlib.sha256(
+                    selected_entry.solution.strip().encode("utf-8")
+                ).hexdigest(),
+                "selected_parent_solution_chars": len(selected_entry.solution),
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
                 "raw_guidance_with_specials": guidance_generation.raw_text,

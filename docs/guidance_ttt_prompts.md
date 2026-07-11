@@ -66,8 +66,12 @@ visible_timestep_exclusive = global_step
 ## One Rollout Flow
 
 ```text
-GuidanceLibrary.acquire_group(group_uid, visible_timestep_exclusive=global_step)
-  -> selected_node chosen by PUCT
+GuidanceLibrary.acquire_group(
+    group_uid,
+    visible_timestep_exclusive=global_step,
+    require_solution=True,
+)
+  -> selected_node chosen by PUCT from code-bearing nodes
 
 GuidanceLibrary.context_for_node(selected_node, visible_timestep_exclusive=global_step)
   -> selected_entry
@@ -97,7 +101,7 @@ GuidanceLibrary.submit_child(...)
 ## Shared Library Context
 
 Guidance prompt 和 execution prompt 来自同一次 PUCT selection 的同一个
-`selected_node` / `selected_entry`，但 attach 的粒度不同。
+`selected_node` / `selected_entry`，但使用两个不同的 library view。
 
 共同来源：
 
@@ -107,23 +111,23 @@ context = library.context_for_node(selected_node, ...)
 selected_entry = context["selected_entry"]
 ```
 
-- Guidance prompt 和 execution prompt 都 attach lightweight context: raw model
-  `<summary>` plus verifier score/status/message。不会直接 attach canonical
-  `entry.summary` 的 6-section 大块内容；老 library entry 缺少 raw summary 时只 attach
-  占位文本和 verifier score/status/message。
-- Guidance prompt 和 execution prompt 都不 attach global best summary。当前实现只把
-  PUCT-selected entry 的 raw summary + 分数作为主历史上下文。
+- Guidance prompt attach raw model `<summary>` plus verifier score/status/message，不读取
+  `entry.solution` 或 canonical `entry.summary`。
+- Execution prompt attach 完整 `entry.solution` plus verifier score/status/message，不读取 raw
+  summary 或 canonical summary，也不对 parent code 做摘录或截断。
+- 两个 prompt 都不 attach global best summary；它们只读取同一个 PUCT-selected entry 的
+  task-specific view。
 - 两个 prompt 都不 attach node id、visits、verified artifacts、previous guidance、
   reusable idea、failure mode 或 root initial construction facts。
-- Execution prompt 额外 attach 当前 parsed `<guidance>`，用于把 guidance 落成具体代码。
+- Execution prompt 额外 attach 当前 parsed `<guidance>`，要求基于 parent code 输出一个完整
+  更新后的程序，而不是 patch。
 - 当前 `global_best_entries`、`lineage_entries` 和 `local_failure_entries` 会由 library context
   返回，但没有直接写入 prompt，也不再用于 guidance objective 文本。
 
-## Summary Attach Rules
+## Dual Library Views
 
-Guidance 和 execution prompt 都使用 `_raw_summary_for_prompt(entry, fallback=...)`，
-但这里的 “raw summary” 指 execution model 原始 `<summary>`，不是
-`LibraryEntry.summary` 里的 canonical summary。
+Guidance 使用 `_raw_summary_for_prompt(entry, fallback=...)`。这里的 “raw summary” 指
+execution model 原始 `<summary>`，不是 `LibraryEntry.summary` 里的 canonical summary。
 
 没有 previous entry 时：
 
@@ -160,10 +164,29 @@ Reward: {entry.verifier_reward}
 Verifier message: {entry.verifier_message}
 ```
 
-该 helper 不做 clipping、code removal、implementation fact extraction 或 profile
-compaction。新 library entry 的 prompt context 通常不包含 solution code，因为 execution
-prompt 要求 raw `<summary>` 不包含 code；缺少 raw summary 的老 entry 不会 fallback 到
-canonical `entry.summary`。
+该 helper 不做 clipping、implementation fact extraction 或 profile compaction。缺少 raw
+summary 的老 entry 不会 fallback 到 canonical `entry.summary`。
+
+Execution 使用 `_parent_code_for_prompt(...)`，attach：
+
+````text
+<selected_parent>
+Verifier status: {entry.verifier_status}
+{task raw score label}: {entry.verifier_raw_score}
+Reward: {entry.verifier_reward}
+Verifier message: {entry.verifier_message}
+
+<parent_code>
+```{python_or_cpp}
+{entry.solution}
+```
+</parent_code>
+</selected_parent>
+````
+
+`selected_entry` 缺失或 `solution` 为空时不会 fallback 到 summary 或从零生成。PUCT 会先
+跳过无代码节点；如果没有任何可见的 code-bearing node，rollout 在 guidance generation
+之前明确失败并要求使用有效 bootstrap library。
 
 ## Task Registry
 
@@ -203,8 +226,6 @@ Guidance model 是被 RL 训练的 actor。它不直接写最终 solution，而�
 You are the Guidance Model, acting as a strategic navigator for an open-ended scientific discovery process.
 
 Your primary objective is to provide **evolutionary guidance**. Do not write final code or focus on low-level implementation details. Instead, your task is to propose high-level directional shifts, conceptual mutations, and novel pathways to explore the search space.
-
-Focus on how the current ideas can *evolve* to escape local optima and discover fundamentally new mechanisms.
 ```
 
 ### Guidance User Prompt
@@ -232,9 +253,17 @@ as run-local context when deciding the next step.
    Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
 
 2. Stay at the algorithmic-strategy level.
-   Propose high-level algorithmic directions and ideas. Do not write code, implementation details, or parameter schedules.
+   Propose high-level algorithmic directions, strategic refinements, or changes
+   to important algorithmic components. The next attempt does not need to replace
+   the current algorithm entirely: if the overall approach is promising, it is
+   equally valuable to improve specific strategies, mechanisms, or design choices
+   that may address the identified bottleneck. Do not write code, low-level
+   implementation details, or parameter schedules.
 
-3. Produce exactly the required XML structure.
+3. Propose only executable mechanisms.
+   {mechanism_constraint}
+
+4. Produce exactly the required XML structure.
    Provide internal reasoning and return exactly one `<guidance>` block and no other custom XML blocks, commentary, code, or markdown.
 
 Please do internal reasoning and provide your response exactly in the following format:
@@ -251,6 +280,22 @@ Provide the final evolutionary guidance for the next execution attempt. Describe
 ```python
 objective_text = task_spec.guidance_objective(None)
 ```
+
+`mechanism_constraint`:
+
+```python
+mechanism_constraint = task_spec.guidance_mechanism_constraint
+```
+
+Polyomino 的实际约束为：
+
+```text
+Every proposed mechanism must be implementable inside one self-contained C++17 program using only the current input instance. Do not rely on offline training data, benchmark access, external models, APIs, learned weights, or unavailable precomputation.
+```
+
+这条约束禁止 guidance 提议依赖不可用的 benchmark 训练数据、外部 predictor、API 或
+未提供权重的 learned model。Erdős task 使用等价的 Python/runtime 版本，避免共享 prompt
+错误要求 Python candidate 写成 C++17。
 
 所以 guidance prompt 的历史内容是 raw model summary + verifier score。objective 文案和
 score 方向由 task spec 控制。Erdos 使用 “Lower raw C5 is better”；Polyomino 使用
@@ -311,40 +356,51 @@ execution_prompt = build_execution_prompt(
 ### Execution System Prompt
 
 ```text
-You are the execution model. Turn guidance into one concrete runnable {Python|C++17} candidate. Output execution thinking first, then the code block, then the summary.
+You are the execution model. Improve the supplied parent C++17 candidate by applying the guidance, then return one complete runnable candidate.
+
+Use the parent code as the implementation baseline. Follow the guidance faithfully, preserve unaffected working mechanisms, and keep the required input/output contract. Implement all specified algorithmic mechanisms and strategic details as precisely as possible. Do not silently omit, replace, or substantially simplify any important component. If an exact implementation is infeasible, use the closest valid alternative and explain the deviation in the summary.
+
+Output execution thinking first, then the code block, then the summary.
 ```
 
 ### Execution User Prompt
 
 下面是 `build_execution_prompt(...)` 当前构造的完整 user prompt。`<problem>` 是权威任务
-定义，library context 是历史证据，`<guidance>` 是当前要执行的方向。
+定义，`<selected_parent>` 是要改进的可运行基线，`<guidance>` 是当前要执行的方向。
 
 ````text
 <problem>
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem.
+The next sections provide the selected parent candidate and the guidance for improving it.
 
-<selected_summary>
-{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.")}
-</selected_summary>
+<selected_parent>
+Verifier status: {selected_entry.verifier_status}
+{raw_score_label}: {selected_entry.verifier_raw_score}
+Reward: {selected_entry.verifier_reward}
+Verifier message: {selected_entry.verifier_message}
+
+<parent_code>
+```{python_or_cpp}
+{selected_entry.solution}
+```
+</parent_code>
+</selected_parent>
 
 <guidance>
 {prompt_guidance}
 </guidance>
 
 Use the problem statement as the authoritative task specification.
-Use the attached library context as historical evidence, not as code to copy blindly.
+Use the selected parent code as the runnable baseline for this attempt.
 Score direction: {score_direction}.
 
 # Guidance Adherence Contract
-Treat the guidance block as the primary design constraint for this attempt.
-Implement at least one concrete mechanism that directly realizes the guidance, not just a generic baseline.
-Do not silently fall back to a generic baseline or only repeat the selected summary.
-If any important guidance component is simplified or omitted, explain that explicitly in both `<execution_thinking>` and `<summary>`.
+Treat the guidance as the binding specification for improving the selected parent. Apply its proposed algorithmic mechanisms and strategic refinements as faithfully and completely as possible while preserving the parent candidate's working behavior outside the requested changes.
 
-Implement one concrete solution that follows the guidance while satisfying the problem specification.
+Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended. Return one complete updated program, not a patch or diff.
+
 {solution_contract}
 
 Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
@@ -374,7 +430,7 @@ Write a concise natural-language summary of the candidate.
 The summary should explain:
 
 1. the implemented algorithmic idea;
-2. how it changes from the prior candidate in response to the given guidance;
+2. exactly what was changed from the supplied parent code in response to the guidance and what important mechanisms were preserved;
 3. the main search, refinement, or optimization mechanisms actually used.
 
 Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
@@ -390,8 +446,8 @@ Any response that does not follow this exact three-block structure should be tre
 
 `build_bootstrap_execution_prompt(...)` is used only by the explicit
 `--bootstrap-only` pre-training step. It does not attach library history or
-guidance; its output seeds the root library node so step 1 has a selected
-summary.
+guidance; its output seeds the root library node so step 1 has both selected
+code for execution and a selected summary for guidance.
 
 For Polyomino Modal experiments that should not spend an execution call on
 every launch, `ttt.bootstrap.seed_library_path` can point to a fixed JSON
@@ -575,6 +631,9 @@ LibraryEntry(
     metadata={
         "group_uid": group_uid,
         "selected_node_id": selected_node.id,
+        "selected_parent_entry_id": selected_entry.id,
+        "selected_parent_solution_sha256": sha256(selected_entry.solution),
+        "selected_parent_solution_chars": len(selected_entry.solution),
         "guidance_format_ok": guidance_format_ok,
         "guidance_generation_attempts": guidance_generation.attempts,
         "raw_guidance_with_specials": guidance_generation.raw_text,
@@ -620,6 +679,11 @@ puct_n: visit counts
 puct_m: best reachable values
 puct_T: total completed group visits
 ```
+
+PUCT expansion 只在有非空 `entry.solution` 的节点中选择 parent。没有代码的 invalid rollout
+仍保存在 library 中用于 reward 和审计，但不能成为下一轮 execution parent。Polyomino
+candidate dedup 使用规范化 solution 的 SHA-256，因此相同代码不会因为 summary 措辞不同而
+占据多个 archive slot。
 
 PUCT 的 Q 值现在不是纯 child-best。未访问 node 使用自身 reward；已访问且存在
 `puct_m` 时使用：

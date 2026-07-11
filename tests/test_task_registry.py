@@ -13,6 +13,8 @@ def test_task_registry_loads_erdos_spec():
     assert "0.4" not in objective
     assert "target" not in objective
     assert spec.create_root_node().problem_id == "erdos"
+    assert "self-contained Python candidate" in spec.guidance_mechanism_constraint
+    assert "offline training data" in spec.guidance_mechanism_constraint
 
 
 def test_task_registry_loads_polyomino_spec():
@@ -27,6 +29,9 @@ def test_task_registry_loads_polyomino_spec():
     assert "0.0" not in objective
     assert "target" not in objective
     assert "complete C++17 program" in spec.execution_solution_contract
+    assert "self-contained C++17 program" in spec.guidance_mechanism_constraint
+    assert "current input instance" in spec.guidance_mechanism_constraint
+    assert "benchmark access" in spec.guidance_mechanism_constraint
     assert spec.create_root_node().problem_id == "polyomino_packing"
     assert spec.create_root_node().raw_score == 0.0
 
