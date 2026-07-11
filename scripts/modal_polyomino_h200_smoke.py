@@ -73,6 +73,12 @@ REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH = (
 REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny"
 )
+REMOTE_GPT_OSS_120B_INFERENCE_PUCT_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct.yaml"
+)
+REMOTE_GPT_OSS_120B_INFERENCE_PUCT_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct_g16_50step"
+)
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 GPT_OSS_120B_SERVER_LOG_PATH = "/tmp/gpt_oss_120b_vllm.log"
 GPT_OSS_120B_XML_PROBE_OUTPUT_PATH = "/runs/guidance_ttt/gpt_oss_120b_xml_probe.json"
@@ -388,6 +394,16 @@ def qwen3_8b_discover_tiny_training_command() -> list[str]:
     ]
 
 
+def gpt_oss_120b_inference_puct_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.inference_ablation",
+        "--config",
+        REMOTE_GPT_OSS_120B_INFERENCE_PUCT_CONFIG_PATH,
+    ]
+
+
 def _assert_training_packages_available() -> None:
     checks = [
         (
@@ -491,13 +507,13 @@ def _print_judge_log(max_bytes: int = 20000) -> None:
     _print_log_tail(JUDGE_LOG_PATH, label="judge", max_bytes=max_bytes)
 
 
-def _start_judge() -> subprocess.Popen:
+def _start_judge(*, workers: int = 8) -> subprocess.Popen:
     env = {
         **__import__("os").environ,
         "PORT": "8081",
         "GJ_ADDR": "http://127.0.0.1:5050",
-        "JUDGE_WORKERS": "8",
-        "GJ_PARALLELISM": "8",
+        "JUDGE_WORKERS": str(workers),
+        "GJ_PARALLELISM": str(workers),
         "ES_PRE_FORK": "0",
         "SAVE_OUTPUTS": "false",
     }
@@ -1650,6 +1666,33 @@ def train_qwen3_8b_discover_tiny_smoke() -> dict[str, object]:
 
 @app.function(
     image=train_image,
+    gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=131072,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def run_gpt_oss_120b_inference_puct() -> dict[str, object]:
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="0")
+    judge = _start_judge(workers=16)
+    try:
+        _run_streaming(gpt_oss_120b_inference_puct_command(), cwd=REMOTE_REPO_DIR)
+        summary_path = Path(REMOTE_GPT_OSS_120B_INFERENCE_PUCT_OUTPUT_DIR) / "run_summary.json"
+        if not summary_path.exists():
+            raise RuntimeError(f"Inference ablation did not write {summary_path}")
+        summary = json.loads(summary_path.read_text())
+        print(json.dumps(summary, indent=2), flush=True)
+        return summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
     gpu=HISTORY_GPU_CONFIG,
     timeout=12 * 60 * 60,
     cpu=48,
@@ -1752,6 +1795,8 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_group16_h200_tuned_smoke.spawn())
     elif action == "train_qwen3_8b_discover_tiny":
         print(train_qwen3_8b_discover_tiny_smoke.remote())
+    elif action == "run_gpt_oss_120b_inference_puct":
+        print(run_gpt_oss_120b_inference_puct.spawn())
     elif action == "gpt_oss_120b_xml_probe":
         print(gpt_oss_120b_xml_probe_smoke.remote())
     elif action == "prune_single_summary":
@@ -1767,6 +1812,7 @@ def main(action: str = "train"):
             "'train_openrouter_gpt55_4gpu_full_batch', 'train_evolvent_gpt55_4gpu_short_response', "
             "'train_gpt_oss_120b_5gpu_group64', 'train_gpt_oss_120b_3gpu_group16', "
             "'train_gpt_oss_120b_3gpu_group16_h200_tuned', 'train_qwen3_8b_discover_tiny', "
+            "'run_gpt_oss_120b_inference_puct', "
             "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"
         )

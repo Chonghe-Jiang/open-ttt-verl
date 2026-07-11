@@ -319,6 +319,71 @@ block with the full program. Do not emit a separate summary block.
     )
 
 
+def build_polyomino_inference_ablation_prompt(
+    *,
+    problem_prompt: str,
+    selected_node: LibraryNode,
+    selected_entry: LibraryEntry,
+) -> Prompt:
+    """Build the fixed, selected-parent-only prompt for the inference ablation."""
+    user = f"""<problem>
+{problem_prompt}
+</problem>
+
+<selected_parent>
+Node id: {selected_node.id}
+Parent id: {selected_node.parent_id}
+Timestep: {selected_node.timestep}
+FrontierCS score: {selected_node.raw_score}
+
+<parent_summary>
+{selected_entry.summary}
+</parent_summary>
+
+<parent_solution>
+```cpp
+{selected_entry.solution}
+```
+</parent_solution>
+</selected_parent>
+
+Create one new complete C++17 solver by analyzing and modifying the selected
+parent solver. Preserve useful mechanisms when appropriate, but make a concrete
+algorithmic change that could improve the FrontierCS score. The problem block is
+authoritative. The new program must read the instance from stdin and emit exactly
+the required placement format.
+
+Return exactly these three top-level XML blocks, in this order, with no text
+before, between, or after them:
+
+<think>
+Briefly explain the concrete change and why it may improve packing quality.
+</think>
+
+<summary>
+Concise reusable description of the implemented algorithm and the change from
+the selected parent. Do not include source code or benchmark-specific outputs.
+</summary>
+
+<solution>
+```cpp
+// complete self-contained C++17 program
+```
+</solution>
+
+Every XML block must be closed. The solution must contain exactly one fenced cpp
+code block with the full program.
+"""
+    return Prompt(
+        system=(
+            "You are an expert C++ optimization researcher improving one selected "
+            "Polyomino Packing solver. Produce one independently testable candidate "
+            "using the exact response contract."
+        ),
+        user=user,
+    )
+
+
 def extract_tag(text: str, tag: str) -> str:
     start = text.find(f"<{tag}>")
     end = text.find(f"</{tag}>")

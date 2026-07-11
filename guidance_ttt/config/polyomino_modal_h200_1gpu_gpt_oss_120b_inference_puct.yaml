@@ -1,0 +1,36 @@
+run:
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct_g16_50step
+  num_steps: 50
+  seed_library_path: guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: /opt/Frontier-CS
+    judge_url: http://127.0.0.1:8081
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 340
+
+search:
+  group_size: 16
+  generation_concurrency: 8
+  evaluation_concurrency: 16
+  eval_timeout: 340
+  puct_c: 1.0
+  max_buffer_size: 1000
+  topk_children: 2
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: openai/gpt-oss-120b
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local-vllm
+    temperature: 0.0
+    max_tokens: 16384
+    max_model_len: 32768
+    timeout_s: 1200
+    trust_remote_code: true
