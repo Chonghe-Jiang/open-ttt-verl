@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 
 from guidance_ttt.agent_loop import (
     EXECUTION_SUMMARY_SECTIONS,
+    AgentLoopBase,
     GuidanceExecutionAgentLoop,
     _normalize_task_config,
     _verifier_config_from_task_config,
@@ -224,6 +225,42 @@ Use shelf packing with normalized offsets.
     assert "Empirical Outcome\nVerifier status: valid\nFrontierCS score: 12.5\nReward: 12.5" in result.summary
 
 
+def test_code_delta_verification_keeps_raw_model_summary_without_canonical_wrapper(monkeypatch):
+    def fake_evaluate_cpp_solution(code, *, problem_id, config=None):
+        return FrontierCSResult(valid=True, score=14.0, message="Score: 14.00/100", artifacts={})
+
+    monkeypatch.setattr("guidance_ttt.verifier.polyomino.evaluate_cpp_solution", fake_evaluate_cpp_solution)
+    delta_summary = (
+        "Replaced the single skyline choice with a bounded beam over feasible gaps and retained "
+        "the parent's orientation normalization."
+    )
+    execution_text = f"""<execution_thinking>
+Apply the requested bounded search to the parent implementation.
+</execution_thinking>
+<solution>
+```cpp
+int main() {{ return 0; }}
+```
+</solution>
+<summary>
+{delta_summary}
+</summary>"""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        guidance="Use bounded beam search.",
+        timeout_s=340,
+        task_spec=get_task_spec("polyomino_packing"),
+        verifier_config={"problem_id": "0"},
+        prompt_mode="code_delta",
+    )
+
+    assert result.model_summary == delta_summary
+    assert result.summary == delta_summary
+    assert "Implemented Algorithm" not in result.summary
+    assert "```cpp" not in result.summary
+
+
 def test_task_config_normalization_converts_nested_omegaconf_to_plain_dict():
     task_config = _normalize_task_config(
         OmegaConf.create(
@@ -403,6 +440,55 @@ def test_agent_loop_loads_task_config_from_rollout_config_path(tmp_path):
             "problem_id": "0",
         },
     }
+
+
+def test_agent_loop_recovers_full_config_after_registry_target_overwrite(tmp_path, monkeypatch):
+    config_path = tmp_path / "agent_loop.yaml"
+    config_path.write_text(
+        """
+- name: guidance_execution_task
+  _target_: guidance_ttt.agent_loop.GuidanceExecutionAgentLoop
+  task:
+    id: polyomino_packing
+  prompt_mode: code_delta
+  verifier_timeout_s: 340
+  problem_prompt: recovered problem prompt
+  execution_llm:
+    provider: mock
+    model: recovered-executor
+    concurrency: 16
+"""
+    )
+    rollout_config = OmegaConf.create(
+        {
+            "response_length": 8192,
+            "agent": {
+                "agent_loop_config_path": str(config_path),
+                "default_agent_loop": "guidance_execution_task",
+            },
+        }
+    )
+
+    def fake_base_init(self, *args, **kwargs):
+        self.rollout_config = rollout_config
+
+    monkeypatch.setattr(AgentLoopBase, "__init__", fake_base_init)
+
+    # A bare Hydra target passes none of the YAML fields after the registry is
+    # overwritten by the class decorators. The loop must recover them itself.
+    loop = GuidanceExecutionAgentLoop()
+
+    assert loop.task_config == {"id": "polyomino_packing"}
+    assert loop.prompt_mode == "code_delta"
+    assert loop.verifier_timeout_s == 340
+    assert loop.problem_prompt_override == "recovered problem prompt"
+    assert loop.execution_llm_config == {
+        "provider": "mock",
+        "model": "recovered-executor",
+        "concurrency": 16,
+    }
+    assert loop.execution_concurrency == 16
+    assert loop.response_length == 8192
 
 
 def test_agent_loop_uses_extra_info_task_config_for_verifier_config():

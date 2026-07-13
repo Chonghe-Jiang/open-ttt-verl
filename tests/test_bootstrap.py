@@ -80,6 +80,27 @@ def test_bootstrap_entry_attaches_to_root_and_becomes_selected_summary(tmp_path)
     assert context["selected_entry"].metadata["raw_model_summary"]
 
 
+def test_code_delta_bootstrap_stores_raw_baseline_summary(tmp_path):
+    library_path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
+    library = GuidanceLibrary(library_path, initial_nodes=[root], rollout_n=1)
+
+    bootstrap_library_entries(
+        library_path,
+        task_config={"id": "erdos_min_overlap"},
+        execution_llm_config={"provider": "mock", "model": "mock-exec"},
+        verifier_timeout_s=20,
+        max_attempts=1,
+        prompt_mode="code_delta",
+    )
+    entry = library.context_for_node(root)["selected_entry"]
+
+    assert entry.metadata["prompt_mode"] == "code_delta"
+    assert entry.metadata["summary_semantics"] == "baseline"
+    assert entry.summary == entry.metadata["raw_model_summary"]
+    assert "Implemented Algorithm\n```python" not in entry.summary
+
+
 def test_bootstrap_rejects_missing_summary_close_without_writing_entry(tmp_path):
     library_path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos_min_overlap", raw_score=0.5, reward=2.0)

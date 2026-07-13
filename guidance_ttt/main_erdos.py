@@ -13,6 +13,8 @@ import yaml
 
 from guidance_ttt.data import write_slot_parquet
 from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.prompts import normalize_prompt_mode, validate_entry_prompt_mode
+from guidance_ttt.state import LibraryEntry
 from guidance_ttt.tasks import get_task_spec
 
 
@@ -65,6 +67,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     ttt_cfg = config["ttt"]
     task_cfg = dict(config.get("task") or {"id": "erdos_min_overlap"})
     task_spec = get_task_spec(str(task_cfg.get("id", "erdos_min_overlap")))
+    prompt_mode = normalize_prompt_mode(ttt_cfg.get("prompt_mode"))
     output_dir = Path(run_cfg["output_dir"]).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,6 +99,9 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     else:
         library = GuidanceLibrary(library_path, **library_config)
     library.assert_runtime_config(**library_config)
+    for raw_entry in (library.snapshot().get("entries") or {}).values():
+        if isinstance(raw_entry, dict):
+            validate_entry_prompt_mode(LibraryEntry.from_dict(raw_entry), prompt_mode)
 
     slot_parquet = output_dir / "ttt_slots.parquet"
     write_slot_parquet(
@@ -118,6 +124,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
                     "name": "guidance_execution_task",
                     "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
                     "task": task_cfg,
+                    "prompt_mode": prompt_mode,
                     "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
                     "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
                     "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
@@ -276,6 +283,7 @@ def main() -> None:
             verifier_timeout_s=int((config.get("ttt") or {}).get("eval_timeout", 60)),
             max_attempts=int(bootstrap_cfg.get("max_attempts", 2)),
             overwrite_existing=bool(bootstrap_cfg.get("overwrite_existing", False)),
+            prompt_mode=normalize_prompt_mode((config.get("ttt") or {}).get("prompt_mode")),
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return

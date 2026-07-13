@@ -12,11 +12,15 @@ from uuid import uuid4
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
+    PROMPT_MODE_CODE_DELTA,
+    PROMPT_MODE_SUMMARY_ONLY,
     build_execution_prompt,
     build_guidance_prompt,
     extract_guidance_or_format_error,
     extract_tag_or_none,
     extract_terminal_tag_or_none,
+    normalize_prompt_mode,
+    validate_entry_prompt_mode,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult, _jsonable
 from guidance_ttt.tasks import TaskSpec, get_task_spec
@@ -133,24 +137,34 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         self,
         *args,
         execution_llm: dict[str, Any] | None = None,
-        verifier_timeout_s: int = 60,
+        verifier_timeout_s: int | None = None,
         problem_prompt: str | None = None,
         task: dict[str, Any] | str | None = None,
+        prompt_mode: str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        fallback_task = task if task is not None else self._task_config_from_rollout_config()
+        runtime_config = self._agent_loop_config_from_rollout_config() or {}
+        fallback_task = task if task is not None else _config_get(runtime_config, "task")
         self.task_config = _normalize_task_config(fallback_task)
         self.task_spec = get_task_spec(str(self.task_config.get("id", "erdos_min_overlap")))
-        self.execution_llm_config = execution_llm or self._execution_llm_from_rollout_config() or {
+        self.execution_llm_config = execution_llm or _config_get(runtime_config, "execution_llm") or {
             "provider": "mock",
             "model": "mock-exec",
         }
         self.execution_client = make_llm_client(self.execution_llm_config)
         self.execution_concurrency = max(1, int(self.execution_llm_config.get("concurrency", 1)))
-        self.verifier_timeout_s = int(verifier_timeout_s)
-        self.problem_prompt_override = problem_prompt
-        self.problem_prompt = problem_prompt or self.task_spec.problem_prompt
+        runtime_timeout = _config_get(
+            runtime_config,
+            "verifier_timeout_s",
+            _config_get(runtime_config, "eval_timeout_s", 60),
+        )
+        self.verifier_timeout_s = int(runtime_timeout if verifier_timeout_s is None else verifier_timeout_s)
+        runtime_prompt_mode = _config_get(runtime_config, "prompt_mode")
+        self.prompt_mode = normalize_prompt_mode(runtime_prompt_mode if prompt_mode is None else prompt_mode)
+        runtime_problem_prompt = _config_get(runtime_config, "problem_prompt")
+        self.problem_prompt_override = problem_prompt if problem_prompt is not None else runtime_problem_prompt
+        self.problem_prompt = self.problem_prompt_override or self.task_spec.problem_prompt
         if hasattr(self, "rollout_config"):
             self.response_length = self.rollout_config.response_length
 
@@ -238,6 +252,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             raise RuntimeError(
                 f"Selected node {selected_node.id!r} does not expose non-empty solution code at step {global_step}"
             )
+        validate_entry_prompt_mode(selected_entry, self.prompt_mode)
         guidance_prompt = build_guidance_prompt(
             problem_prompt=problem_prompt,
             selected_node=selected_node,
@@ -247,6 +262,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             objective_text=task_spec.guidance_objective(None),
             mechanism_constraint=task_spec.guidance_mechanism_constraint,
             raw_score_label=task_spec.raw_score_label,
+            solution_language=task_spec.solution_language,
+            prompt_mode=self.prompt_mode,
         )
         prompt_ids = await self.apply_chat_template(
             [
@@ -268,6 +285,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             solution_contract=task_spec.execution_solution_contract,
             score_direction=task_spec.score_direction,
             raw_score_label=task_spec.raw_score_label,
+            prompt_mode=self.prompt_mode,
         )
         verification: VerificationResult
         execution_text = ""
@@ -297,6 +315,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             task_spec=task_spec,
             verifier_config=_verifier_config_from_task_config(task_config),
             initial_error=execution_error,
+            prompt_mode=self.prompt_mode,
         )
         execution_text = execution_result.execution_text
         execution_thinking = execution_result.execution_thinking
@@ -304,6 +323,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         summary = execution_result.summary
         raw_model_summary = execution_result.model_summary
         verification = execution_result.verification
+        summary_semantics = (
+            "delta_from_parent" if self.prompt_mode == PROMPT_MODE_CODE_DELTA else "canonical_full_candidate"
+        )
 
         entry = LibraryEntry(
             id=str(uuid4()),
@@ -318,7 +340,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             verifier_status=verification.status,
             verifier_message=verification.message,
             summary=summary,
-            reusable_idea=_extract_reusable_idea(summary),
+            reusable_idea=(
+                summary if self.prompt_mode == PROMPT_MODE_CODE_DELTA else _extract_reusable_idea(summary)
+            ),
             failure_mode=None if verification.valid else verification.status,
             metadata={
                 "group_uid": group_uid,
@@ -330,6 +354,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "selected_parent_solution_chars": len(selected_entry.solution),
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
+                "guidance_prompt_tokens": len(prompt_ids),
+                "guidance_response_tokens": len(response_ids),
                 "raw_guidance_with_specials": guidance_generation.raw_text,
                 "guidance_stop_reason": guidance_generation.stop_reason,
                 "raw_guidance_text": guidance_text,
@@ -338,6 +364,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "task": task_config,
                 "execution_text": execution_text,
                 "raw_model_summary": raw_model_summary,
+                "prompt_mode": self.prompt_mode,
+                "summary_semantics": summary_semantics,
                 "execution_provider": self.execution_llm_config.get("provider", "mock"),
                 "execution_model": self.execution_llm_config.get("model", "mock-exec"),
                 "execution_response_metadata": execution_response_metadata,
@@ -362,6 +390,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "guidance": guidance,
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
+                "guidance_prompt_tokens": len(prompt_ids),
+                "guidance_response_tokens": len(response_ids),
                 "raw_guidance_with_specials": guidance_generation.raw_text,
                 "guidance_stop_reason": guidance_generation.stop_reason,
                 "raw_guidance_text": guidance_text,
@@ -373,6 +403,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "solution": solution,
                 "verification": verification.to_dict(),
                 "summary": summary,
+                "raw_model_summary": raw_model_summary,
+                "prompt_mode": self.prompt_mode,
+                "summary_semantics": summary_semantics,
                 "library_entry_id": entry.id,
                 "task": task_config,
             },
@@ -650,8 +683,10 @@ def _verify_execution_without_fallback(
     task_spec: TaskSpec | None = None,
     verifier_config: dict[str, Any] | None = None,
     initial_error: str | None = None,
+    prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
 ) -> ExecutionVerification:
     task_spec = task_spec or get_task_spec("erdos_min_overlap")
+    prompt_mode = normalize_prompt_mode(prompt_mode)
     original_execution_text = execution_text
     if initial_error is None:
         verification = task_spec.verify_execution_text(
@@ -664,15 +699,18 @@ def _verify_execution_without_fallback(
     execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
     solution = _extract_solution_code(execution_text, task_spec=task_spec)
     model_summary = extract_terminal_tag_or_none(execution_text, "summary")
-    summary = build_execution_summary(
-        model_summary=model_summary,
-        execution_thinking=execution_thinking,
-        solution=solution,
-        guidance=guidance,
-        verification=verification,
-        solution_language=task_spec.solution_language,
-        raw_score_label=task_spec.raw_score_label,
-    )
+    if prompt_mode == PROMPT_MODE_CODE_DELTA:
+        summary = (model_summary or "").strip()
+    else:
+        summary = build_execution_summary(
+            model_summary=model_summary,
+            execution_thinking=execution_thinking,
+            solution=solution,
+            guidance=guidance,
+            verification=verification,
+            solution_language=task_spec.solution_language,
+            raw_score_label=task_spec.raw_score_label,
+        )
     return ExecutionVerification(
         execution_text=execution_text,
         execution_thinking=execution_thinking,

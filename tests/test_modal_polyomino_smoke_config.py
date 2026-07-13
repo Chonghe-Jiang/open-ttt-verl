@@ -1560,3 +1560,153 @@ def test_modal_workspace_validation_accepts_name_or_id(monkeypatch):
 
     module._validate_modal_workspace("target-workspace")
     module._validate_modal_workspace("ac-target")
+
+
+def test_modal_code_delta_8192_smoke_config_matches_latest_three_gpu_parameters():
+    config_path = Path(
+        "guidance_ttt/config/"
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml"
+    )
+    config = yaml.safe_load(config_path.read_text())
+
+    assert config["run"]["num_steps"] == 1
+    assert config["run"]["total_epochs"] == 1
+    assert config["run"]["max_prompt_length"] == 8192
+    assert config["run"]["max_response_length"] == 8192
+    assert config["run"]["filter_overlong_prompts"] is False
+    assert config["run"]["truncation"] == "error"
+    assert config["run"]["n_gpus_per_node"] == 2
+    assert config["run"]["ppo_mini_batch_size"] == 4
+    assert config["run"]["ppo_micro_batch_size_per_gpu"] == 2
+    assert config["run"]["gpu_memory_utilization"] == 0.7
+    assert config["ttt"]["prompt_mode"] == "code_delta"
+    assert config["ttt"]["groups_per_batch"] == 8
+    assert config["ttt"]["group_size"] == 16
+    assert config["llm"]["execution"]["max_tokens"] is None
+    assert config["llm"]["execution"]["phase1_max_tokens"] is None
+    assert config["llm"]["execution"]["concurrency"] == 16
+
+    overrides = set(config["verl_overrides"])
+    assert "actor_rollout_ref.model.lora_rank=32" in overrides
+    assert "actor_rollout_ref.actor.use_remove_padding=True" in overrides
+    assert "actor_rollout_ref.rollout.agent.num_workers=1" in overrides
+    assert "actor_rollout_ref.rollout.max_model_len=16384" in overrides
+    assert "actor_rollout_ref.rollout.max_num_seqs=16" in overrides
+    assert "actor_rollout_ref.rollout.max_num_batched_tokens=32768" in overrides
+    assert "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2" in overrides
+    assert "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2" in overrides
+
+
+def test_modal_code_delta_8192_smoke_launcher_uses_three_gpu_layout_and_acceptance_gates():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml"
+    )
+    assert module.gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_CONFIG_PATH,
+    ]
+    function_start = script.rindex(
+        "@app.function",
+        0,
+        script.index("def train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke"),
+    )
+    source = script[function_start:]
+    next_function = source.find("@app.function", 1)
+    source = source[:next_function] if next_function != -1 else source
+    assert "gpu=GPT_OSS_120B_3GPU_CONFIG" in source
+    assert 'cuda_visible_devices="2", max_num_seqs=16' in source
+    assert "_start_judge(workers=16)" in source
+    assert '"CUDA_VISIBLE_DEVICES": "0,1"' in source
+    assert "_validate_puct_group_accounting" in source
+    assert "_validate_code_delta_smoke(code_delta_summary, expected_children=128)" in source
+    assert 'action == "train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke"' in script
+
+
+def test_modal_code_delta_8192_50step_matches_the_accepted_smoke_parameters():
+    smoke_path = Path(
+        "guidance_ttt/config/"
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml"
+    )
+    full_path = Path(
+        "guidance_ttt/config/"
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step.yaml"
+    )
+    smoke = yaml.safe_load(smoke_path.read_text())
+    full = yaml.safe_load(full_path.read_text())
+
+    variable_run_keys = {"output_dir", "experiment_name", "num_steps", "total_epochs", "save_freq"}
+    assert {key: value for key, value in full["run"].items() if key not in variable_run_keys} == {
+        key: value for key, value in smoke["run"].items() if key not in variable_run_keys
+    }
+    assert full["run"]["num_steps"] == 50
+    assert full["run"]["total_epochs"] == 50
+    assert full["run"]["save_freq"] == 5
+    assert full["run"]["output_dir"].endswith("batch8_group16_code_delta_8192_50step")
+    assert full["task"] == smoke["task"]
+    assert full["ttt"] == smoke["ttt"]
+    assert full["llm"] == smoke["llm"]
+    assert full["verl_overrides"] == smoke["verl_overrides"]
+
+
+def test_modal_code_delta_8192_50step_launcher_uses_three_gpu_layout_and_checkpoint_acceptance():
+    module = _load_modal_smoke_module()
+    script = Path("scripts/modal_polyomino_h200_smoke.py").read_text()
+
+    assert module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_CONFIG_PATH.endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step.yaml"
+    )
+    assert module.gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_training_command() == [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        module.REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_CONFIG_PATH,
+    ]
+    function_start = script.rindex(
+        "@app.function",
+        0,
+        script.index("def train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_smoke"),
+    )
+    source = script[function_start:]
+    next_function = source.find("@app.function", 1)
+    source = source[:next_function] if next_function != -1 else source
+    assert "gpu=GPT_OSS_120B_3GPU_CONFIG" in source
+    assert "timeout=24 * 60 * 60" in source
+    assert "reset_output: bool = True" in source
+    assert "if reset_output:" in source
+    assert "_reset_output_dir(output_dir)" in source
+    assert 'cuda_visible_devices="2", max_num_seqs=16' in source
+    assert "_start_judge(workers=16)" in source
+    assert '"CUDA_VISIBLE_DEVICES": "0,1"' in source
+    assert "expected_groups=400" in source
+    assert "expected_rollout_n=16" in source
+    assert "_validate_code_delta_smoke(code_delta_summary, expected_children=6400)" in source
+    assert 'action == "train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step"' in script
+    assert ".spawn(reset_output=True)" in script
+    assert 'action == "resume_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step"' in script
+    assert ".spawn(reset_output=False)" in script
+
+
+def test_code_delta_smoke_acceptance_rejects_missing_summary_or_length_stop():
+    module = _load_modal_smoke_module()
+    summary = {
+        "child_entry_count": 128,
+        "prompt_mode_ok_count": 128,
+        "summary_semantics_ok_count": 128,
+        "guidance_context_ok_count": 128,
+        "execution_context_ok_count": 128,
+        "delta_summary_ok_count": 0,
+        "valid_count": 1,
+        "length_stop_count": 1,
+        "max_guidance_prompt_tokens": 3000,
+        "max_guidance_response_tokens": 8192,
+    }
+
+    with pytest.raises(RuntimeError, match="Code-delta smoke acceptance failed"):
+        module._validate_code_delta_smoke(summary, expected_children=128)

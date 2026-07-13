@@ -35,41 +35,61 @@ The current Guidance-TTT design trains only the guidance actor. The execution
 model is treated as a frozen solver that applies a high-level guidance idea to
 the selected library node's runnable parent code.
 
-At rollout time:
+`ttt.prompt_mode: summary_only` remains available for compatibility. Current
+Polyomino experiments use `ttt.prompt_mode: code_delta`, which preserves code
+across both model calls and stores only the incremental change summary.
+
+At rollout time in `code_delta` mode:
 
 1. The JSON library uses PUCT to select one visible node with non-empty solution
    code.
-2. The guidance actor receives the problem statement and the selected node's raw
-   execution summary plus verifier score/status. It returns exactly one
-   `<guidance>` block.
+2. The guidance actor receives the problem statement, complete selected solution
+   code, raw change summary, and verifier score/status. The code is the source of
+   truth; the summary describes only the change from that candidate's parent.
+   It returns exactly one `<guidance>` block.
 3. The execution model receives the selected node's complete solution code,
-   verifier score/status, and parsed guidance. It does not receive the selected
-   summary. It improves the parent implementation and returns
+   verifier score/status, and parsed guidance. It improves the parent
+   implementation and returns
    `<execution_thinking>`, a complete updated `<solution>`, and `<summary>` in
    one response.
 4. The verifier scores the solution. For Polyomino, this always goes through
    FrontierCS/go-judge.
-5. The new entry is written as a child of the selected PUCT node. Its raw model
-   summary, verifier score/status, execution text, and solution are stored in
-   `library.json`.
+5. The new entry is written as a child of the selected PUCT node. Its complete
+   solution and raw delta summary are stored separately in `library.json`, along
+   with verifier and execution audit metadata.
 6. GRPO/verl assigns the verifier reward to the guidance response tokens only;
    execution-model tokens are not trained.
 
-For current Polyomino Modal experiments, the recommended path is the 3xH200
-GPT-OSS-120B execution recipe:
+For current Polyomino Modal experiments, the recommended path is the validated
+3xH200 code-delta recipe:
 
 ```bash
 WORKSPACE=<modal-workspace-name-or-id> \
 modal run --detach scripts/modal_polyomino_h200_smoke.py \
-  --action train_gpt_oss_120b_3gpu_group16_h200_tuned
+  --action train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step
 ```
 
 This recipe trains the Qwen3-8B guidance actor for 50 steps, saves guidance
 actor checkpoints every 5 steps, and uses a local Modal-hosted
 `openai/gpt-oss-120b` vLLM server as the frozen execution model. It initializes
 the run directory from
-`guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json`
+`guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`
 instead of spending an execution call on a fresh bootstrap candidate.
+
+| Setting | Value |
+| --- | --- |
+| Guidance model | `Qwen/Qwen3-8B`, LoRA rank/alpha `32/32` |
+| Execution model | local `openai/gpt-oss-120b`, greedy decoding |
+| GPUs | 2xH200 guidance training + 1xH200 execution |
+| Steps | `50` |
+| Groups per step | `8` |
+| Rollouts per group | `16` (`128` total per step) |
+| Guidance sampling | temperature `0.9`, top-p `0.95` |
+| Prompt/response limits | `8192` / `8192` tokens, `truncation: error` |
+| Execution output limit | none (`max_tokens: null`) |
+| Execution/verifier concurrency | `16` / `16` |
+| PPO mini/micro batch | `4` / `2` per GPU |
+| Checkpoint frequency | every `5` steps |
 
 ### Library Settings
 
@@ -210,7 +230,7 @@ modal run scripts/modal_polyomino_h200_smoke.py --action train_history
 modal run scripts/modal_polyomino_h200_smoke.py --action bootstrap_single_summary
 modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary
 modal run scripts/modal_polyomino_h200_smoke.py --action train_single_summary_openrouter_gpt55_seeded
-WORKSPACE=<modal-workspace-name-or-id> modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_gpt_oss_120b_3gpu_group16_h200_tuned
+WORKSPACE=<modal-workspace-name-or-id> modal run --detach scripts/modal_polyomino_h200_smoke.py --action train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step
 ```
 
 For the one-summary Modal run, use:
@@ -277,7 +297,7 @@ Actions:
   copy that file to
   `guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`
   when refreshing the static seed used by the recommended 120B recipe.
-- `train_gpt_oss_120b_3gpu_group16_h200_tuned`: current recommended 50-step
+- `train_gpt_oss_120b_3gpu_group16_h200_tuned`: legacy 50-step summary-only
   Polyomino training recipe. It uses 2 H200s for the Qwen3-8B guidance actor
   and one H200 for the local `openai/gpt-oss-120b` execution server. The active
   config is
@@ -305,6 +325,36 @@ Actions:
   `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step.yaml`.
   It saves guidance actor checkpoints every 5 steps and keeps execution/judge
   concurrency at 16.
+- `train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke`: isolated
+  one-step acceptance run for `ttt.prompt_mode: code_delta`. It uses two H200s
+  for Qwen3-8B GRPO and one H200 for GPT-OSS-120B execution, with an 8x16
+  rollout, execution/judge concurrency 16, `max_prompt_length: 8192`,
+  `max_response_length: 8192`, `max_model_len: 16384`, and strict
+  `truncation: error`. Launch it with:
+
+```bash
+modal run --detach scripts/modal_polyomino_h200_smoke.py \
+  --action train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke
+```
+
+- `train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step`: current
+  recommended 50-step version of the accepted code-delta smoke. It changes only
+  the isolated output directory, `num_steps: 50`, `total_epochs: 50`, and
+  `save_freq: 5`.
+  Launch it with:
+
+```bash
+modal run --detach scripts/modal_polyomino_h200_smoke.py \
+  --action train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step
+```
+
+If the 24-hour Modal function limit is reached, resume from the latest saved
+checkpoint and the existing TTT library without clearing the output directory:
+
+```bash
+modal run --detach scripts/modal_polyomino_h200_smoke.py \
+  --action resume_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step
+```
 
 The Modal script builds a remote image with FrontierCS and go-judge, copies this
 repository to `/root/guidance`, and uses the sparse FrontierCS checkout at
@@ -327,19 +377,24 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group8_temp09_20step
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_1step
 /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_concurrency16_50step
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step
 ```
 
-For the 50-step GPT-OSS-120B recipe, guidance actor checkpoints are written to:
+For the current 50-step code-delta recipe, guidance actor checkpoints are
+written to:
 
 ```text
-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_5/actor
-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_10/actor
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step/checkpoints/global_step_5/actor
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step/checkpoints/global_step_10/actor
 ...
 ```
 
 Modal currently limits a single function timeout to 24 hours. The 50-step run
 can exceed that wall-clock time because execution/verifier rollout dominates
-each step, so checkpointing every 5 steps is intentional.
+each step, so checkpointing every 5 steps is intentional. Use the documented
+`resume_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step` action to keep
+the existing library and resume from the latest checkpoint.
 
 The smoke configs intentionally keep only the training shape small: `num_steps`,
 `groups_per_batch`, `group_size`, PPO mini-batch size, and GPU count. They are
@@ -356,10 +411,11 @@ llm:
     phase1_max_tokens: null
 ```
 
-FrontierCS/go-judge concurrency is capped at 8 in
-`scripts/modal_polyomino_h200_smoke.py`; the local vLLM execution batch settings
-are aligned with the selected smoke size. If you change GPU count or group size,
-update the YAML config and the Modal script constants together.
+The current code-delta recipe caps both execution requests and FrontierCS judge
+workers at 16. One agent-loop worker owns the global execution semaphore, so
+the configured concurrency is not multiplied by additional worker processes.
+If you change GPU count, group size, agent workers, or execution concurrency,
+update the YAML config and Modal launcher together.
 
 For seeded smoke runs, the initial candidate comes from the static library file,
 but the smoke shape still comes from the active YAML. The seed file does not

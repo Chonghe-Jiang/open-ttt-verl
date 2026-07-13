@@ -14,7 +14,13 @@ from guidance_ttt.agent_loop import (
 )
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
-from guidance_ttt.prompts import Prompt, extract_tag_or_none
+from guidance_ttt.prompts import (
+    PROMPT_MODE_CODE_DELTA,
+    PROMPT_MODE_SUMMARY_ONLY,
+    Prompt,
+    extract_tag_or_none,
+    normalize_prompt_mode,
+)
 from guidance_ttt.state import LLMRequest, LibraryEntry, _jsonable
 from guidance_ttt.tasks import TaskSpec, get_task_spec
 
@@ -90,6 +96,7 @@ def bootstrap_library_entries(
     max_attempts: int = 2,
     overwrite_existing: bool = False,
     execution_client: Any | None = None,
+    prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
 ) -> dict[str, Any]:
     return asyncio.run(
         _bootstrap_library_entries_async(
@@ -100,6 +107,7 @@ def bootstrap_library_entries(
             max_attempts=max_attempts,
             overwrite_existing=overwrite_existing,
             execution_client=execution_client,
+            prompt_mode=prompt_mode,
         )
     )
 
@@ -113,6 +121,7 @@ async def _bootstrap_library_entries_async(
     max_attempts: int,
     overwrite_existing: bool,
     execution_client: Any | None,
+    prompt_mode: str,
 ) -> dict[str, Any]:
     task_config = _jsonable(task_config)
     if not isinstance(task_config, dict):
@@ -123,6 +132,7 @@ async def _bootstrap_library_entries_async(
             f"execution_llm_config must normalize to a dict, got {type(execution_llm_config).__name__}"
         )
     task_spec = get_task_spec(str(task_config.get("id", "erdos_min_overlap")))
+    prompt_mode = normalize_prompt_mode(prompt_mode)
     prompt = build_bootstrap_execution_prompt(task_spec=task_spec)
     client = execution_client or make_llm_client(execution_llm_config)
     library = GuidanceLibrary(library_path)
@@ -150,6 +160,7 @@ async def _bootstrap_library_entries_async(
                 prompt=prompt,
                 verifier_timeout_s=verifier_timeout_s,
                 max_attempts=max_attempts,
+                prompt_mode=prompt_mode,
             )
         except Exception as exc:
             failed_roots[root_id] = str(exc)
@@ -180,6 +191,7 @@ async def _create_bootstrap_entry(
     prompt: Prompt,
     verifier_timeout_s: int,
     max_attempts: int,
+    prompt_mode: str,
 ) -> LibraryEntry:
     last_error = "bootstrap did not run"
     attempts = max(1, int(max_attempts))
@@ -203,6 +215,7 @@ async def _create_bootstrap_entry(
                 timeout_s=verifier_timeout_s,
                 task_spec=task_spec,
                 verifier_config=_verifier_config_from_task_config(task_config),
+                prompt_mode=prompt_mode,
             )
             raw_model_summary = execution_result.model_summary
             metadata = {
@@ -212,6 +225,8 @@ async def _create_bootstrap_entry(
                 "task": task_config,
                 "execution_text": execution_result.execution_text,
                 "raw_model_summary": raw_model_summary,
+                "prompt_mode": prompt_mode,
+                "summary_semantics": "baseline",
                 "execution_provider": execution_llm_config.get("provider", "mock"),
                 "execution_model": execution_llm_config.get("model", "mock-exec"),
                 "execution_response_metadata": response.metadata,
@@ -235,7 +250,11 @@ async def _create_bootstrap_entry(
                 verifier_status=execution_result.verification.status,
                 verifier_message=execution_result.verification.message,
                 summary=execution_result.summary,
-                reusable_idea=_extract_reusable_idea(execution_result.summary),
+                reusable_idea=(
+                    execution_result.summary
+                    if prompt_mode == PROMPT_MODE_CODE_DELTA
+                    else _extract_reusable_idea(execution_result.summary)
+                ),
                 failure_mode=None if execution_result.verification.valid else execution_result.verification.status,
                 metadata=metadata,
             )

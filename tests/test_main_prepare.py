@@ -59,9 +59,50 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     data = yaml.safe_load(Path(prepared["agent_loop_config"]).read_text())
     assert data[0]["name"] == "guidance_execution_task"
     assert data[0]["task"]["id"] == "erdos_min_overlap"
+    assert data[0]["prompt_mode"] == "summary_only"
     assert data[0]["verifier_timeout_s"] == 5
     assert "execution_llm" in data[0]
     assert "summarizer_llm" not in data[0]
+
+
+def test_prepare_run_propagates_code_delta_prompt_mode(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "code_delta"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "prompt_mode": "code_delta",
+            "groups_per_batch": 1,
+            "group_size": 1,
+            "eval_timeout": 340,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+
+    prepared = prepare_run(config)
+    agent_loop = yaml.safe_load(prepared["agent_loop_config"].read_text())[0]
+
+    assert agent_loop["prompt_mode"] == "code_delta"
+
+
+def test_prepare_run_rejects_unknown_prompt_mode(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "bad-mode"),
+            "model_path": "Qwen/Qwen3-8B",
+        },
+        "ttt": {
+            "prompt_mode": "unknown",
+            "groups_per_batch": 1,
+            "group_size": 1,
+        },
+    }
+
+    with pytest.raises(ValueError, match="Unsupported prompt mode"):
+        prepare_run(config)
 
 
 def test_prepare_run_supports_polyomino_task_config(tmp_path):

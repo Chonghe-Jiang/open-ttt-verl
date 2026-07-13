@@ -5,10 +5,48 @@ from dataclasses import dataclass
 from guidance_ttt.state import LibraryEntry, LibraryNode
 
 
+PROMPT_MODE_SUMMARY_ONLY = "summary_only"
+PROMPT_MODE_CODE_DELTA = "code_delta"
+SUPPORTED_PROMPT_MODES = frozenset({PROMPT_MODE_SUMMARY_ONLY, PROMPT_MODE_CODE_DELTA})
+
+
 @dataclass
 class Prompt:
     system: str
     user: str
+
+
+def normalize_prompt_mode(prompt_mode: str | None) -> str:
+    normalized = str(prompt_mode or PROMPT_MODE_SUMMARY_ONLY).strip().lower()
+    if normalized not in SUPPORTED_PROMPT_MODES:
+        supported = ", ".join(sorted(SUPPORTED_PROMPT_MODES))
+        raise ValueError(f"Unsupported prompt mode {prompt_mode!r}; expected one of: {supported}")
+    return normalized
+
+
+def summary_semantics_for_entry(entry: LibraryEntry) -> str:
+    metadata = entry.metadata or {}
+    semantics = metadata.get("summary_semantics")
+    if isinstance(semantics, str) and semantics.strip():
+        return semantics.strip()
+    if bool(metadata.get("bootstrap")) or int(entry.timestep) == 0:
+        return "baseline"
+    return "delta_from_parent"
+
+
+def validate_entry_prompt_mode(entry: LibraryEntry, prompt_mode: str | None) -> None:
+    requested_mode = normalize_prompt_mode(prompt_mode)
+    metadata = entry.metadata or {}
+    recorded_mode = metadata.get("prompt_mode")
+    if bool(metadata.get("bootstrap")) or int(entry.timestep) == 0:
+        return
+    effective_mode = normalize_prompt_mode(recorded_mode)
+    if effective_mode != requested_mode:
+        raise RuntimeError(
+            f"Library entry {entry.id!r} uses prompt_mode={effective_mode!r}, "
+            f"but this run requests prompt_mode={requested_mode!r}. Start a fresh output directory "
+            "or resume with the matching prompt mode."
+        )
 
 
 def _raw_model_summary_for_prompt(entry: LibraryEntry | None) -> str | None:
@@ -62,6 +100,35 @@ def _parent_code_for_prompt(
     )
 
 
+def _selected_candidate_for_guidance(
+    entry: LibraryEntry | None,
+    *,
+    solution_language: str,
+    raw_score_label: str,
+) -> str:
+    if entry is None or not entry.solution.strip():
+        raise ValueError("Code-delta guidance prompt requires a selected library entry with non-empty solution code")
+    fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
+    raw_summary = _raw_model_summary_for_prompt(entry) or "No model summary was emitted for this candidate."
+    summary_semantics = summary_semantics_for_entry(entry)
+    return f"""<selected_candidate>
+<parent_code>
+```{fenced_language}
+{entry.solution.strip()}
+```
+</parent_code>
+
+<change_summary>
+Summary type: {summary_semantics}
+{raw_summary}
+</change_summary>
+
+<score>
+{_score_for_prompt(entry, raw_score_label=raw_score_label)}
+</score>
+</selected_candidate>"""
+
+
 def build_guidance_prompt(
     *,
     problem_prompt: str,
@@ -72,8 +139,11 @@ def build_guidance_prompt(
     objective_text: str | None = None,
     mechanism_constraint: str | None = None,
     raw_score_label: str = "Score",
+    solution_language: str = "python",
+    prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
 ) -> Prompt:
     _ = selected_node, global_best_entries, local_failure_entries
+    prompt_mode = normalize_prompt_mode(prompt_mode)
     objective = objective_text or (
         "Your task is to provide the next **evolutionary guidance** to reach a higher score."
     )
@@ -83,23 +153,49 @@ def build_guidance_prompt(
         "benchmark access, external models or APIs, learned weights that are not supplied, or unavailable "
         "precomputation."
     )
+    if prompt_mode == PROMPT_MODE_CODE_DELTA:
+        selected_context = _selected_candidate_for_guidance(
+            selected_entry,
+            solution_language=solution_language,
+            raw_score_label=raw_score_label,
+        )
+        context_intro = """The next section contains the selected candidate's complete code, its incremental
+summary, and its verified score. Treat the code as the authoritative description
+of the current algorithm. The change summary describes only how this candidate
+changed from its own parent; it is not a complete description of the code."""
+        history_instruction = (
+            "Use `<parent_code>`, `<change_summary>`, and `<score>` to identify what the candidate currently "
+            "implements, what its previous refinement changed, and what bottleneck the next attempt should address."
+        )
+    else:
+        selected_context = (
+            "<selected_summary>\n"
+            f"{_raw_summary_for_prompt(selected_entry, fallback='No previous summary is attached.', raw_score_label=raw_score_label)}\n"
+            "</selected_summary>"
+        )
+        context_intro = (
+            "The next sections describe the current search state for this problem. Use them\n"
+            "as run-local context when deciding the next step."
+        )
+        history_instruction = (
+            "Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck "
+            "the next attempt should address."
+        )
+
     user = f"""<problem>
 {problem_prompt}
 </problem>
 
-The next sections describe the current search state for this problem. Use them
-as run-local context when deciding the next step.
+{context_intro}
 
-<selected_summary>
-{_raw_summary_for_prompt(selected_entry, fallback="No previous summary is attached.", raw_score_label=raw_score_label)}
-</selected_summary>
+{selected_context}
 
 # Objective
 {objective}
 
 # Evolutionary Guidelines
 1. Analyze the search history.
-   Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck the next attempt should address.
+   {history_instruction}
 
 2. Stay at the algorithmic-strategy level.
    Propose high-level algorithmic directions, strategic refinements, or changes
@@ -144,8 +240,10 @@ def build_execution_prompt(
     solution_contract: str | None = None,
     score_direction: str = "min",
     raw_score_label: str = "Score",
+    prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
 ) -> Prompt:
     _ = global_best_entries
+    prompt_mode = normalize_prompt_mode(prompt_mode)
     prompt_guidance = _unwrap_redundant_tag(guidance, "guidance") or guidance.strip()
     fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
     language_name = "C++17" if fenced_language == "cpp" else "Python"
@@ -162,6 +260,29 @@ def build_execution_prompt(
         solution_language=solution_language,
         raw_score_label=raw_score_label,
     )
+    if prompt_mode == PROMPT_MODE_CODE_DELTA:
+        summary_contract = """Write a concise natural-language summary only of how the submitted solution differs from the supplied parent code.
+
+The summary should explain:
+
+1. what algorithmic mechanisms or strategies were concretely changed;
+2. how those changes implement the supplied guidance;
+3. which guidance-suggested components were simplified, approximated, or omitted.
+
+Do not re-summarize the complete algorithm or list unchanged mechanisms, except when an unchanged invariant is essential to explain the modification. Describe only mechanisms that are actually present in the submitted solution. Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions."""
+    else:
+        summary_contract = """Write a concise natural-language summary of the candidate.
+
+The summary should explain:
+
+1. the implemented algorithmic idea;
+2. exactly what was changed from the supplied parent code in response to the guidance and what important mechanisms were preserved;
+3. the main search, refinement, or optimization mechanisms actually used.
+
+Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
+
+Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code."""
+
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -209,17 +330,7 @@ Do not include code.
 </solution>
 
 <summary>
-Write a concise natural-language summary of the candidate.
-
-The summary should explain:
-
-1. the implemented algorithmic idea;
-2. exactly what was changed from the supplied parent code in response to the guidance and what important mechanisms were preserved;
-3. the main search, refinement, or optimization mechanisms actually used.
-
-Include enough information for a later model to understand the candidate’s overall algorithmic approach from the summary alone.
-
-Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code.
+{summary_contract}
 
 </summary>
 

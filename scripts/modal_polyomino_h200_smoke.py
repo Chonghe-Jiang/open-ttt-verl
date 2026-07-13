@@ -100,6 +100,20 @@ REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH = (
 REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_OUTPUT_DIR = (
     "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_prompt_refinement_50step"
 )
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_CONFIG_PATH = (
+    f"{REMOTE_REPO_DIR}/guidance_ttt/config/"
+    "polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step.yaml"
+)
+REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_OUTPUT_DIR = (
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step"
+)
 REMOTE_GPT_OSS_120B_BOOTSTRAP_SEED_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_gpt_oss_120b_bootstrap_seed.yaml"
 )
@@ -458,6 +472,26 @@ def gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_training_command()
         "guidance_ttt.main_erdos",
         "--config",
         REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_PROMPT_REFINEMENT_50STEP_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_CONFIG_PATH,
+    ]
+
+
+def gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_training_command() -> list[str]:
+    return [
+        "python",
+        "-m",
+        "guidance_ttt.main_erdos",
+        "--config",
+        REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_CONFIG_PATH,
     ]
 
 
@@ -965,6 +999,119 @@ def _validate_puct_group_accounting(
 
     if errors:
         raise RuntimeError("PUCT group-accounting acceptance failed: " + "; ".join(errors))
+
+
+def _summarize_code_delta_smoke(output_dir: str) -> dict[str, object]:
+    library_path = Path(output_dir) / "library.json"
+    if not library_path.exists():
+        return {"output_dir": output_dir, "library_exists": False}
+    data = json.loads(library_path.read_text())
+    entries = data.get("entries") or {}
+    if not isinstance(entries, dict):
+        return {"output_dir": output_dir, "library_exists": True, "error": "entries is not a mapping"}
+
+    child_entries = [
+        entry
+        for entry in entries.values()
+        if isinstance(entry, dict) and int(entry.get("timestep") or 0) > 0
+    ]
+    prompt_mode_ok = 0
+    summary_semantics_ok = 0
+    delta_summary_ok = 0
+    guidance_context_ok = 0
+    execution_context_ok = 0
+    valid_count = 0
+    length_stop_count = 0
+    prompt_token_counts: list[int] = []
+    response_token_counts: list[int] = []
+
+    for entry in child_entries:
+        metadata = entry.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if metadata.get("prompt_mode") == "code_delta":
+            prompt_mode_ok += 1
+        if metadata.get("summary_semantics") == "delta_from_parent":
+            summary_semantics_ok += 1
+
+        raw_summary = str(metadata.get("raw_model_summary") or "").strip()
+        library_summary = str(entry.get("summary") or "").strip()
+        if raw_summary and library_summary == raw_summary:
+            delta_summary_ok += 1
+
+        parent = entries.get(str(metadata.get("selected_parent_entry_id") or ""))
+        parent_code = str(parent.get("solution") or "").strip() if isinstance(parent, dict) else ""
+        guidance_prompt = metadata.get("guidance_prompt") or {}
+        guidance_user = str(guidance_prompt.get("user") or "") if isinstance(guidance_prompt, dict) else ""
+        if (
+            parent_code
+            and guidance_user.count(parent_code) == 1
+            and "<selected_candidate>" in guidance_user
+            and "<change_summary>" in guidance_user
+            and "<score>" in guidance_user
+        ):
+            guidance_context_ok += 1
+
+        execution_prompt = metadata.get("execution_prompt") or {}
+        execution_user = str(execution_prompt.get("user") or "") if isinstance(execution_prompt, dict) else ""
+        guidance = str(entry.get("guidance") or "").strip()
+        if parent_code and parent_code in execution_user and guidance and guidance in execution_user:
+            execution_context_ok += 1
+
+        if str(entry.get("verifier_status") or "") == "valid" and str(entry.get("solution") or "").strip():
+            valid_count += 1
+        if str(metadata.get("guidance_stop_reason") or "").lower() == "length":
+            length_stop_count += 1
+        for key, target in (
+            ("guidance_prompt_tokens", prompt_token_counts),
+            ("guidance_response_tokens", response_token_counts),
+        ):
+            value = metadata.get(key)
+            if isinstance(value, int):
+                target.append(value)
+
+    return {
+        "output_dir": output_dir,
+        "library_exists": True,
+        "entry_count": len(entries),
+        "child_entry_count": len(child_entries),
+        "prompt_mode_ok_count": prompt_mode_ok,
+        "summary_semantics_ok_count": summary_semantics_ok,
+        "delta_summary_ok_count": delta_summary_ok,
+        "guidance_context_ok_count": guidance_context_ok,
+        "execution_context_ok_count": execution_context_ok,
+        "valid_count": valid_count,
+        "length_stop_count": length_stop_count,
+        "max_guidance_prompt_tokens": max(prompt_token_counts, default=0),
+        "max_guidance_response_tokens": max(response_token_counts, default=0),
+    }
+
+
+def _validate_code_delta_smoke(summary: dict[str, object], *, expected_children: int) -> None:
+    errors: list[str] = []
+    child_count = int(summary.get("child_entry_count", 0))
+    if child_count != expected_children:
+        errors.append(f"child_entry_count={child_count}, expected {expected_children}")
+    for key in (
+        "prompt_mode_ok_count",
+        "summary_semantics_ok_count",
+        "guidance_context_ok_count",
+        "execution_context_ok_count",
+    ):
+        if int(summary.get(key, 0)) != expected_children:
+            errors.append(f"{key}={summary.get(key)!r}, expected {expected_children}")
+    if int(summary.get("delta_summary_ok_count", 0)) <= 0:
+        errors.append("no raw delta summary was stored directly as the library summary")
+    if int(summary.get("valid_count", 0)) <= 0:
+        errors.append("no code-delta child produced a valid FrontierCS result")
+    if int(summary.get("length_stop_count", 0)) != 0:
+        errors.append(f"length_stop_count={summary.get('length_stop_count')!r}, expected 0")
+    for key in ("max_guidance_prompt_tokens", "max_guidance_response_tokens"):
+        value = int(summary.get(key, 0))
+        if value <= 0 or value > 8192:
+            errors.append(f"{key}={value}, expected 1..8192")
+    if errors:
+        raise RuntimeError("Code-delta smoke acceptance failed: " + "; ".join(errors))
 
 
 def _summarize_history_extraction(output_dir: str = REMOTE_HISTORY_OUTPUT_DIR) -> dict[str, object]:
@@ -2030,6 +2177,107 @@ def train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_smoke() -> d
 
 @app.function(
     image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke() -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    output_dir = REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_OUTPUT_DIR
+    _reset_output_dir(output_dir)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(output_dir)
+        history_summary = _summarize_history_extraction(output_dir)
+        dump_summary = _dump_prompt_answer_artifacts(output_dir)
+        puct_summary = _summarize_puct_group_accounting(output_dir)
+        code_delta_summary = _summarize_code_delta_smoke(output_dir)
+        merged_summary = {
+            **summary,
+            "history_extraction": history_summary,
+            "prompt_answer_dump": dump_summary,
+            "puct_accounting": puct_summary,
+            "code_delta_acceptance": code_delta_summary,
+        }
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        _validate_puct_group_accounting(
+            puct_summary,
+            expected_groups=8,
+            expected_rollout_n=16,
+        )
+        _validate_code_delta_smoke(code_delta_summary, expected_children=128)
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
+    gpu=GPT_OSS_120B_3GPU_CONFIG,
+    timeout=24 * 60 * 60,
+    cpu=64,
+    memory=262144,
+    volumes={"/runs": runs_volume, "/cache": cache_volume},
+)
+def train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_smoke(
+    reset_output: bool = True,
+) -> dict[str, object]:
+    _assert_training_packages_available()
+    _run_streaming(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"])
+    output_dir = REMOTE_GPT_OSS_120B_3GPU_BATCH8_GROUP16_CODE_DELTA_8192_50STEP_OUTPUT_DIR
+    if reset_output:
+        _reset_output_dir(output_dir)
+    execution_server = _start_gpt_oss_120b_server(cuda_visible_devices="2", max_num_seqs=16)
+    judge = _start_judge(workers=16)
+    try:
+        training_env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0,1"}
+        _run_streaming(
+            gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_training_command(),
+            cwd=REMOTE_REPO_DIR,
+            env=training_env,
+        )
+        summary = _summarize_output(output_dir)
+        history_summary = _summarize_history_extraction(output_dir)
+        dump_summary = _dump_prompt_answer_artifacts(output_dir)
+        puct_summary = _summarize_puct_group_accounting(output_dir)
+        code_delta_summary = _summarize_code_delta_smoke(output_dir)
+        merged_summary = {
+            **summary,
+            "history_extraction": history_summary,
+            "prompt_answer_dump": dump_summary,
+            "puct_accounting": puct_summary,
+            "code_delta_acceptance": code_delta_summary,
+        }
+        print(json.dumps(merged_summary, indent=2), flush=True)
+        _validate_puct_group_accounting(
+            puct_summary,
+            expected_groups=400,
+            expected_rollout_n=16,
+        )
+        _validate_code_delta_smoke(code_delta_summary, expected_children=6400)
+        return merged_summary
+    finally:
+        runs_volume.commit()
+        cache_volume.commit()
+        _stop_judge(judge)
+        _stop_process(execution_server)
+
+
+@app.function(
+    image=train_image,
     gpu=GPT_OSS_120B_SINGLE_GPU_CONFIG,
     timeout=4 * 60 * 60,
     cpu=32,
@@ -2176,6 +2424,12 @@ def main(action: str = "train"):
         print(train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step_smoke.spawn())
     elif action == "train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step":
         print(train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke.spawn())
+    elif action == "train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_smoke.spawn(reset_output=True))
+    elif action == "resume_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step":
+        print(train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step_smoke.spawn(reset_output=False))
     elif action == "bootstrap_gpt_oss_120b_seed":
         print(bootstrap_gpt_oss_120b_seed_smoke.remote())
     elif action == "gpt_oss_120b_xml_probe":
@@ -2198,6 +2452,9 @@ def main(action: str = "train"):
             "'train_gpt_oss_120b_3gpu_batch8_group16_puct_fix', "
             "'train_gpt_oss_120b_3gpu_batch8_group16_concurrency16_50step', "
             "'train_gpt_oss_120b_3gpu_batch8_group16_prompt_refinement_50step', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_smoke', "
+            "'train_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step', "
+            "'resume_gpt_oss_120b_3gpu_batch8_group16_code_delta_8192_50step', "
             "'bootstrap_gpt_oss_120b_seed', "
             "'gpt_oss_120b_xml_probe', "
             "or 'prune_single_summary'"

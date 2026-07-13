@@ -1,6 +1,7 @@
 import pytest
 
 from guidance_ttt.prompts import (
+    PROMPT_MODE_CODE_DELTA,
     build_execution_prompt,
     build_guidance_prompt,
     extract_guidance_or_format_error,
@@ -8,6 +9,8 @@ from guidance_ttt.prompts import (
     extract_tag_or_none,
     extract_terminal_tag_or_none,
     extract_text_outside_tag,
+    normalize_prompt_mode,
+    validate_entry_prompt_mode,
 )
 from guidance_ttt.state import LibraryEntry, LibraryNode
 from guidance_ttt.tasks import get_task_spec
@@ -90,6 +93,95 @@ Raw C5: 0.4
     assert "Verifier message: C5 bound: 0.400000" in prompt.user
     assert "canonical thinking should not be attached" not in prompt.user
     assert "canonical_solution_code_should_not_be_attached" not in prompt.user
+
+
+def test_code_delta_guidance_prompt_attaches_code_raw_delta_summary_and_score_once():
+    entry = _entry()
+    entry.solution = "#include <iostream>\nint main() { return 0; }"
+    entry.metadata = {
+        "prompt_mode": "code_delta",
+        "summary_semantics": "delta_from_parent",
+        "raw_model_summary": "Added skyline gap selection while preserving orientation normalization.",
+    }
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=entry,
+        global_best_entries=[],
+        local_failure_entries=[],
+        raw_score_label="FrontierCS score",
+        solution_language="cpp",
+        prompt_mode=PROMPT_MODE_CODE_DELTA,
+    )
+
+    assert "<selected_candidate>" in prompt.user
+    assert "<parent_code>" in prompt.user
+    assert "<change_summary>" in prompt.user
+    assert "Summary type: delta_from_parent" in prompt.user
+    assert "<score>" in prompt.user
+    assert prompt.user.count(entry.solution) == 1
+    assert prompt.user.count("Added skyline gap selection") == 1
+    assert prompt.user.count("FrontierCS score: 0.4") == 1
+    assert "Treat the code as the authoritative description" in prompt.user
+    assert "it is not a complete description of the code" in prompt.user
+    assert "<selected_summary>" not in prompt.user
+
+
+def test_code_delta_guidance_marks_static_seed_summary_as_baseline():
+    entry = _entry()
+    entry.timestep = 0
+    entry.metadata = {"bootstrap": True, "raw_model_summary": "Initial shelf-packing baseline."}
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=entry,
+        global_best_entries=[],
+        local_failure_entries=[],
+        solution_language="cpp",
+        prompt_mode="code_delta",
+    )
+
+    assert "Summary type: baseline" in prompt.user
+    assert "Initial shelf-packing baseline." in prompt.user
+
+
+def test_code_delta_execution_prompt_requests_delta_only_summary():
+    entry = _entry()
+    entry.solution = "#include <iostream>\nint main() { return 0; }"
+
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=entry,
+        guidance="Add bounded beam search over skyline placements.",
+        solution_language="cpp",
+        prompt_mode="code_delta",
+    )
+
+    assert "summary only of how the submitted solution differs from the supplied parent code" in prompt.user
+    assert "what algorithmic mechanisms or strategies were concretely changed" in prompt.user
+    assert "how those changes implement the supplied guidance" in prompt.user
+    assert "Do not re-summarize the complete algorithm" in prompt.user
+    assert "the implemented algorithmic idea" not in prompt.user
+    assert prompt.user.count(entry.solution) == 1
+
+
+def test_prompt_mode_validation_allows_bootstrap_but_rejects_mixed_non_bootstrap_entry():
+    bootstrap = _entry()
+    bootstrap.timestep = 0
+    bootstrap.metadata = {"bootstrap": True}
+    validate_entry_prompt_mode(bootstrap, "code_delta")
+
+    legacy = _entry()
+    legacy.metadata = {}
+    with pytest.raises(RuntimeError, match="uses prompt_mode='summary_only'"):
+        validate_entry_prompt_mode(legacy, "code_delta")
+
+    assert normalize_prompt_mode(None) == "summary_only"
+    with pytest.raises(ValueError, match="Unsupported prompt mode"):
+        normalize_prompt_mode("unknown")
 
 
 def test_execution_prompt_uses_parent_code_instead_of_recovered_raw_summary():

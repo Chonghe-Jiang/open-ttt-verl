@@ -1,7 +1,8 @@
 # Guidance-TTT Prompt Architecture
 
 本文档按当前代码整理 `guidance-ttt` 的 prompt 架构，覆盖 guidance model、execution
-model、execution 自总结、verifier 和 library writeback 的完整信息流。
+model、execution 自总结、verifier 和 library writeback 的完整信息流。当前支持
+`summary_only`（默认、兼容旧实验）和 `code_delta`（完整代码加增量摘要）两种模式。
 
 代码来源：
 
@@ -91,8 +92,11 @@ build_execution_prompt(...)
 task_spec.verify_execution_text(execution_text)
   -> verifier status / task raw score / reward / artifacts
 
-build_execution_summary(...)
+summary_only: build_execution_summary(...)
   -> canonical summary combining execution thinking, model summary, solution, guidance, verifier result
+
+code_delta: raw <summary>
+  -> store only the change from the selected parent
 
 GuidanceLibrary.submit_child(...)
   -> write LibraryEntry and child LibraryNode
@@ -111,8 +115,10 @@ context = library.context_for_node(selected_node, ...)
 selected_entry = context["selected_entry"]
 ```
 
-- Guidance prompt attach raw model `<summary>` plus verifier score/status/message，不读取
-  `entry.solution` 或 canonical `entry.summary`。
+- `summary_only` Guidance prompt attach raw model `<summary>` plus verifier
+  score/status/message，不读取 `entry.solution` 或 canonical `entry.summary`。
+- `code_delta` Guidance prompt attach 完整 `entry.solution`、raw model change summary 和
+  verifier score/status/message。code 是完整事实来源，summary 只描述相对 parent 的变化。
 - Execution prompt attach 完整 `entry.solution` plus verifier score/status/message，不读取 raw
   summary 或 canonical summary，也不对 parent code 做摘录或截断。
 - 两个 prompt 都不 attach global best summary；它们只读取同一个 PUCT-selected entry 的
@@ -124,7 +130,27 @@ selected_entry = context["selected_entry"]
 - 当前 `global_best_entries`、`lineage_entries` 和 `local_failure_entries` 会由 library context
   返回，但没有直接写入 prompt，也不再用于 guidance objective 文本。
 
-## Dual Library Views
+## Prompt Modes
+
+配置入口：
+
+```yaml
+ttt:
+  prompt_mode: summary_only  # default
+```
+
+切换新模式：
+
+```yaml
+ttt:
+  prompt_mode: code_delta
+```
+
+非 bootstrap library entry 会记录 `metadata.prompt_mode`。resume 时，代码会拒绝把
+`summary_only` 和 `code_delta` 的非 bootstrap entries 混在同一 run 中。timestep 0 的固定
+seed 可以没有 mode 标记，并被视为 baseline。
+
+## Summary-Only Library View
 
 Guidance 使用 `_raw_summary_for_prompt(entry, fallback=...)`。这里的 “raw summary” 指
 execution model 原始 `<summary>`，不是 `LibraryEntry.summary` 里的 canonical summary。
@@ -272,6 +298,47 @@ Please do internal reasoning and provide your response exactly in the following 
 Provide the final evolutionary guidance for the next execution attempt. Describe the main algorithmic direction and keep the guidance conceptual and actionable.
 </guidance>
 ````
+
+### Code-Delta Guidance Context
+
+`code_delta` 使用同一个 system prompt 和后续 guidelines，但把历史部分替换为：
+
+````text
+<problem>
+{problem_prompt}
+</problem>
+
+The next section contains the selected candidate's complete code, its incremental
+summary, and its verified score. Treat the code as the authoritative description
+of the current algorithm. The change summary describes only how this candidate
+changed from its own parent; it is not a complete description of the code.
+
+<selected_candidate>
+<parent_code>
+```{python_or_cpp}
+{selected_entry.solution}
+```
+</parent_code>
+
+<change_summary>
+Summary type: {baseline_or_delta_from_parent}
+{raw_model_summary}
+</change_summary>
+
+<score>
+Verifier status: {selected_entry.verifier_status}
+{raw_score_label}: {selected_entry.verifier_raw_score}
+Reward: {selected_entry.verifier_reward}
+Verifier message: {selected_entry.verifier_message}
+</score>
+</selected_candidate>
+````
+
+对应第一条 guideline 为：
+
+```text
+Use `<parent_code>`, `<change_summary>`, and `<score>` to identify what the candidate currently implements, what its previous refinement changed, and what bottleneck the next attempt should address.
+```
 
 ### Guidance Runtime Variables
 
@@ -442,6 +509,23 @@ Only describe mechanisms that are present in the implementation. If a guidance-s
 Any response that does not follow this exact three-block structure should be treated as invalid.
 ````
 
+在 `code_delta` 模式中，只有 `<summary>` 内的说明发生变化；parent code、guidance adherence
+contract 和三个严格 XML blocks 保持不变：
+
+```text
+<summary>
+Write a concise natural-language summary only of how the submitted solution differs from the supplied parent code.
+
+The summary should explain:
+
+1. what algorithmic mechanisms or strategies were concretely changed;
+2. how those changes implement the supplied guidance;
+3. which guidance-suggested components were simplified, approximated, or omitted.
+
+Do not re-summarize the complete algorithm or list unchanged mechanisms, except when an unchanged invariant is essential to explain the modification. Describe only mechanisms that are actually present in the submitted solution. Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions.
+</summary>
+```
+
 ### Bootstrap Execution Prompt
 
 `build_bootstrap_execution_prompt(...)` is used only by the explicit
@@ -499,9 +583,10 @@ Any response that does not follow this exact three-block structure should be tre
 
 ### Execution Runtime Variables
 
-因此 execution model 和 guidance model 使用相同 PUCT-selected selected summary
-context；execution prompt 只额外给出当前 parsed guidance，不再 attach visible global
-best valid summary。
+因此 execution model 和 guidance model 始终使用同一个 PUCT-selected parent。在
+`code_delta` 模式中，guidance 看 parent code + change summary + score，execution 看 parent
+code + parsed guidance + score；execution 不重复接收 parent summary。两个 prompt 都不 attach
+visible global best。
 
 ### Execution Parsing
 
@@ -518,7 +603,7 @@ Execution response 预期包含三个 blocks：
 
 - `execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""`
 - `solution = _extract_solution_code(execution_text, task_spec=task_spec)`
-- `model_summary = extract_tag_or_none(execution_text, "summary")`
+- `model_summary = extract_terminal_tag_or_none(execution_text, "summary")`
 
 `_extract_solution_code(...)` 优先读取 `<solution>...</solution>`，再调用 task-specific
 extractor。Erdos 接受 Python fenced code；Polyomino 只接受 `cpp` / `c++` / `C++` fenced code。
@@ -578,11 +663,15 @@ environment unavailable:
 
 没有本地 smoke evaluator；FrontierCS 不 vendored 到 `guidance/`。
 
-## Canonical Summary
+## Summary Writeback
 
-Execution model 的 `<summary>` 不是最终直接写入 library 的唯一 summary。agent loop 会在
-verification 之后调用 `build_execution_summary(...)`，把 model summary、execution thinking、
-solution、guidance 和 verifier 真实结果合成 canonical summary。
+`summary_only` 模式下，execution model 的 `<summary>` 不是最终直接写入 library 的唯一
+summary。agent loop 会在 verification 之后调用 `build_execution_summary(...)`，把 model
+summary、execution thinking、solution、guidance 和 verifier 真实结果合成 canonical summary。
+
+`code_delta` 模式不调用 canonical wrapper。严格提取出的原始 `<summary>` 同时写入
+`LibraryEntry.summary` 和 `metadata.raw_model_summary`，完整代码只存放在
+`LibraryEntry.solution`。缺失 summary 时保持为空，不合成替代文本。
 
 固定 sections：
 
@@ -625,8 +714,8 @@ LibraryEntry(
     verifier_raw_score=verification.raw_score,
     verifier_status=verification.status,
     verifier_message=verification.message,
-    summary=summary,  # canonical summary returned by build_execution_summary(...)
-    reusable_idea=_extract_reusable_idea(summary),
+    summary=summary,  # canonical summary or raw delta summary, selected by prompt_mode
+    reusable_idea=summary if prompt_mode == "code_delta" else _extract_reusable_idea(summary),
     failure_mode=None if verification.valid else verification.status,
     metadata={
         "group_uid": group_uid,
@@ -636,6 +725,8 @@ LibraryEntry(
         "selected_parent_solution_chars": len(selected_entry.solution),
         "guidance_format_ok": guidance_format_ok,
         "guidance_generation_attempts": guidance_generation.attempts,
+        "guidance_prompt_tokens": len(prompt_ids),
+        "guidance_response_tokens": len(response_ids),
         "raw_guidance_with_specials": guidance_generation.raw_text,
         "guidance_stop_reason": guidance_generation.stop_reason,
         "raw_guidance_text": guidance_text,
@@ -644,6 +735,8 @@ LibraryEntry(
         "task": task_config,
         "execution_text": execution_text,
         "raw_model_summary": raw_model_summary,
+        "prompt_mode": prompt_mode,
+        "summary_semantics": "delta_from_parent" or "canonical_full_candidate",
         "execution_provider": self.execution_llm_config.get("provider", "mock"),
         "execution_model": self.execution_llm_config.get("model", "mock-exec"),
         "execution_response_metadata": execution_response_metadata,
