@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from guidance_ttt.puct import rank_archive_nodes
+from guidance_ttt.puct import PUCT_Q_BLEND, normalize_puct_q_mode, rank_archive_nodes
 from guidance_ttt.state import LibraryEntry, LibraryNode
 
 
@@ -24,12 +24,14 @@ class GuidanceLibrary:
         initial_nodes: list[LibraryNode] | None = None,
         rollout_n: int = 1,
         puct_c: float = 1.0,
+        puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int = 1000,
         topk_children: int = 2,
     ) -> None:
         self.path = Path(path)
         self.rollout_n = int(rollout_n)
         self.puct_c = float(puct_c)
+        self.puct_q_mode = normalize_puct_q_mode(puct_q_mode)
         self.max_buffer_size = int(max_buffer_size)
         self.topk_children = int(topk_children)
         self._thread_lock = threading.RLock()
@@ -73,6 +75,7 @@ class GuidanceLibrary:
         *,
         rollout_n: int,
         puct_c: float,
+        puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
     ) -> None:
@@ -80,6 +83,7 @@ class GuidanceLibrary:
         expected = self._coerce_runtime_config(
             rollout_n=rollout_n,
             puct_c=puct_c,
+            puct_q_mode=puct_q_mode,
             max_buffer_size=max_buffer_size,
             topk_children=topk_children,
         )
@@ -93,6 +97,7 @@ class GuidanceLibrary:
                     )
                 self.rollout_n = expected["rollout_n"]
                 self.puct_c = expected["puct_c"]
+                self.puct_q_mode = expected["puct_q_mode"]
                 self.max_buffer_size = expected["max_buffer_size"]
                 self.topk_children = expected["topk_children"]
                 self._save()
@@ -102,6 +107,7 @@ class GuidanceLibrary:
         *,
         rollout_n: int,
         puct_c: float,
+        puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
     ) -> None:
@@ -109,6 +115,7 @@ class GuidanceLibrary:
         expected = self._coerce_runtime_config(
             rollout_n=rollout_n,
             puct_c=puct_c,
+            puct_q_mode=puct_q_mode,
             max_buffer_size=max_buffer_size,
             topk_children=topk_children,
         )
@@ -137,12 +144,14 @@ class GuidanceLibrary:
         *,
         rollout_n: int,
         puct_c: float,
+        puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
-    ) -> dict[str, int | float]:
-        config: dict[str, int | float] = {
+    ) -> dict[str, int | float | str]:
+        config: dict[str, int | float | str] = {
             "rollout_n": int(rollout_n),
             "puct_c": float(puct_c),
+            "puct_q_mode": normalize_puct_q_mode(puct_q_mode),
             "max_buffer_size": int(max_buffer_size),
             "topk_children": int(topk_children),
         }
@@ -150,10 +159,11 @@ class GuidanceLibrary:
             raise ValueError(f"rollout_n must be positive, got {config['rollout_n']!r}")
         return config
 
-    def _runtime_config(self) -> dict[str, int | float]:
+    def _runtime_config(self) -> dict[str, int | float | str]:
         return {
             "rollout_n": self.rollout_n,
             "puct_c": self.puct_c,
+            "puct_q_mode": self.puct_q_mode,
             "max_buffer_size": self.max_buffer_size,
             "topk_children": self.topk_children,
         }
@@ -376,6 +386,7 @@ class GuidanceLibrary:
             best_reachable_values=self._puct_m,
             total_visits=self._puct_T,
             puct_c=self.puct_c,
+            q_mode=self.puct_q_mode,
         )
         blocked_node_ids = blocked_node_ids or set()
         for _score, _value, node, _n, _q, _prior, _bonus in ranked:
@@ -581,23 +592,29 @@ class GuidanceLibrary:
         self._best_node_id = max(self._nodes.values(), key=lambda node: (node.value, node.id)).id
 
     def _to_store(self) -> dict[str, Any]:
-        return {
+        config = {
+            "rollout_n": self.rollout_n,
+            "puct_c": self.puct_c,
+            "max_buffer_size": self.max_buffer_size,
+            "topk_children": self.topk_children,
+        }
+        if self.puct_q_mode != PUCT_Q_BLEND:
+            config["puct_q_mode"] = self.puct_q_mode
+        store = {
             "nodes": {node_id: node.to_dict() for node_id, node in self._nodes.items()},
             "entries": {entry_id: entry.to_dict() for entry_id, entry in self._entries.items()},
             "groups": self._groups,
             "best_node_id": self._best_node_id,
-            "config": {
-                "rollout_n": self.rollout_n,
-                "puct_c": self.puct_c,
-                "max_buffer_size": self.max_buffer_size,
-                "topk_children": self.topk_children,
-            },
+            "config": config,
             "rollout_n": self.rollout_n,
             "puct_c": self.puct_c,
             "puct_n": self._puct_n,
             "puct_m": self._puct_m,
             "puct_T": self._puct_T,
         }
+        if self.puct_q_mode != PUCT_Q_BLEND:
+            store["puct_q_mode"] = self.puct_q_mode
+        return store
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -624,6 +641,9 @@ class GuidanceLibrary:
         config = data.get("config", {})
         self.rollout_n = int(config.get("rollout_n", data.get("rollout_n", self.rollout_n)))
         self.puct_c = float(config.get("puct_c", data.get("puct_c", self.puct_c)))
+        self.puct_q_mode = normalize_puct_q_mode(
+            config.get("puct_q_mode", data.get("puct_q_mode", self.puct_q_mode))
+        )
         self.max_buffer_size = int(config.get("max_buffer_size", data.get("max_buffer_size", self.max_buffer_size)))
         self.topk_children = int(config.get("topk_children", data.get("topk_children", self.topk_children)))
         has_puct_n = "puct_n" in data

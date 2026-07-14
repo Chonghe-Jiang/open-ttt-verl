@@ -413,6 +413,34 @@ def test_verl_overrides_enable_qwen_thinking_template_for_guidance_actor(tmp_pat
     assert "actor_rollout_ref.rollout.agent.default_agent_loop=guidance_execution_task" in overrides
 
 
+def test_verl_overrides_enable_entropic_adaptive_beta_from_recipe(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "entropic"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+            "adv_estimator": "entropic_adaptive_beta",
+        },
+        "ttt": {
+            "groups_per_batch": 1,
+            "group_size": 2,
+            "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+    prepared = prepare_run(config)
+
+    overrides = build_verl_overrides(config, prepared, [])
+    library = yaml.safe_load(Path(prepared["library_path"]).read_text())
+    slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
+
+    assert "algorithm.adv_estimator=entropic_adaptive_beta" in overrides
+    assert library["config"]["puct_q_mode"] == "best_child"
+    assert slots[0]["extra_info"]["puct_q_mode"] == "best_child"
+
+
 def test_verl_overrides_allow_non_failing_prompt_truncation(tmp_path):
     config = {
         "run": {

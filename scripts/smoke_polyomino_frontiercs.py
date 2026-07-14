@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from guidance_ttt.verifier.polyomino import verify_polyomino_solution_text
 
 
@@ -51,11 +54,13 @@ int main() {
 
 
 def main() -> None:
+    default_frontier_dir = Path(__file__).resolve().parents[1] / "reference" / "Frontier-CS"
+    frontier_dir = Path(os.environ.get("FRONTIERCS_DIR", default_frontier_dir)).expanduser().resolve()
     result = verify_polyomino_solution_text(
         BASELINE_RESPONSE,
         problem_id="0",
         config={
-            "base_dir": "/work/mit/ppliang_mit/lsy/reference/Frontier-CS",
+            "base_dir": str(frontier_dir),
             "n_cases": 70,
         },
     )

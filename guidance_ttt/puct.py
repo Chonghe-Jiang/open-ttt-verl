@@ -4,8 +4,19 @@ import math
 
 from guidance_ttt.state import LibraryNode
 
+PUCT_Q_BLEND = "blended"
+PUCT_Q_BEST_CHILD = "best_child"
+SUPPORTED_PUCT_Q_MODES = frozenset({PUCT_Q_BLEND, PUCT_Q_BEST_CHILD})
 OWN_VALUE_Q_WEIGHT = 0.8
 REACHABLE_VALUE_Q_WEIGHT = 0.2
+
+
+def normalize_puct_q_mode(mode: str | None) -> str:
+    normalized = str(mode or PUCT_Q_BLEND).strip().lower()
+    if normalized not in SUPPORTED_PUCT_Q_MODES:
+        supported = ", ".join(sorted(SUPPORTED_PUCT_Q_MODES))
+        raise ValueError(f"Unsupported PUCT Q mode {mode!r}; expected one of: {supported}")
+    return normalized
 
 
 def compute_scale(nodes: list[LibraryNode], *, initial_ids: set[str] | None = None) -> float:
@@ -43,22 +54,37 @@ def archive_puct_score(
     scale: float,
     total_visits: int,
     puct_c: float,
+    q_mode: str = PUCT_Q_BLEND,
 ) -> float:
     """Guidance-TTT archive PUCT score.
 
     score(i) = Q(i) + c * scale * P(i) * sqrt(1 + T) / (1 + n[i])
     Q(i) = R(i) if n[i] == 0
-    Q(i) = 0.8 * R(i) + 0.2 * m[i] if n[i] > 0 and m[i] exists
+    Q(i) = m[i] if q_mode == "best_child" and n[i] > 0 and m[i] exists
+    Q(i) = 0.8 * R(i) + 0.2 * m[i] otherwise
     """
-    q_value = _q_value(node=node, visit_count=visit_count, best_reachable_value=best_reachable_value)
+    q_value = _q_value(
+        node=node,
+        visit_count=visit_count,
+        best_reachable_value=best_reachable_value,
+        q_mode=q_mode,
+    )
     bonus = float(puct_c) * float(scale) * float(prior) * math.sqrt(1.0 + float(total_visits)) / (1.0 + float(visit_count))
     return q_value + bonus
 
 
-def _q_value(*, node: LibraryNode, visit_count: int, best_reachable_value: float | None) -> float:
+def _q_value(
+    *,
+    node: LibraryNode,
+    visit_count: int,
+    best_reachable_value: float | None,
+    q_mode: str = PUCT_Q_BLEND,
+) -> float:
     own_value = float(node.value)
     if visit_count <= 0 or best_reachable_value is None:
         return own_value
+    if normalize_puct_q_mode(q_mode) == PUCT_Q_BEST_CHILD:
+        return float(best_reachable_value)
     return OWN_VALUE_Q_WEIGHT * own_value + REACHABLE_VALUE_Q_WEIGHT * float(best_reachable_value)
 
 
@@ -70,6 +96,7 @@ def rank_archive_nodes(
     best_reachable_values: dict[str, float],
     total_visits: int,
     puct_c: float,
+    q_mode: str = PUCT_Q_BLEND,
 ) -> list[tuple[float, float, LibraryNode, int, float, float, float]]:
     """Return nodes sorted by Guidance-TTT archive PUCT score.
 
@@ -85,6 +112,7 @@ def rank_archive_nodes(
             node=node,
             visit_count=n_visits,
             best_reachable_value=best_reachable_values.get(node.id),
+            q_mode=q_mode,
         )
         prior = float(priors.get(node.id, 0.0))
         bonus = float(puct_c) * scale * prior * math.sqrt(1.0 + float(total_visits)) / (1.0 + float(n_visits))

@@ -167,6 +167,23 @@ def test_archive_puct_score_blends_own_value_with_best_child_after_visit():
     assert score == 90.0
 
 
+def test_archive_puct_score_uses_best_child_directly_when_configured():
+    node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
+
+    score = archive_puct_score(
+        node=node,
+        visit_count=1,
+        best_reachable_value=50.0,
+        prior=0.0,
+        scale=1.0,
+        total_visits=1,
+        puct_c=0.0,
+        q_mode="best_child",
+    )
+
+    assert score == 50.0
+
+
 def test_archive_puct_score_uses_own_value_before_first_visit():
     node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
 
@@ -408,6 +425,31 @@ def test_pristine_archive_can_adopt_recipe_runtime_config(tmp_path):
         "topk_children": 2,
     }
     assert set(snapshot["nodes"]) == {root.id}
+
+
+def test_pristine_archive_persists_best_child_q_mode(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+
+    library.configure_pristine_archive(
+        rollout_n=16,
+        puct_c=1.0,
+        puct_q_mode="best_child",
+        max_buffer_size=1000,
+        topk_children=2,
+    )
+
+    restored = GuidanceLibrary(path)
+    assert restored.snapshot()["config"]["puct_q_mode"] == "best_child"
+    with pytest.raises(ValueError, match="puct_q_mode"):
+        restored.assert_runtime_config(
+            rollout_n=16,
+            puct_c=1.0,
+            puct_q_mode="blended",
+            max_buffer_size=1000,
+            topk_children=2,
+        )
 
 
 def test_runtime_config_validation_rejects_corrupt_group_accounting(tmp_path):

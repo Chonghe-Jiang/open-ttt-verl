@@ -1,0 +1,48 @@
+diff --git a/src/frontier_cs/gen/__init__.py b/src/frontier_cs/gen/__init__.py
+index fbf0d76..e4bf3d7 100644
+--- a/src/frontier_cs/gen/__init__.py
++++ b/src/frontier_cs/gen/__init__.py
+@@ -14,21 +14,28 @@ Modules:
+     summary: Generation summary printing
+ """
+
+-from .llm_interface import (
+-    LLMInterface,
+-    GPT,
+-    Gemini,
+-    Claude,
+-    Claude_Opus,
+-    Claude_Sonnet_4_5,
+-    DeepSeek,
+-    Grok,
+-)
+-from .llm import (
+-    instantiate_llm_client,
+-    detect_provider,
+-    infer_provider_and_model,
+-)
++try:
++    from .llm_interface import (
++        LLMInterface,
++        GPT,
++        Gemini,
++        Claude,
++        Claude_Opus,
++        Claude_Sonnet_4_5,
++        DeepSeek,
++        Grok,
++    )
++    from .llm import (
++        instantiate_llm_client,
++        detect_provider,
++        infer_provider_and_model,
++    )
++except ModuleNotFoundError as exc:
++    # Evaluation does not use solution-generation provider SDKs. Keep the
++    # evaluator importable in the lean training container and require these
++    # optional SDKs only when the generation CLI is actually used.
++    if exc.name not in {"google.generativeai", "google.genai", "google.ai.generativelanguage"}:
++        raise
+ from .api_keys import (
+     build_key_pools,
+     get_fallback_api_key,

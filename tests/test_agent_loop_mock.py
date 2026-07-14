@@ -111,6 +111,49 @@ improve score
     assert "Next Guidance Delta\nimprove score" in result.summary
 
 
+def test_native_qwen_reasoning_is_preserved_without_execution_thinking_block():
+    execution_text = """<solution>
+```python
+def run(seed=42, budget_s=1, **kwargs):
+    return ([0.5, 0.5], 0.5, 2)
+```
+</solution>
+<summary>Use the requested bounded mutation.</summary>"""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        execution_reasoning="Compare the parent against two bounded mutations.",
+        guidance="Use bounded mutation.",
+        timeout_s=20,
+        prompt_mode="code_delta",
+    )
+
+    assert result.verification.valid is True
+    assert result.execution_thinking == "Compare the parent against two bounded mutations."
+    assert result.summary == "Use the requested bounded mutation."
+
+
+def test_raw_qwen_think_tag_is_used_when_reasoning_content_is_not_separate():
+    execution_text = """<think>Inspect the skyline gaps before modifying the parent.</think>
+<solution>
+```python
+def run(seed=42, budget_s=1, **kwargs):
+    return ([0.5, 0.5], 0.5, 2)
+```
+</solution>
+<summary>Use the requested skyline mutation.</summary>"""
+
+    result = _verify_execution_without_fallback(
+        execution_text=execution_text,
+        guidance="Use skyline mutation.",
+        timeout_s=20,
+        prompt_mode="code_delta",
+    )
+
+    assert result.verification.valid is True
+    assert result.execution_thinking == "Inspect the skyline gaps before modifying the parent."
+
+
 def test_solution_tag_is_preferred_when_summary_contains_python_block():
     execution_text = """<execution_thinking>
 Use tagged solution.

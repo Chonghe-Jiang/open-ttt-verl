@@ -108,6 +108,7 @@ class LLMResponse:
     text: str
     model: str
     finish_reason: str
+    reasoning: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 

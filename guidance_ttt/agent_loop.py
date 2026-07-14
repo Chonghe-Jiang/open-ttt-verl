@@ -236,6 +236,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         library_runtime_config = {
             "rollout_n": int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
             "puct_c": float(extra_info.get("puct_c", 1.0)),
+            "puct_q_mode": str(extra_info.get("puct_q_mode", "blended")),
             "max_buffer_size": int(extra_info.get("max_buffer_size", 1000)),
             "topk_children": int(extra_info.get("topk_children", 2)),
         }
@@ -286,9 +287,11 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             score_direction=task_spec.score_direction,
             raw_score_label=task_spec.raw_score_label,
             prompt_mode=self.prompt_mode,
+            execution_prompt_style=self.execution_llm_config.get("prompt_style"),
         )
         verification: VerificationResult
         execution_text = ""
+        execution_reasoning = ""
         execution_error: str | None = None
         try:
             execution_response = await self._complete_execution(
@@ -302,6 +305,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 )
             )
             execution_text = execution_response.text
+            execution_reasoning = execution_response.reasoning
             execution_response_metadata = execution_response.metadata
             execution_response_usage = execution_response.usage
         except Exception as exc:
@@ -316,6 +320,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             verifier_config=_verifier_config_from_task_config(task_config),
             initial_error=execution_error,
             prompt_mode=self.prompt_mode,
+            execution_reasoning=execution_reasoning,
         )
         execution_text = execution_result.execution_text
         execution_thinking = execution_result.execution_thinking
@@ -684,6 +689,7 @@ def _verify_execution_without_fallback(
     verifier_config: dict[str, Any] | None = None,
     initial_error: str | None = None,
     prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
+    execution_reasoning: str | None = None,
 ) -> ExecutionVerification:
     task_spec = task_spec or get_task_spec("erdos_min_overlap")
     prompt_mode = normalize_prompt_mode(prompt_mode)
@@ -696,7 +702,12 @@ def _verify_execution_without_fallback(
         )
     else:
         verification = VerificationResult.execution_error(initial_error)
-    execution_thinking = extract_tag_or_none(execution_text, "execution_thinking") or ""
+    execution_thinking = (
+        (execution_reasoning or "").strip()
+        or extract_tag_or_none(execution_text, "think")
+        or extract_tag_or_none(execution_text, "execution_thinking")
+        or ""
+    )
     solution = _extract_solution_code(execution_text, task_spec=task_spec)
     model_summary = extract_terminal_tag_or_none(execution_text, "summary")
     if prompt_mode == PROMPT_MODE_CODE_DELTA:

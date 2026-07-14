@@ -168,6 +168,26 @@ def test_code_delta_execution_prompt_requests_delta_only_summary():
     assert prompt.user.count(entry.solution) == 1
 
 
+def test_qwen_native_execution_prompt_uses_native_thinking_and_two_final_blocks():
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        guidance="Add bounded beam search.",
+        solution_language="cpp",
+        prompt_mode="code_delta",
+        execution_prompt_style="qwen_native_thinking",
+    )
+
+    assert "Qwen native thinking is enabled" in prompt.user
+    assert "exactly two top-level XML blocks" in prompt.user
+    assert "do not manually emit <think> or <execution_thinking>" in prompt.user
+    assert "<execution_thinking>\n" not in prompt.user
+    assert "<solution>" in prompt.user
+    assert "<summary>" in prompt.user
+    assert "native thinking channel" in prompt.system
+
+
 def test_prompt_mode_validation_allows_bootstrap_but_rejects_mixed_non_bootstrap_entry():
     bootstrap = _entry()
     bootstrap.timestep = 0

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from guidance_ttt.puct import PUCT_Q_BLEND, normalize_puct_q_mode
+
 
 def _slot_task_config(task: str, task_config: dict[str, Any] | None) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": task}
@@ -21,11 +23,13 @@ def build_slot_records(
     task_config: dict[str, Any] | None = None,
     rollout_n: int = 1,
     puct_c: float = 1.0,
+    puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
 ) -> list[dict[str, Any]]:
     task_config_payload = _slot_task_config(task, task_config)
-    return [
+    normalized_puct_q_mode = normalize_puct_q_mode(puct_q_mode)
+    records = [
         {
             "data_source": "guidance_ttt",
             "prompt": [{"role": "user", "content": ""}],
@@ -46,6 +50,10 @@ def build_slot_records(
         }
         for slot_idx in range(int(num_slots))
     ]
+    if normalized_puct_q_mode != PUCT_Q_BLEND:
+        for record in records:
+            record["extra_info"]["puct_q_mode"] = normalized_puct_q_mode
+    return records
 
 
 def write_slot_parquet(
@@ -57,6 +65,7 @@ def write_slot_parquet(
     task_config: dict[str, Any] | None = None,
     rollout_n: int = 1,
     puct_c: float = 1.0,
+    puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
 ) -> Path:
@@ -69,6 +78,7 @@ def write_slot_parquet(
         task_config=task_config,
         rollout_n=rollout_n,
         puct_c=puct_c,
+        puct_q_mode=puct_q_mode,
         max_buffer_size=max_buffer_size,
         topk_children=topk_children,
     )

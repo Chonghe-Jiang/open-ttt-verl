@@ -53,10 +53,11 @@ def apply_recipe_overrides(config: dict[str, Any], overrides: list[str]) -> dict
     return OmegaConf.to_container(merged, resolve=True)
 
 
-def _library_runtime_config(ttt_cfg: dict[str, Any]) -> dict[str, int | float]:
+def _library_runtime_config(ttt_cfg: dict[str, Any]) -> dict[str, int | float | str]:
     return {
         "rollout_n": int(ttt_cfg["group_size"]),
         "puct_c": float(ttt_cfg.get("puct_c", 1.0)),
+        "puct_q_mode": str(ttt_cfg.get("puct_q_mode", "blended")),
         "max_buffer_size": int(ttt_cfg.get("max_buffer_size", 1000)),
         "topk_children": int(ttt_cfg.get("topk_children", 2)),
     }
@@ -112,6 +113,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         task_config=task_cfg,
         rollout_n=int(ttt_cfg["group_size"]),
         puct_c=float(ttt_cfg.get("puct_c", 1.0)),
+        puct_q_mode=str(ttt_cfg.get("puct_q_mode", "blended")),
         max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
         topk_children=int(ttt_cfg.get("topk_children", 2)),
     )
@@ -156,7 +158,7 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     tmp_dir.mkdir(parents=True, exist_ok=True)
     triton_cache_dir.mkdir(parents=True, exist_ok=True)
     overrides = [
-        "algorithm.adv_estimator=grpo",
+        f"algorithm.adv_estimator={run_cfg.get('adv_estimator', 'grpo')}",
         "algorithm.use_kl_in_reward=False",
         "algorithm.rollout_correction.rollout_is=token",
         "algorithm.rollout_correction.rollout_is_threshold=2.0",

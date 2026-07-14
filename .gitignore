@@ -4,6 +4,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.runtime/
+.apptainer_cache/
+.apptainer_tmp/
+.apptainer_home/
 outputs/
 models/
 reference/

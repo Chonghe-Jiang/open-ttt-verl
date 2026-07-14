@@ -53,6 +53,20 @@ def test_bootstrap_prompt_has_no_guidance_or_library_context():
     assert "future guidance could improve" in prompt.user
 
 
+def test_qwen_native_bootstrap_prompt_requires_only_solution_and_summary():
+    prompt = build_bootstrap_execution_prompt(
+        task_spec=get_task_spec("polyomino_packing"),
+        execution_prompt_style="qwen_native_thinking",
+    )
+
+    assert "Qwen native thinking is enabled" in prompt.user
+    assert "exactly two top-level XML blocks" in prompt.user
+    assert "do not manually emit <think> or <execution_thinking>" in prompt.user
+    assert "<execution_thinking>\n" not in prompt.user
+    assert "<solution>" in prompt.user
+    assert "<summary>" in prompt.user
+
+
 def test_bootstrap_entry_attaches_to_root_and_becomes_selected_summary(tmp_path):
     library_path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)

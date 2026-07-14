@@ -8,6 +8,11 @@ from guidance_ttt.state import LibraryEntry, LibraryNode
 PROMPT_MODE_SUMMARY_ONLY = "summary_only"
 PROMPT_MODE_CODE_DELTA = "code_delta"
 SUPPORTED_PROMPT_MODES = frozenset({PROMPT_MODE_SUMMARY_ONLY, PROMPT_MODE_CODE_DELTA})
+EXECUTION_PROMPT_STYLE_LEGACY = "explicit_execution_thinking"
+EXECUTION_PROMPT_STYLE_QWEN_NATIVE = "qwen_native_thinking"
+SUPPORTED_EXECUTION_PROMPT_STYLES = frozenset(
+    {EXECUTION_PROMPT_STYLE_LEGACY, EXECUTION_PROMPT_STYLE_QWEN_NATIVE}
+)
 
 
 @dataclass
@@ -21,6 +26,14 @@ def normalize_prompt_mode(prompt_mode: str | None) -> str:
     if normalized not in SUPPORTED_PROMPT_MODES:
         supported = ", ".join(sorted(SUPPORTED_PROMPT_MODES))
         raise ValueError(f"Unsupported prompt mode {prompt_mode!r}; expected one of: {supported}")
+    return normalized
+
+
+def normalize_execution_prompt_style(prompt_style: str | None) -> str:
+    normalized = str(prompt_style or EXECUTION_PROMPT_STYLE_LEGACY).strip().lower()
+    if normalized not in SUPPORTED_EXECUTION_PROMPT_STYLES:
+        supported = ", ".join(sorted(SUPPORTED_EXECUTION_PROMPT_STYLES))
+        raise ValueError(f"Unsupported execution prompt style {prompt_style!r}; expected one of: {supported}")
     return normalized
 
 
@@ -241,9 +254,11 @@ def build_execution_prompt(
     score_direction: str = "min",
     raw_score_label: str = "Score",
     prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
+    execution_prompt_style: str | None = None,
 ) -> Prompt:
     _ = global_best_entries
     prompt_mode = normalize_prompt_mode(prompt_mode)
+    execution_prompt_style = normalize_execution_prompt_style(execution_prompt_style)
     prompt_guidance = _unwrap_redundant_tag(guidance, "guidance") or guidance.strip()
     fenced_language = "cpp" if solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
     language_name = "C++17" if fenced_language == "cpp" else "Python"
@@ -283,32 +298,30 @@ Include enough information for a later model to understand the candidate’s ove
 
 Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code."""
 
-    user = f"""<problem>
-{problem_prompt}
-</problem>
+    if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+        output_contract = f"""Qwen native thinking is enabled by the chat template. Use that native reasoning channel; do not manually emit <think> or <execution_thinking> in the final answer.
 
-The next sections provide the selected parent candidate and the guidance for improving it.
+Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.
+The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
+The <summary>...</summary> block is mandatory and must be closed.
 
-<selected_parent>
-{selected_parent}
-</selected_parent>
+Required final-answer format:
 
-<guidance>
-{prompt_guidance}
-</guidance>
+<solution>
+```{fenced_language}
+{placeholder}
+```
+</solution>
 
-Use the problem statement as the authoritative task specification.
-Use the selected parent code as the runnable baseline for this attempt.
-Score direction: {score_direction}.
+<summary>
+{summary_contract}
 
-# Guidance Adherence Contract
-Treat the guidance as the binding specification for improving the selected parent. Apply its proposed algorithmic mechanisms and strategic refinements as faithfully and completely as possible while preserving the parent candidate's working behavior outside the requested changes.
+</summary>
 
-Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended. Return one complete updated program, not a patch or diff.
-
-{contract}
-
-Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+Any final answer that does not follow this exact two-block structure should be treated as invalid."""
+        system_suffix = "Reason using Qwen's native thinking channel, then output only the code block and summary."
+    else:
+        output_contract = f"""Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
 You must output all three XML blocks exactly as shown below.
 The <execution_thinking>...</execution_thinking> block is mandatory and must use angle brackets.
 The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
@@ -334,7 +347,35 @@ Do not include code.
 
 </summary>
 
-Any response that does not follow this exact three-block structure should be treated as invalid.
+Any response that does not follow this exact three-block structure should be treated as invalid."""
+        system_suffix = "Output execution thinking first, then the code block, then the summary."
+
+    user = f"""<problem>
+{problem_prompt}
+</problem>
+
+The next sections provide the selected parent candidate and the guidance for improving it.
+
+<selected_parent>
+{selected_parent}
+</selected_parent>
+
+<guidance>
+{prompt_guidance}
+</guidance>
+
+Use the problem statement as the authoritative task specification.
+Use the selected parent code as the runnable baseline for this attempt.
+Score direction: {score_direction}.
+
+# Guidance Adherence Contract
+Treat the guidance as the binding specification for improving the selected parent. Apply its proposed algorithmic mechanisms and strategic refinements as faithfully and completely as possible while preserving the parent candidate's working behavior outside the requested changes.
+
+Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended. Return one complete updated program, not a patch or diff.
+
+{contract}
+
+{output_contract}
 """
     return Prompt(
         system=(
@@ -346,7 +387,7 @@ Any response that does not follow this exact three-block structure should be tre
             "or substantially simplify any "
             "important component. If an exact implementation is infeasible, use the closest valid alternative "
             "and explain the deviation in the summary.\n\n"
-            "Output execution thinking first, then the code block, then the summary."
+            + system_suffix
         ),
         user=user,
     )

@@ -15,10 +15,12 @@ from guidance_ttt.agent_loop import (
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
+    EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
     PROMPT_MODE_CODE_DELTA,
     PROMPT_MODE_SUMMARY_ONLY,
     Prompt,
     extract_tag_or_none,
+    normalize_execution_prompt_style,
     normalize_prompt_mode,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, _jsonable
@@ -28,7 +30,8 @@ from guidance_ttt.tasks import TaskSpec, get_task_spec
 BOOTSTRAP_GUIDANCE = "Bootstrap execution without guidance."
 
 
-def build_bootstrap_execution_prompt(*, task_spec: TaskSpec) -> Prompt:
+def build_bootstrap_execution_prompt(*, task_spec: TaskSpec, execution_prompt_style: str | None = None) -> Prompt:
+    execution_prompt_style = normalize_execution_prompt_style(execution_prompt_style)
     fenced_language = "cpp" if task_spec.solution_language.lower() in {"cpp", "c++", "cxx"} else "python"
     language_name = "C++17" if fenced_language == "cpp" else "Python"
     placeholder = (
@@ -36,17 +39,33 @@ def build_bootstrap_execution_prompt(*, task_spec: TaskSpec) -> Prompt:
         if fenced_language == "cpp"
         else "A complete self-contained Python program."
     )
-    user = f"""<problem>
-{task_spec.problem_prompt}
-</problem>
+    if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+        output_contract = f"""Qwen native thinking is enabled by the chat template. Use that native reasoning channel; do not manually emit <think> or <execution_thinking> in the final answer.
 
-You are generating the initial bootstrap candidate for a Guidance-TTT run.
+Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.
+The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
+The <summary>...</summary> block is mandatory and must be closed.
+The final characters of your final answer must be </summary>.
 
-There is no previous library summary and no guidance yet. Produce one concrete baseline solution that satisfies the problem statement and can seed the future search history.
+Required final-answer format:
 
-{task_spec.execution_solution_contract}
+<solution>
+```{fenced_language}
+{placeholder}
+```
+</solution>
 
-Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
+<summary>
+A concise natural-language summary of the candidate.
+
+This summary must describe the implemented baseline algorithm, the main construction/search/refinement mechanism, and what future guidance could improve. If the solution intentionally uses a simple heuristic rather than a full optimization method, state that clearly.
+
+Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
+</summary>
+
+Any final answer that does not follow this exact two-block structure should be treated as invalid."""
+    else:
+        output_contract = f"""Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
 You must output all three XML blocks exactly as shown below.
 The <execution_thinking>...</execution_thinking> block is mandatory and must use angle brackets.
 The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
@@ -76,7 +95,19 @@ This summary must describe the implemented baseline algorithm, the main construc
 Do not include source code, code fences, copied constants, hard-coded arrays, raw candidate parameters, benchmark-specific profile values, or the output-format instructions themselves.
 </summary>
 
-Any response that does not follow this exact three-block structure should be treated as invalid.
+Any response that does not follow this exact three-block structure should be treated as invalid."""
+
+    user = f"""<problem>
+{task_spec.problem_prompt}
+</problem>
+
+You are generating the initial bootstrap candidate for a Guidance-TTT run.
+
+There is no previous library summary and no guidance yet. Produce one concrete baseline solution that satisfies the problem statement and can seed the future search history.
+
+{task_spec.execution_solution_contract}
+
+{output_contract}
 """
     return Prompt(
         system=(
@@ -133,7 +164,11 @@ async def _bootstrap_library_entries_async(
         )
     task_spec = get_task_spec(str(task_config.get("id", "erdos_min_overlap")))
     prompt_mode = normalize_prompt_mode(prompt_mode)
-    prompt = build_bootstrap_execution_prompt(task_spec=task_spec)
+    execution_prompt_style = normalize_execution_prompt_style(execution_llm_config.get("prompt_style"))
+    prompt = build_bootstrap_execution_prompt(
+        task_spec=task_spec,
+        execution_prompt_style=execution_prompt_style,
+    )
     client = execution_client or make_llm_client(execution_llm_config)
     library = GuidanceLibrary(library_path)
     snapshot = library.snapshot()
@@ -161,6 +196,7 @@ async def _bootstrap_library_entries_async(
                 verifier_timeout_s=verifier_timeout_s,
                 max_attempts=max_attempts,
                 prompt_mode=prompt_mode,
+                execution_prompt_style=execution_prompt_style,
             )
         except Exception as exc:
             failed_roots[root_id] = str(exc)
@@ -192,6 +228,7 @@ async def _create_bootstrap_entry(
     verifier_timeout_s: int,
     max_attempts: int,
     prompt_mode: str,
+    execution_prompt_style: str,
 ) -> LibraryEntry:
     last_error = "bootstrap did not run"
     attempts = max(1, int(max_attempts))
@@ -208,7 +245,7 @@ async def _create_bootstrap_entry(
                 )
             )
             execution_text = response.text
-            _validate_required_blocks(execution_text)
+            _validate_required_blocks(execution_text, execution_prompt_style=execution_prompt_style)
             execution_result = _verify_execution_without_fallback(
                 execution_text=execution_text,
                 guidance=BOOTSTRAP_GUIDANCE,
@@ -216,6 +253,7 @@ async def _create_bootstrap_entry(
                 task_spec=task_spec,
                 verifier_config=_verifier_config_from_task_config(task_config),
                 prompt_mode=prompt_mode,
+                execution_reasoning=response.reasoning,
             )
             raw_model_summary = execution_result.model_summary
             metadata = {
@@ -263,11 +301,11 @@ async def _create_bootstrap_entry(
     raise RuntimeError(f"bootstrap execution did not produce strict XML after {attempts} attempt(s): {last_error}")
 
 
-def _validate_required_blocks(execution_text: str) -> None:
-    missing = [
-        tag
-        for tag in ("execution_thinking", "solution", "summary")
-        if extract_tag_or_none(execution_text, tag) is None
-    ]
+def _validate_required_blocks(execution_text: str, *, execution_prompt_style: str | None = None) -> None:
+    execution_prompt_style = normalize_execution_prompt_style(execution_prompt_style)
+    required_tags = ["solution", "summary"]
+    if execution_prompt_style != EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+        required_tags.insert(0, "execution_thinking")
+    missing = [tag for tag in required_tags if extract_tag_or_none(execution_text, tag) is None]
     if missing:
         raise RuntimeError(f"Bootstrap execution missing required XML block(s): {', '.join(missing)}")

@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FRONTIER_DIR="${REPO_ROOT}/reference/Frontier-CS"
+ALG_DIR="${FRONTIER_DIR}/algorithmic"
+RUNTIME_DIR="${REPO_ROOT}/.runtime"
+SIF_PATH="${SIF_PATH:-/work/mit/ppliang_mit/chonghej/open-ttt-verl/containers/open-ttt-verl-ttt-vllm.sif}"
+CONFIG="${CONFIG:-guidance_ttt/config/polyomino_b200_4gpu_qwen3_8b_exec_shared_batch8_group32_code_delta_8192_smoke.yaml}"
+RUN_TAG="${RUN_TAG:-${SLURM_JOB_ID:-manual}}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_b200_4gpu_qwen_exec_shared_${RUN_TAG}}"
+EXPECTED_GPUS="${EXPECTED_GPUS:-4}"
+TRAINING_GPUS="${TRAINING_GPUS:-0,1,2,3}"
+EXECUTION_GPU="${EXECUTION_GPU:-3}"
+EXPECTED_GROUPS="${EXPECTED_GROUPS:-8}"
+EXPECTED_GROUP_SIZE="${EXPECTED_GROUP_SIZE:-32}"
+EXPECTED_PROMPT_MODE="${EXPECTED_PROMPT_MODE:-code_delta}"
+EXECUTION_GPU_MEMORY_UTILIZATION="${EXECUTION_GPU_MEMORY_UTILIZATION:-0.20}"
+EXECUTION_MAX_MODEL_LEN="${EXECUTION_MAX_MODEL_LEN:-32768}"
+EXECUTION_MAX_NUM_SEQS="${EXECUTION_MAX_NUM_SEQS:-4}"
+LOG_DIR="${REPO_ROOT}/outputs/slurm"
+NODE_BIN="${RUNTIME_DIR}/node-v${NODE_VERSION:-20.19.4}-linux-x64/bin"
+GOJUDGE="${RUNTIME_DIR}/go-judge/bin/go-judge"
+MODE="${1:-run}"
+
+cd "${REPO_ROOT}"
+mkdir -p "${LOG_DIR}" .hf_cache .tmp .triton_cache .ray_tmp .apptainer_home/.cache
+
+for required in "${SIF_PATH}" models/Qwen3-8B/config.json \
+  "${ALG_DIR}/problems/0/config.yaml" "${NODE_BIN}/node" "${GOJUDGE}" "${RUNTIME_DIR}/go-judge/mount.yaml"; do
+  if [[ ! -e "${required}" ]]; then
+    echo "Missing required runtime artifact: ${required}" >&2
+    echo "Run scripts/setup_polyomino_b200.sh first." >&2
+    exit 1
+  fi
+done
+
+export APPTAINER_CACHEDIR="${REPO_ROOT}/.apptainer_cache"
+export APPTAINER_TMPDIR="${REPO_ROOT}/.apptainer_tmp"
+export HF_HOME="${REPO_ROOT}/.hf_cache"
+export HF_DATASETS_CACHE="${HF_HOME}/datasets"
+export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
+export TRANSFORMERS_CACHE="${HF_HOME}/hub"
+export HF_XET_CACHE="${HF_HOME}/xet"
+export TMPDIR="${REPO_ROOT}/.tmp"
+export TRITON_CACHE_DIR="${REPO_ROOT}/.triton_cache"
+export RAY_TMPDIR="${REPO_ROOT}/.ray_tmp"
+export PATH="${NODE_BIN}:$(dirname "${GOJUDGE}"):${PATH}"
+mkdir -p "${APPTAINER_CACHEDIR}" "${APPTAINER_TMPDIR}" "${HF_DATASETS_CACHE}" "${HUGGINGFACE_HUB_CACHE}"
+
+APPTAINER_BASE=(
+  apptainer exec --nv --cleanenv
+  --home "${REPO_ROOT}/.apptainer_home:/container_home"
+  --bind "${REPO_ROOT}:/workspace/guidance"
+  --pwd /workspace/guidance
+  --env HF_HOME=/workspace/guidance/.hf_cache
+  --env HF_DATASETS_CACHE=/workspace/guidance/.hf_cache/datasets
+  --env HUGGINGFACE_HUB_CACHE=/workspace/guidance/.hf_cache/hub
+  --env TRANSFORMERS_CACHE=/workspace/guidance/.hf_cache/hub
+  --env HF_XET_CACHE=/workspace/guidance/.hf_cache/xet
+  --env TMPDIR=/workspace/guidance/.tmp
+  --env TRITON_CACHE_DIR=/workspace/guidance/.triton_cache
+  --env RAY_TMPDIR=/workspace/guidance/.ray_tmp
+  --env XDG_CACHE_HOME=/container_home/.cache
+  --env PYTHONPATH=/workspace/guidance:/workspace/guidance/reference/Frontier-CS/src
+  --env HYDRA_FULL_ERROR=1
+  --env RAY_DEDUP_LOGS=0
+  --env RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+  --env EXPECTED_GPUS="${EXPECTED_GPUS}"
+  --env VLLM_NO_USAGE_STATS=1
+  --env VLLM_WORKER_MULTIPROC_METHOD=spawn
+  --env NCCL_IB_DISABLE=1
+  --env TOKENIZERS_PARALLELISM=false
+  "${SIF_PATH}"
+)
+
+if [[ "${MODE}" == "preflight" ]]; then
+  "${APPTAINER_BASE[@]}" python - <<'PY'
+import os
+import torch
+import vllm
+from frontier_cs import SingleEvaluator
+import guidance_ttt
+import verl
+
+print(f"torch={torch.__version__} cuda={torch.version.cuda}")
+print(f"vllm={vllm.__version__}")
+print(f"cuda_available={torch.cuda.is_available()} devices={torch.cuda.device_count()}")
+print(f"HF_HOME={os.environ['HF_HOME']}")
+assert torch.cuda.is_available()
+assert torch.cuda.device_count() == int(os.environ["EXPECTED_GPUS"])
+PY
+  exit 0
+fi
+
+if [[ "${MODE}" == "prepare" ]]; then
+  "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \
+    --config "${CONFIG}" --prepare-only run.output_dir="${OUTPUT_DIR}"
+  exit 0
+fi
+
+if [[ "${MODE}" != "run" ]]; then
+  echo "Usage: $0 [preflight|prepare|run]" >&2
+  exit 2
+fi
+
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  gpu_count="${SLURM_GPUS_ON_NODE:-0}"
+  if [[ "${gpu_count}" != "${EXPECTED_GPUS}" ]]; then
+    echo "Expected exactly ${EXPECTED_GPUS} allocated GPUs, got SLURM_GPUS_ON_NODE=${gpu_count}" >&2
+    exit 1
+  fi
+fi
+
+rm -f "${ALG_DIR}/problems/0/chk.cc.bin"
+"${GOJUDGE}" -mount-conf "${RUNTIME_DIR}/go-judge/mount.yaml" -parallelism 16 -pre-fork 0 \
+  > "${LOG_DIR}/gojudge-${RUN_TAG}.log" 2>&1 &
+GOJUDGE_PID=$!
+PORT=8081 GJ_ADDR=http://127.0.0.1:5050 JUDGE_WORKERS=16 GJ_PARALLELISM=16 \
+  SAVE_OUTPUTS=false TESTLIB_INSIDE=/testlib \
+  "${NODE_BIN}/node" "${ALG_DIR}/server.js" > "${LOG_DIR}/frontiercs-${RUN_TAG}.log" 2>&1 &
+JUDGE_PID=$!
+EXECUTION_PID=""
+GPU_MONITOR_PID=""
+cleanup() {
+  if [[ -n "${GPU_MONITOR_PID}" ]]; then kill "${GPU_MONITOR_PID}" 2>/dev/null || true; fi
+  if [[ -n "${EXECUTION_PID}" ]]; then kill "${EXECUTION_PID}" 2>/dev/null || true; fi
+  kill "${JUDGE_PID}" "${GOJUDGE_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for _ in $(seq 1 60); do
+  if curl -fsS http://127.0.0.1:8081/health >/dev/null; then break; fi
+  if ! kill -0 "${JUDGE_PID}" 2>/dev/null || ! kill -0 "${GOJUDGE_PID}" 2>/dev/null; then
+    echo "FrontierCS judge exited during startup" >&2
+    exit 1
+  fi
+  sleep 2
+done
+curl -fsS http://127.0.0.1:8081/health
+
+APPTAINERENV_CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" \
+  "${APPTAINER_BASE[@]}" vllm serve /workspace/guidance/models/Qwen3-8B \
+  --served-model-name Qwen/Qwen3-8B \
+  --host 127.0.0.1 --port 8000 --dtype bfloat16 --trust-remote-code \
+  --tensor-parallel-size 1 --gpu-memory-utilization "${EXECUTION_GPU_MEMORY_UTILIZATION}" \
+  --max-model-len "${EXECUTION_MAX_MODEL_LEN}" --max-num-seqs "${EXECUTION_MAX_NUM_SEQS}" \
+  --max-num-batched-tokens 32768 --enforce-eager \
+  --reasoning-parser qwen3 \
+  --download-dir /workspace/guidance/.hf_cache/hub \
+  > "${LOG_DIR}/qwen3-8b-exec-vllm-${RUN_TAG}.log" 2>&1 &
+EXECUTION_PID=$!
+
+for _ in $(seq 1 180); do
+  if curl -fsS http://127.0.0.1:8000/v1/models >/dev/null; then break; fi
+  if ! kill -0 "${EXECUTION_PID}" 2>/dev/null; then
+    echo "Qwen3-8B execution vLLM server exited during startup" >&2
+    tail -200 "${LOG_DIR}/qwen3-8b-exec-vllm-${RUN_TAG}.log" >&2
+    exit 1
+  fi
+  sleep 10
+done
+curl -fsS http://127.0.0.1:8000/v1/models
+nvidia-smi > "${LOG_DIR}/nvidia-smi-after-qwen-exec-${RUN_TAG}.log"
+nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu \
+  --format=csv -l 30 -f "${LOG_DIR}/nvidia-smi-qwen-shared-monitor-${RUN_TAG}.csv" &
+GPU_MONITOR_PID=$!
+
+APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
+  "${APPTAINER_BASE[@]}" python scripts/smoke_polyomino_frontiercs.py
+APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
+  "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \
+  --config "${CONFIG}" run.output_dir="${OUTPUT_DIR}"
+nvidia-smi > "${LOG_DIR}/nvidia-smi-after-training-${RUN_TAG}.log"
+"${APPTAINER_BASE[@]}" python scripts/validate_polyomino_b200_smoke.py "${OUTPUT_DIR}" \
+  --expected-groups "${EXPECTED_GROUPS}" --expected-group-size "${EXPECTED_GROUP_SIZE}" \
+  --expected-prompt-mode "${EXPECTED_PROMPT_MODE}"
+"${APPTAINER_BASE[@]}" python scripts/validate_qwen_shared_smoke.py "${OUTPUT_DIR}" \
+  --expected-children "$((EXPECTED_GROUPS * EXPECTED_GROUP_SIZE))"
+"${APPTAINER_BASE[@]}" python -m guidance_ttt.run_summary "${OUTPUT_DIR}" --config "${CONFIG}"

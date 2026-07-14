@@ -456,6 +456,71 @@ pytest -q tests
 python -m compileall -q guidance_ttt verl
 ```
 
+## B200 Apptainer Workflows
+
+The B200 launchers run the same Guidance-TTT pipeline on Slurm while keeping
+model weights, caches, temporary data, and outputs below this checkout. The
+current workflow families are:
+
+| Workflow | Allocation | Training | Execution | Intended use |
+| --- | --- | --- | --- | --- |
+| Three-GPU smoke | 3xB200 | Qwen3-8B on GPUs 0-1, 8x16 | GPT-OSS-120B on GPU 2 | One-step acceptance |
+| Five-GPU training | 5xB200 | Qwen3-8B 8x64 or Qwen3-14B 8x32 on GPUs 0-3 | GPT-OSS-120B on GPU 4 | Long experiments |
+| Four-GPU shared execution | 4xB200 | Qwen3-8B on GPUs 0-3, 8x32 | Qwen3-8B colocated on GPU 3 | Experimental Qwen execution smoke |
+
+The four recommended long-run recipes use the adaptive entropic advantage
+estimator and direct best-child PUCT Q value. They cover Qwen3-8B/Qwen3-14B
+guidance actors and `code_delta`/`summary_only` prompt modes. Baseline GRPO and
+legacy blended-PUCT recipes remain available for controlled comparisons.
+
+Prepare the pinned FrontierCS/go-judge/Node runtime and download both models:
+
+```bash
+scripts/setup_polyomino_b200.sh
+```
+
+On the cluster, the memory-bounded setup is also available as a CPU job. It
+uses one Hugging Face download worker and two Xet range requests so large model
+shards do not exhaust the login node:
+
+```bash
+mkdir -p outputs/slurm
+sbatch scripts/slurm_setup_polyomino_b200.sbatch
+```
+
+The default Apptainer image is the CUDA 12.9 / PyTorch 2.10 / vLLM 0.17 image
+at `/work/mit/ppliang_mit/chonghej/open-ttt-verl/containers/open-ttt-verl-ttt-vllm.sif`.
+Override `SIF_PATH` if that shared image moves. Models are always downloaded to
+`models/Qwen3-8B` and `models/gpt-oss-120b` in this checkout; `.hf_cache` is
+also local to this checkout.
+
+Submit the acceptance run on the batch partition (`b200-devel` permits only two
+GPUs per user):
+
+```bash
+mkdir -p outputs/slurm
+sbatch scripts/slurm_polyomino_b200_3gpu_smoke.sbatch
+```
+
+The job runs a three-GPU container preflight, a real FrontierCS baseline, the
+one-step 8x16 training job, and `scripts/validate_polyomino_b200_smoke.py`. The
+validator requires eight finalized groups, 128 written children, code-delta
+metadata, at least one valid FrontierCS result, and completed PUCT accounting.
+
+The five-GPU paper-aligned launcher is
+`scripts/slurm_polyomino_b200_5gpu_entropic_best_child_50step.sbatch`. It
+requires an explicit recipe, fresh output directory, prompt mode, and group
+size. The 8B runs are split into a 20-step first allocation and a dependent
+continuation because the partition wall time is 24 hours; the 14B runs use the
+same launcher with `STAGE=direct`. All long recipes save every ten steps.
+
+See [`guidance_ttt/config/README.md`](guidance_ttt/config/README.md) for the
+recipe index and [`scripts/README.md`](scripts/README.md) for complete Slurm
+submission examples. The preserved snapshot of the previous four-run baseline
+is in
+[`docs/b200_guidance_four_run_results_2026-07-14.md`](docs/b200_guidance_four_run_results_2026-07-14.md).
+The broader documentation map is [`docs/README.md`](docs/README.md).
+
 ## Design Notes
 
 - PUCT selects one library node before prompt assembly.

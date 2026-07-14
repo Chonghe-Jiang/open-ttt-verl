@@ -84,6 +84,56 @@ async def test_openai_compatible_client_maps_chat_completion(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-vllm",
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+    )
+    captured = {}
+
+    def fake_post_json(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "model": "Qwen/Qwen3-8B",
+            "choices": [
+                {
+                    "message": {
+                        "reasoning": "Consider several skyline mutations.",
+                        "content": "<solution>```cpp\nint main(){return 0;}\n```</solution><summary>delta</summary>",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="Qwen/Qwen3-8B",
+            temperature=0.6,
+            max_tokens=16384,
+        )
+    )
+
+    assert captured["path"] == "/chat/completions"
+    assert captured["payload"]["top_p"] == 0.95
+    assert captured["payload"]["top_k"] == 20
+    assert captured["payload"]["min_p"] == 0.0
+    assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert response.reasoning == "Consider several skyline mutations."
+    assert response.text.startswith("<solution>")
+
+
+@pytest.mark.anyio
 async def test_openai_compatible_client_can_read_api_key_from_named_env(monkeypatch):
     monkeypatch.delenv("API_KEY", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
