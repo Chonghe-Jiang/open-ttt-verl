@@ -15,6 +15,7 @@ from guidance_ttt.agent_loop import (
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
+    EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING,
     EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
     EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
     PROMPT_MODE_CODE_DELTA,
@@ -41,6 +42,7 @@ def build_bootstrap_execution_prompt(*, task_spec: TaskSpec, execution_prompt_st
         else "A complete self-contained Python program."
     )
     if execution_prompt_style in {
+        EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING,
         EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
         EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
     }:
@@ -49,11 +51,13 @@ def build_bootstrap_execution_prompt(*, task_spec: TaskSpec, execution_prompt_st
                 "Qwen native thinking is enabled by the chat template. Use that native reasoning channel; "
                 "do not manually emit <think> or <execution_thinking> in the final answer."
             )
-        else:
+        elif execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING:
             prompt_style_preamble = (
                 "Thinking mode is disabled. Do not output <think> or <execution_thinking>; respond directly "
                 "with the required solution and summary."
             )
+        else:
+            prompt_style_preamble = "Think carefully about the problem before producing the baseline program."
         output_contract = f"""{prompt_style_preamble}
 
 Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.

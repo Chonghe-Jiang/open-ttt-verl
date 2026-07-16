@@ -19,4 +19,5 @@ pytest-of-*/
 torchinductor_*/
 *.egg-info/
 .env
+.secrets/
 tmp_modal_*/

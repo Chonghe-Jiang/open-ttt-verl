@@ -67,6 +67,22 @@ def test_qwen_native_bootstrap_prompt_requires_only_solution_and_summary():
     assert "<summary>" in prompt.user
 
 
+def test_gpt_api_brief_thinking_bootstrap_prompt_requires_two_final_blocks():
+    prompt = build_bootstrap_execution_prompt(
+        task_spec=get_task_spec("polyomino_packing"),
+        execution_prompt_style="gpt_api_brief_thinking",
+    )
+
+    think = "Think carefully about the problem before producing the baseline program."
+    contract = "Your final answer must contain exactly two top-level XML blocks"
+    assert think in prompt.user
+    assert prompt.user.index(think) < prompt.user.index(contract)
+    assert "Thinking mode is disabled" not in prompt.user
+    assert "<execution_thinking>\n" not in prompt.user
+    assert "<solution>" in prompt.user
+    assert "<summary>" in prompt.user
+
+
 def test_bootstrap_entry_attaches_to_root_and_becomes_selected_summary(tmp_path):
     library_path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)

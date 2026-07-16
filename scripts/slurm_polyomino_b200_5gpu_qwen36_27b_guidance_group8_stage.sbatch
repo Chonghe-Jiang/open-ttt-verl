@@ -48,13 +48,16 @@ esac
 
 test -f models/Qwen3.6-27B/.download-complete
 test -f models/gpt-oss-120b/config.json
-test -f .runtime/qwen36-actor-site-packages/.qwen36-actor-complete
+test -f .runtime/qwen36-actor-site-packages/.qwen36-actor-fa2-nopad-complete
 grep -q 'def expand_packed_lora' .runtime/qwen36-actor-site-packages/vllm/lora/layers/column_parallel_linear.py
 grep -q 'set_triton_allocator(tensor.device)' .runtime/qwen36-actor-site-packages/vllm/model_executor/layers/fla/ops/utils.py
 grep -Eq '^[[:space:]]+adv_estimator:[[:space:]]+entropic_adaptive_beta[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+prompt_mode:[[:space:]]+summary_only[[:space:]]*$' "${CONFIG}"
 grep -Eq "^[[:space:]]+puct_q_mode:[[:space:]]+${EXPECTED_PUCT_Q_MODE}[[:space:]]*$" "${CONFIG}"
 grep -Eq '^[[:space:]]+save_freq:[[:space:]]+1[[:space:]]*$' "${CONFIG}"
+grep -Fq '+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2' "${CONFIG}"
+grep -Fq 'actor_rollout_ref.model.use_remove_padding=False' "${CONFIG}"
+grep -Fq 'actor_rollout_ref.actor.use_remove_padding=False' "${CONFIG}"
 
 echo "SLURM_JOB_ID=${SLURM_JOB_ID} STAGE=${STAGE} MODE=summary_only"
 echo "OUTPUT_DIR=${OUTPUT_DIR} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}"
@@ -63,6 +66,8 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 scripts/run_polyomino_b200_long.sh preflight
 if [[ "${STAGE}" == "smoke" ]]; then
   scripts/run_polyomino_b200_long.sh run
+  python scripts/validate_rollout_actor_parity.py \
+    "outputs/slurm/qwen36-27b-guidance-g8-${SLURM_JOB_ID}.out"
   exit 0
 fi
 

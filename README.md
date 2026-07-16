@@ -132,6 +132,26 @@ tests/                # lightweight Guidance-TTT tests
 The default verl config directory is `verl/trainer/config` in this repository.
 `run.verl_config_dir=...` can still override it for debugging.
 
+## Current B200 Experiment Families
+
+The cluster recipes currently cover two complementary execution layouts:
+
+| Guidance actor | Execution model | Allocation | Comparison |
+| --- | --- | --- | --- |
+| Qwen3-8B | Evolvent GPT-5.4 API | 1xB200 | 8x16 `summary_only`, up to 50 steps, no checkpoints |
+| Qwen3.6-27B | local GPT-OSS-120B | 5xB200 | `summary_only`/`code_delta` x `best_child`/`blended`, 8x16, no checkpoints |
+
+The GPT-5.4 path reads its key from ignored `.secrets/evolvent_api_key`, probes
+API concurrency before launch, and asks for exactly a complete solution and a
+summary after brief reasoning. The 27B path uses four B200s for guidance and a
+fifth for execution; Qwen3.6 actor/reference forwards use non-packed batches
+with FlashAttention 2 on standard attention layers to preserve rollout/training
+probability parity.
+
+Reproducible commands and operational details are indexed in
+[`scripts/README.md`](scripts/README.md); all active YAML recipes are indexed in
+[`guidance_ttt/config/README.md`](guidance_ttt/config/README.md).
+
 ## Install
 
 For local development and tests:
@@ -586,22 +606,28 @@ step):
 scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_blended_b200_5gpu_group16_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_code_delta_blended_b200_5gpu_group16_two_day.sh <tag>
 ```
 
 Set `GROUP_SIZE=8` before either of the first two commands to request the lower-throughput
 fallback. The stage scripts propagate the selected size to the recipe, smoke
 validator, formal day 1, and formal day 2.
 
-The third command is the controlled `summary_only` PUCT ablation at the fixed
-8x16 shape. It keeps the dense-guidance recipe unchanged except that an
-expanded node uses `0.8 * own_reward + 0.2 * best_child_reward` for its Q
-value instead of using the best-child reward directly.
+The third and fourth commands are controlled `summary_only` and `code_delta`
+PUCT ablations at the fixed 8x16 shape. They keep the corresponding
+dense-guidance recipes unchanged except that an expanded node uses
+`0.8 * own_reward + 0.2 * best_child_reward` for its Q value instead of using
+the best-child reward directly.
 
 The setup stage downloads `Qwen/Qwen3.6-27B` into the local model cache and
 prepares an isolated vLLM 0.19 actor runtime. The text-only task freezes and
 excludes the visual tower, while the rollout engine uses language-model-only
-loading. Qwen3.6 Gated DeltaNet rollout also carries the packed-LoRA and Triton
-scratch-allocator fixes required by the colocated verl path.
+loading. The Hugging Face actor and reference policy keep padded batches
+(`use_remove_padding=false`) so Qwen3.6 Gated DeltaNet recurrent state cannot
+cross trajectory boundaries; Qwen3.6's standard attention layers use
+FlashAttention 2 rather than SDPA. Each smoke additionally gates continuation
+on rollout/actor probability parity. The colocated vLLM rollout still carries
+the packed-LoRA and Triton scratch-allocator fixes required by its own path.
 
 ## Design Notes
 

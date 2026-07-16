@@ -13,7 +13,44 @@ The cluster workflow separates reusable runners from Slurm allocation files:
 - `validate_qwen_shared_smoke.py` adds Qwen native-reasoning checks.
 
 All generated models, caches, logs, checkpoints, and libraries are ignored by
-Git under `models/`, `.hf_cache/`, `.runtime/`, and `outputs/`.
+Git under `models/`, `.hf_cache/`, `.runtime/`, and `outputs/`. API credentials
+belong under ignored `.secrets/`; never put them in YAML or submit scripts.
+
+## One-GPU Qwen3-8B with Evolvent GPT-5.4
+
+This path trains Qwen3-8B on one B200 and uses the external GPT-5.4 endpoint for
+execution. Create the key file with owner-only permissions, then probe a safe
+request concurrency before submitting:
+
+```bash
+install -d -m 700 .secrets
+${EDITOR:-vi} .secrets/evolvent_api_key
+chmod 600 .secrets/evolvent_api_key
+
+SIF_PATH=/work/mit/ppliang_mit/chonghej/open-ttt-verl/containers/open-ttt-verl-ttt-vllm.sif
+apptainer exec "${SIF_PATH}" \
+  python scripts/probe_evolvent_gpt54_concurrency.py \
+  --config guidance_ttt/config/polyomino_b200_1gpu_qwen3_8b_evolvent_gpt54_batch8_group16_summary_only_entropic_best_child_500step.yaml \
+  --output .runtime/evolvent_gpt54_concurrency
+```
+
+The probe writes the selected value to `.runtime/evolvent_gpt54_concurrency`.
+The one-step smoke uses a fresh GPT-5.4 bootstrap and validates API errors,
+sample accounting, verifier outcomes, and rollout/actor probability parity:
+
+```bash
+sbatch scripts/slurm_polyomino_b200_1gpu_qwen3_8b_evolvent_gpt54_group16_smoke.sbatch
+```
+
+After the smoke passes, the bounded formal run is:
+
+```bash
+sbatch scripts/slurm_polyomino_b200_1gpu_qwen3_8b_evolvent_gpt54_group16_50step_oss_seed_no_ckpt.sbatch
+```
+
+It uses the validated GPT-OSS bootstrap seed, runs 8x16 for at most 50 steps,
+and writes no actor checkpoint. Stable prompt prefixes are preserved so the API
+gateway can reuse cached input tokens when supported.
 
 ## Two-GPU Qwen3-8B execution matrix
 
@@ -43,6 +80,7 @@ Use the dedicated submitters for the dense 27B experiments:
 scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_blended_b200_5gpu_group16_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_code_delta_blended_b200_5gpu_group16_two_day.sh <tag>
 ```
 
 It assigns GPUs 0-3 to Qwen3.6-27B guidance training/rollout and GPU 4 to the
@@ -52,14 +90,30 @@ shape is the validated 8x16 setting. Use `GROUP_SIZE=8 <command>` for the
 fallback shape.
 
 The formal stages share a fresh output directory, resume automatically, save
-every step, and retain only the latest checkpoint. The setup uses an isolated
-vLLM 0.19 runtime with the Qwen3.6 packed-LoRA and Gated DeltaNet Triton
-allocator fixes.
+every step, and retain only the latest checkpoint. Actor and reference-policy
+forwards use non-packed batches to isolate Qwen3.6 Gated DeltaNet state, while
+the standard attention layers use FlashAttention 2. The smoke gate checks
+rollout/actor probability parity before either formal stage can run. The setup
+uses an isolated vLLM 0.19 runtime with the Qwen3.6 packed-LoRA and Gated
+DeltaNet Triton allocator fixes for the colocated rollout path.
 
-The blended submitter is a fixed 8x16 `summary_only` ablation. It changes only
-PUCT Q to `0.8 * own_reward + 0.2 * best_child_reward`; the actor, execution
-model, objective, prompts, sampling temperature, checkpoint policy, and
-smoke-gated two-day continuation match the direct-best-child run.
+The two blended submitters are fixed 8x16 `summary_only` and `code_delta`
+ablations. They change only PUCT Q to
+`0.8 * own_reward + 0.2 * best_child_reward`; the actor, execution model,
+objective, mode-specific prompts, sampling temperature, checkpoint policy,
+and smoke-gated two-day continuation match their direct-best-child runs.
+
+For one bounded 23-hour comparison with no checkpoints or continuation chain,
+submit the complete 2x2 matrix at once:
+
+```bash
+scripts/submit_qwen36_27b_g16_four_no_ckpt.sh <tag>
+```
+
+This submits `summary_only`/`code_delta` crossed with `best_child`/`blended`.
+Each task requests five B200s, overrides the shape to 8x16, allows at most 500
+steps, and verifies that no checkpoint directory was created. The setup marker
+and rollout/actor parity checks remain mandatory.
 
 ## Paper-aligned five-GPU experiments
 

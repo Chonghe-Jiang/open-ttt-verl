@@ -93,6 +93,8 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
             "top_k": 20,
             "min_p": 0.0,
             "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_effort": "low",
+            "verbosity": "low",
         }
     )
     captured = {}
@@ -129,6 +131,8 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
     assert captured["payload"]["top_k"] == 20
     assert captured["payload"]["min_p"] == 0.0
     assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert captured["payload"]["reasoning_effort"] == "low"
+    assert captured["payload"]["verbosity"] == "low"
     assert response.reasoning == "Consider several skyline mutations."
     assert response.text.startswith("<solution>")
 
@@ -148,6 +152,21 @@ async def test_openai_compatible_client_can_read_api_key_from_named_env(monkeypa
     assert isinstance(client, OpenAICompatibleLLMClient)
     assert client.endpoint == "https://openrouter.ai/api/v1"
     assert client.api_key == "openrouter-test-key"
+
+
+def test_openai_compatible_client_can_read_api_key_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_KEY", raising=False)
+    key_path = tmp_path / "api_key"
+    key_path.write_text("file-test-key\n")
+
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key_file": str(key_path),
+        }
+    )
+
+    assert client.api_key == "file-test-key"
 
 
 def test_openai_compatible_client_accepts_request_timeout(monkeypatch):

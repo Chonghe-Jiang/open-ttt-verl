@@ -12,7 +12,7 @@ if [[ "${group_size}" != "8" && "${group_size}" != "16" ]]; then
   exit 2
 fi
 if [[ -f models/Qwen3.6-27B/.download-complete && \
-      -f .runtime/qwen36-actor-site-packages/.qwen36-actor-complete ]]; then
+      -f .runtime/qwen36-actor-site-packages/.qwen36-actor-fa2-nopad-complete ]]; then
   setup_dependency=""
   echo "Qwen3.6-27B guidance model and actor runtime are already prepared."
 else

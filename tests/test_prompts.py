@@ -209,6 +209,35 @@ def test_qwen_no_thinking_execution_prompt_requests_direct_two_block_answer():
     assert "<summary>" in prompt.user
 
 
+def test_gpt_api_brief_thinking_prompt_uses_minimal_system_and_two_block_contract():
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        guidance="Add bounded beam search.",
+        solution_language="cpp",
+        prompt_mode="code_delta",
+        execution_prompt_style="gpt_api_brief_thinking",
+    )
+
+    assert prompt.system == (
+        "You are the execution model. Improve the supplied parent C++17 candidate by applying "
+        "the guidance, then return one complete runnable candidate."
+    )
+    assert "Use the parent code as the implementation baseline" not in prompt.system
+    assert "Output only the complete solution block and summary block" not in prompt.system
+    assert "Return one complete updated program, not a patch or diff" not in prompt.user
+    assert "Thinking mode is disabled" not in prompt.user
+    assert "Do not output <think> or <execution_thinking>" not in prompt.user
+    think = "Think carefully about how to apply the guidance before producing the improved program."
+    contract = "Your final answer must contain exactly two top-level XML blocks"
+    assert think in prompt.user
+    assert prompt.user.index(think) < prompt.user.index(contract)
+    assert "<execution_thinking>\n" not in prompt.user
+    assert "<solution>" in prompt.user
+    assert "<summary>" in prompt.user
+
+
 def test_prompt_mode_validation_allows_bootstrap_but_rejects_mixed_non_bootstrap_entry():
     bootstrap = _entry()
     bootstrap.timestep = 0

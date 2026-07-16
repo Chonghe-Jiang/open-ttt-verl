@@ -16,7 +16,8 @@ cd "${REPO_ROOT}"
 
 : "${SHARED_OUTPUT_DIR:?submit with SHARED_OUTPUT_DIR}"
 
-export CONFIG="guidance_ttt/config/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step.yaml"
+DEFAULT_CONFIG="guidance_ttt/config/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step.yaml"
+export CONFIG="${CONFIG_OVERRIDE:-${DEFAULT_CONFIG}}"
 export OUTPUT_DIR="${SHARED_OUTPUT_DIR}"
 export GUIDANCE_MODEL_DIR="models/Qwen3.6-27B"
 export EXTRA_CONTAINER_PYTHONPATH="/workspace/guidance/.runtime/qwen36-actor-site-packages"
@@ -25,6 +26,7 @@ export TRAINING_GPUS=0,1,2,3
 export EXECUTION_GPU=4
 export EXPECTED_GROUP_SIZE="${GROUP_SIZE_OVERRIDE:-8}"
 export EXPECTED_PROMPT_MODE=code_delta
+export EXPECTED_PUCT_Q_MODE="${PUCT_Q_MODE_OVERRIDE:-best_child}"
 
 STAGE="${STAGE:-smoke}"
 case "${STAGE}" in
@@ -46,15 +48,18 @@ esac
 
 test -f models/Qwen3.6-27B/.download-complete
 test -f models/gpt-oss-120b/config.json
-test -f .runtime/qwen36-actor-site-packages/.qwen36-actor-complete
+test -f .runtime/qwen36-actor-site-packages/.qwen36-actor-fa2-nopad-complete
 grep -q 'def expand_packed_lora' .runtime/qwen36-actor-site-packages/vllm/lora/layers/column_parallel_linear.py
 grep -q 'set_triton_allocator(tensor.device)' .runtime/qwen36-actor-site-packages/vllm/model_executor/layers/fla/ops/utils.py
 grep -Eq '^[[:space:]]+adv_estimator:[[:space:]]+entropic_adaptive_beta[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+max_prompt_length:[[:space:]]+8192[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+prompt_mode:[[:space:]]+code_delta[[:space:]]*$' "${CONFIG}"
 grep -Eq 'actor_rollout_ref\.rollout\.max_model_len=16384$' "${CONFIG}"
-grep -Eq '^[[:space:]]+puct_q_mode:[[:space:]]+best_child[[:space:]]*$' "${CONFIG}"
+grep -Eq "^[[:space:]]+puct_q_mode:[[:space:]]+${EXPECTED_PUCT_Q_MODE}[[:space:]]*$" "${CONFIG}"
 grep -Eq '^[[:space:]]+save_freq:[[:space:]]+1[[:space:]]*$' "${CONFIG}"
+grep -Fq '+actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2' "${CONFIG}"
+grep -Fq 'actor_rollout_ref.model.use_remove_padding=False' "${CONFIG}"
+grep -Fq 'actor_rollout_ref.actor.use_remove_padding=False' "${CONFIG}"
 
 echo "SLURM_JOB_ID=${SLURM_JOB_ID} STAGE=${STAGE} MODE=code_delta PROMPT_LIMIT=8192"
 echo "OUTPUT_DIR=${OUTPUT_DIR} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}"
@@ -63,6 +68,8 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 scripts/run_polyomino_b200_long.sh preflight
 if [[ "${STAGE}" == "smoke" ]]; then
   scripts/run_polyomino_b200_long.sh run
+  python scripts/validate_rollout_actor_parity.py \
+    "outputs/slurm/qwen36-27b-code8192-g8-${SLURM_JOB_ID}.out"
   exit 0
 fi
 

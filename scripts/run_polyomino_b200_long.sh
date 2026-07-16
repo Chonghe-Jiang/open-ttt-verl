@@ -21,6 +21,8 @@ EXECUTION_VLLM_MAX_NUM_SEQS="${EXECUTION_VLLM_MAX_NUM_SEQS:-16}"
 EXECUTION_VLLM_ENFORCE_EAGER="${EXECUTION_VLLM_ENFORCE_EAGER:-1}"
 EXECUTION_VLLM_LANGUAGE_MODEL_ONLY="${EXECUTION_VLLM_LANGUAGE_MODEL_ONLY:-0}"
 EXECUTION_VLLM_REASONING_PARSER="${EXECUTION_VLLM_REASONING_PARSER:-}"
+START_EXECUTION_SERVER="${START_EXECUTION_SERVER:-1}"
+BOOTSTRAP_BEFORE_RUN="${BOOTSTRAP_BEFORE_RUN:-0}"
 RUN_TAG="${RUN_TAG:-${SLURM_JOB_ID:-manual}}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_b200_3gpu_smoke_${RUN_TAG}}"
 EXPECTED_GPUS="${EXPECTED_GPUS:-3}"
@@ -36,8 +38,18 @@ MODE="${1:-run}"
 cd "${REPO_ROOT}"
 mkdir -p "${LOG_DIR}" .hf_cache .tmp .triton_cache .ray_tmp .apptainer_home/.cache
 
-for required in "${SIF_PATH}" "${GUIDANCE_MODEL_DIR}/config.json" "${EXECUTION_MODEL_DIR}/config.json" \
-  "${ALG_DIR}/problems/0/config.yaml" "${NODE_BIN}/node" "${GOJUDGE}" "${RUNTIME_DIR}/go-judge/mount.yaml"; do
+required_artifacts=(
+  "${SIF_PATH}"
+  "${GUIDANCE_MODEL_DIR}/config.json"
+  "${ALG_DIR}/problems/0/config.yaml"
+  "${NODE_BIN}/node"
+  "${GOJUDGE}"
+  "${RUNTIME_DIR}/go-judge/mount.yaml"
+)
+if [[ "${START_EXECUTION_SERVER}" == "1" ]]; then
+  required_artifacts+=("${EXECUTION_MODEL_DIR}/config.json")
+fi
+for required in "${required_artifacts[@]}"; do
   if [[ ! -e "${required}" ]]; then
     echo "Missing required runtime artifact: ${required}" >&2
     echo "Run scripts/setup_polyomino_b200.sh first." >&2
@@ -160,41 +172,45 @@ for _ in $(seq 1 60); do
 done
 curl -fsS http://127.0.0.1:8081/health
 
-EXECUTION_VLLM_ARGS=(
-  serve "/workspace/guidance/${EXECUTION_MODEL_DIR}"
-  --served-model-name "${EXECUTION_MODEL_NAME}"
-  --host 127.0.0.1 --port 8000 --dtype "${EXECUTION_VLLM_DTYPE}" --trust-remote-code
-  --tensor-parallel-size 1
-  --gpu-memory-utilization "${EXECUTION_VLLM_GPU_MEMORY_UTILIZATION}"
-  --max-model-len "${EXECUTION_VLLM_MAX_MODEL_LEN}"
-  --max-num-seqs "${EXECUTION_VLLM_MAX_NUM_SEQS}"
-  --download-dir /workspace/guidance/.hf_cache/hub
-)
-if [[ "${EXECUTION_VLLM_ENFORCE_EAGER}" == "1" ]]; then
-  EXECUTION_VLLM_ARGS+=(--enforce-eager)
-fi
-if [[ "${EXECUTION_VLLM_LANGUAGE_MODEL_ONLY}" == "1" ]]; then
-  EXECUTION_VLLM_ARGS+=(--language-model-only)
-fi
-if [[ -n "${EXECUTION_VLLM_REASONING_PARSER}" ]]; then
-  EXECUTION_VLLM_ARGS+=(--reasoning-parser "${EXECUTION_VLLM_REASONING_PARSER}")
-fi
-
-APPTAINERENV_CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" \
-  "${APPTAINER_EXECUTION_BASE[@]}" vllm "${EXECUTION_VLLM_ARGS[@]}" \
-  > "${LOG_DIR}/${EXECUTION_LOG_NAME}-vllm-${RUN_TAG}.log" 2>&1 &
-EXECUTION_PID=$!
-
-for _ in $(seq 1 180); do
-  if curl -fsS http://127.0.0.1:8000/v1/models >/dev/null; then break; fi
-  if ! kill -0 "${EXECUTION_PID}" 2>/dev/null; then
-    echo "Execution vLLM server (${EXECUTION_MODEL_NAME}) exited during startup" >&2
-    tail -200 "${LOG_DIR}/${EXECUTION_LOG_NAME}-vllm-${RUN_TAG}.log" >&2
-    exit 1
+if [[ "${START_EXECUTION_SERVER}" == "1" ]]; then
+  EXECUTION_VLLM_ARGS=(
+    serve "/workspace/guidance/${EXECUTION_MODEL_DIR}"
+    --served-model-name "${EXECUTION_MODEL_NAME}"
+    --host 127.0.0.1 --port 8000 --dtype "${EXECUTION_VLLM_DTYPE}" --trust-remote-code
+    --tensor-parallel-size 1
+    --gpu-memory-utilization "${EXECUTION_VLLM_GPU_MEMORY_UTILIZATION}"
+    --max-model-len "${EXECUTION_VLLM_MAX_MODEL_LEN}"
+    --max-num-seqs "${EXECUTION_VLLM_MAX_NUM_SEQS}"
+    --download-dir /workspace/guidance/.hf_cache/hub
+  )
+  if [[ "${EXECUTION_VLLM_ENFORCE_EAGER}" == "1" ]]; then
+    EXECUTION_VLLM_ARGS+=(--enforce-eager)
   fi
-  sleep 10
-done
-curl -fsS http://127.0.0.1:8000/v1/models
+  if [[ "${EXECUTION_VLLM_LANGUAGE_MODEL_ONLY}" == "1" ]]; then
+    EXECUTION_VLLM_ARGS+=(--language-model-only)
+  fi
+  if [[ -n "${EXECUTION_VLLM_REASONING_PARSER}" ]]; then
+    EXECUTION_VLLM_ARGS+=(--reasoning-parser "${EXECUTION_VLLM_REASONING_PARSER}")
+  fi
+
+  APPTAINERENV_CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" \
+    "${APPTAINER_EXECUTION_BASE[@]}" vllm "${EXECUTION_VLLM_ARGS[@]}" \
+    > "${LOG_DIR}/${EXECUTION_LOG_NAME}-vllm-${RUN_TAG}.log" 2>&1 &
+  EXECUTION_PID=$!
+
+  for _ in $(seq 1 180); do
+    if curl -fsS http://127.0.0.1:8000/v1/models >/dev/null; then break; fi
+    if ! kill -0 "${EXECUTION_PID}" 2>/dev/null; then
+      echo "Execution vLLM server (${EXECUTION_MODEL_NAME}) exited during startup" >&2
+      tail -200 "${LOG_DIR}/${EXECUTION_LOG_NAME}-vllm-${RUN_TAG}.log" >&2
+      exit 1
+    fi
+    sleep 10
+  done
+  curl -fsS http://127.0.0.1:8000/v1/models
+else
+  echo "Using external execution API; local execution vLLM startup is disabled."
+fi
 
 APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
   "${APPTAINER_BASE[@]}" python scripts/smoke_polyomino_frontiercs.py
@@ -213,6 +229,14 @@ if [[ -n "${GROUPS_PER_BATCH_OVERRIDE:-}" ]]; then
 fi
 if [[ -n "${GROUP_SIZE_OVERRIDE:-}" ]]; then
   RECIPE_OVERRIDES+=("ttt.group_size=${GROUP_SIZE_OVERRIDE}")
+fi
+if [[ -n "${EXECUTION_CONCURRENCY_OVERRIDE:-}" ]]; then
+  RECIPE_OVERRIDES+=("llm.execution.concurrency=${EXECUTION_CONCURRENCY_OVERRIDE}")
+fi
+if [[ "${BOOTSTRAP_BEFORE_RUN}" == "1" ]]; then
+  APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
+    "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \
+    --config "${CONFIG}" --bootstrap-only run.output_dir="${OUTPUT_DIR}" "${RECIPE_OVERRIDES[@]}"
 fi
 APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
   "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \

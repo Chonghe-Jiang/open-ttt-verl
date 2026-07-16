@@ -69,23 +69,22 @@ logits/entropy tensors. Historical files under `backup/` are left unchanged.
 
 ## Qwen3.6-27B dense guidance scaling
 
-The current dense actor-scale recipes are:
+The dense actor-scale matrix contains four matched recipes:
 
 - `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_best_child_500step.yaml`
 - `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step.yaml`
 - `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_blended_500step.yaml`
+- `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_blended_500step.yaml`
 
-Both assign four B200s to Qwen3.6-27B FSDP training/rollout and keep
+All four assign four B200s to Qwen3.6-27B FSDP training/rollout and keep
 GPT-OSS-120B isolated on the fifth B200. They use LoRA rank 32, guidance
-temperature 0.9, `entropic_adaptive_beta`, direct best-child PUCT,
-`ttt_reinforce_is`, per-step saves, auto-resume, and one retained checkpoint.
-The launchers default to the validated 8x16 shape by overriding the recipes'
-conservative 8x8 fallback value.
+temperature 0.9, `entropic_adaptive_beta`, and `ttt_reinforce_is`. The launchers
+default to the validated 8x16 shape by overriding the recipes' conservative 8x8
+fallback value.
 
-The blended `summary_only` recipe is a controlled search ablation: after a
-node has been expanded, its PUCT Q value is `0.8 * own_reward + 0.2 *
-best_child_reward`. All non-search settings match the direct-best-child
-`summary_only` recipe, and its dedicated launcher fixes the shape at 8x16.
+The two direct recipes use the best observed child reward as an expanded node's
+PUCT Q. The two blended ablations use `0.8 * own_reward + 0.2 *
+best_child_reward`. Prompt mode and Q mode are therefore independently varied.
 
 `summary_only` uses a 4096-token prompt and 8192-token response budget.
 `code_delta` uses 8192 + 8192 and a 16384-token rollout context so the selected
@@ -93,9 +92,31 @@ parent code remains available to guidance.
 
 Qwen3.6 is a multimodal Gated DeltaNet checkpoint. The recipe therefore
 excludes and freezes the visual tower and asks vLLM to load only the language
-model. Use the two smoke-gated submitters documented in
-[`scripts/README.md`](../../scripts/README.md); do not bypass their one-step
-compatibility and memory tests.
+model. Actor and reference forwards use non-packed batches, while standard
+attention layers use FlashAttention 2. Use the smoke-gated, resumable launchers
+for compatibility testing and continued runs. For a bounded comparison that
+must not write checkpoints, use the four-way 23-hour launcher documented in
+[`scripts/README.md`](../../scripts/README.md).
+
+## One-GPU Qwen3-8B with Evolvent GPT-5.4 execution
+
+These recipes keep the trainable Qwen3-8B actor on one B200 and call GPT-5.4
+through an OpenAI-compatible Evolvent endpoint, so no local execution GPU is
+needed:
+
+- `polyomino_b200_1gpu_qwen3_8b_evolvent_gpt54_batch8_group16_summary_only_entropic_best_child_500step.yaml`
+- `polyomino_b200_1gpu_qwen3_8b_evolvent_gpt54_batch8_group16_summary_only_entropic_best_child_50step_oss_seed_no_ckpt.yaml`
+
+Both use 8 groups x 16 samples, `summary_only`, `entropic_adaptive_beta`, and
+direct best-child PUCT. The first is the smoke recipe and can bootstrap a fresh
+GPT-5.4 seed. The second is the bounded formal recipe: it starts from the
+validated GPT-OSS seed, runs at most 50 steps, and sets `save_freq: -1`.
+
+The API prompt asks GPT-5.4 to think carefully, then return exactly `<solution>`
+and `<summary>`; it does not require a separate execution-thinking block. The
+API key is read from ignored file `.secrets/evolvent_api_key`. Concurrency is
+selected by `scripts/probe_evolvent_gpt54_concurrency.py` and stored in ignored
+runtime file `.runtime/evolvent_gpt54_concurrency`.
 
 ## B200 acceptance and comparison recipes
 

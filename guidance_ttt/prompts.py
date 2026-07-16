@@ -11,11 +11,13 @@ SUPPORTED_PROMPT_MODES = frozenset({PROMPT_MODE_SUMMARY_ONLY, PROMPT_MODE_CODE_D
 EXECUTION_PROMPT_STYLE_LEGACY = "explicit_execution_thinking"
 EXECUTION_PROMPT_STYLE_QWEN_NATIVE = "qwen_native_thinking"
 EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING = "qwen_no_thinking"
+EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING = "gpt_api_brief_thinking"
 SUPPORTED_EXECUTION_PROMPT_STYLES = frozenset(
     {
         EXECUTION_PROMPT_STYLE_LEGACY,
         EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
         EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+        EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING,
     }
 )
 
@@ -306,6 +308,7 @@ Only describe mechanisms that are present in the implementation. If a guidance-s
     if execution_prompt_style in {
         EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
         EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+        EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING,
     }:
         if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
             prompt_style_preamble = (
@@ -313,12 +316,15 @@ Only describe mechanisms that are present in the implementation. If a guidance-s
                 "do not manually emit <think> or <execution_thinking> in the final answer."
             )
             system_suffix = "Reason using Qwen's native thinking channel, then output only the code block and summary."
-        else:
+        elif execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING:
             prompt_style_preamble = (
                 "Thinking mode is disabled. Do not output <think> or <execution_thinking>; respond directly "
                 "with the required solution and summary."
             )
             system_suffix = "Output only the complete solution block and summary block."
+        else:
+            prompt_style_preamble = "Think carefully about how to apply the guidance before producing the improved program."
+            system_suffix = ""
         output_contract = f"""{prompt_style_preamble}
 
 Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.
@@ -369,6 +375,11 @@ Do not include code.
 Any response that does not follow this exact three-block structure should be treated as invalid."""
         system_suffix = "Output execution thinking first, then the code block, then the summary."
 
+    updated_program_requirement = (
+        ""
+        if execution_prompt_style == EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING
+        else " Return one complete updated program, not a patch or diff."
+    )
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -390,26 +401,26 @@ Score direction: {score_direction}.
 # Guidance Adherence Contract
 Treat the guidance as the binding specification for improving the selected parent. Apply its proposed algorithmic mechanisms and strategic refinements as faithfully and completely as possible while preserving the parent candidate's working behavior outside the requested changes.
 
-Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended. Return one complete updated program, not a patch or diff.
+Modify the supplied parent code rather than replacing it with a generic baseline or an unrelated implementation. Preserve its input/output contract and unaffected working mechanisms. Every important actionable component in the guidance must be reflected concretely in the new solution and must interact as intended.{updated_program_requirement}
 
 {contract}
 
 {output_contract}
 """
-    return Prompt(
-        system=(
-            f"You are the execution model. Improve the supplied parent {language_name} candidate by applying "
-            "the guidance, then return one complete runnable candidate.\n\n"
-            "Use the parent code as the implementation baseline. Follow the guidance faithfully, preserve "
+    system = (
+        f"You are the execution model. Improve the supplied parent {language_name} candidate by applying "
+        "the guidance, then return one complete runnable candidate."
+    )
+    if execution_prompt_style != EXECUTION_PROMPT_STYLE_GPT_API_BRIEF_THINKING:
+        system += (
+            "\n\nUse the parent code as the implementation baseline. Follow the guidance faithfully, preserve "
             "unaffected working mechanisms, and keep the required input/output contract. Implement all specified "
             "algorithmic mechanisms and strategic details as precisely as possible. Do not silently omit, replace, "
-            "or substantially simplify any "
-            "important component. If an exact implementation is infeasible, use the closest valid alternative "
-            "and explain the deviation in the summary.\n\n"
+            "or substantially simplify any important component. If an exact implementation is infeasible, use the "
+            "closest valid alternative and explain the deviation in the summary.\n\n"
             + system_suffix
-        ),
-        user=user,
-    )
+        )
+    return Prompt(system=system, user=user)
 
 
 def extract_tag(text: str, tag: str) -> str:

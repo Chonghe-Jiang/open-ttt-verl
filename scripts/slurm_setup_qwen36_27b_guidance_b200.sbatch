@@ -81,20 +81,23 @@ apptainer exec --cleanenv \
   --env PYTHONPATH=/workspace/guidance/.runtime/qwen36-actor-site-packages \
   "${SIF_PATH}" python - <<'PY'
 import inspect
+import flash_attn
 import vllm
 from transformers import Qwen3_5ForConditionalGeneration
 from vllm.engine.arg_utils import EngineArgs
 from vllm.model_executor.layers.fla.ops.utils import input_guard
 
 assert vllm.__version__ == "0.19.0", vllm.__version__
+assert tuple(int(part) for part in flash_attn.__version__.split(".")[:2]) >= (2, 0), flash_attn.__version__
 assert "language_model_only" in inspect.signature(EngineArgs).parameters
 assert Qwen3_5ForConditionalGeneration is not None
 assert input_guard is not None
-print("Qwen3.6-27B actor runtime imports OK")
+print(f"Qwen3.6-27B actor runtime imports OK (flash-attn {flash_attn.__version__})")
 PY
 
 grep -q 'def expand_packed_lora' "${LORA_LAYER}"
 grep -q 'n_slices != len(replacements)' "${LORA_MANAGER}"
 grep -q 'set_triton_allocator(tensor.device)' "${FLA_UTILS}"
 touch "${SITE_PACKAGES}/.qwen36-actor-complete"
+touch "${SITE_PACKAGES}/.qwen36-actor-fa2-nopad-complete"
 echo "Qwen3.6-27B guidance model and actor runtime are ready."

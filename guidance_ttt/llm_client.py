@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 import urllib.error
 import urllib.request
@@ -95,15 +96,26 @@ class OpenAICompatibleLLMClient:
         self.endpoint = str(config.get("endpoint") or config.get("base_url") or os.environ.get("ENDPOINT", "")).rstrip("/")
         api_key_env = str(config.get("api_key_env") or "").strip()
         env_api_key = os.environ.get(api_key_env, "") if api_key_env else ""
-        self.api_key = str(config.get("api_key") or env_api_key or os.environ.get("API_KEY", ""))
+        api_key_file = str(config.get("api_key_file") or "").strip()
+        file_api_key = Path(api_key_file).expanduser().read_text().strip() if api_key_file else ""
+        self.api_key = str(config.get("api_key") or env_api_key or file_api_key or os.environ.get("API_KEY", ""))
         if not self.endpoint or not self.api_key:
             raise ValueError(
                 "OpenAI-compatible executor requires endpoint/base_url and api_key, api_key_env, or ENDPOINT/API_KEY env vars"
             )
         self.timeout_s = float(config.get("timeout_s", 120))
+        self.max_retries = max(0, int(config.get("max_retries", 0)))
+        self.retry_backoff_s = max(0.0, float(config.get("retry_backoff_s", 1.0)))
         self.request_options = {
             key: dict(config[key]) if key == "chat_template_kwargs" else config[key]
-            for key in ("top_p", "top_k", "min_p", "chat_template_kwargs")
+            for key in (
+                "top_p",
+                "top_k",
+                "min_p",
+                "chat_template_kwargs",
+                "reasoning_effort",
+                "verbosity",
+            )
             if key in config
         }
 
@@ -148,12 +160,22 @@ class OpenAICompatibleLLMClient:
                 "Content-Type": "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-                return json.loads(resp.read().decode())
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")[:1000]
-            raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+        for attempt in range(self.max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                    return json.loads(resp.read().decode())
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace")[:1000]
+                retryable = exc.code == 429 or exc.code in {408, 500, 502, 503, 504}
+                if not retryable or attempt >= self.max_retries:
+                    raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after is not None else self.retry_backoff_s * (2**attempt)
+                except ValueError:
+                    delay = self.retry_backoff_s * (2**attempt)
+                time.sleep(max(0.0, delay))
+        raise AssertionError("unreachable")
 
 
 _LOCAL_PIPELINE_CACHE: dict[str, Callable] = {}

@@ -1,14 +1,14 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_blended_500step
+  output_dir: outputs/guidance_ttt/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_blended_500step
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen36_27b_actor_gpt_oss_120b_exec_b200_5gpu_batch8_group8_summary_only_entropic_blended_500step
+  experiment_name: polyomino_qwen36_27b_actor_gpt_oss_120b_exec_b200_5gpu_batch8_group8_code_delta_prompt8192_entropic_blended_500step
   model_path: models/Qwen3.6-27B
   seed: 0
   num_initial_states: 1
   num_steps: 500
   total_epochs: 500
   adv_estimator: entropic_adaptive_beta
-  max_prompt_length: 4096
+  max_prompt_length: 8192
   max_response_length: 8192
   filter_overlong_prompts: false
   truncation: middle
@@ -44,12 +44,11 @@ task:
     total_timeout_s: 340
 
 ttt:
-  prompt_mode: summary_only
+  prompt_mode: code_delta
   groups_per_batch: 8
   group_size: 8
   eval_timeout: 340
   puct_c: 1.0
-  # After a node has children: Q = 0.8 * own reward + 0.2 * best-child reward.
   puct_q_mode: blended
   bootstrap:
     enabled: true
@@ -97,7 +96,7 @@ verl_overrides:
   - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
   - actor_rollout_ref.ref.fsdp_config.param_offload=False
   - actor_rollout_ref.rollout.agent.num_workers=1
-  - actor_rollout_ref.rollout.max_model_len=12288
+  - actor_rollout_ref.rollout.max_model_len=16384
   - actor_rollout_ref.rollout.max_num_seqs=16
   - actor_rollout_ref.rollout.max_num_batched_tokens=32768
   - +actor_rollout_ref.rollout.engine_kwargs.vllm.language_model_only=True
