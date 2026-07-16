@@ -585,11 +585,17 @@ step):
 ```bash
 scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_blended_b200_5gpu_group16_two_day.sh <tag>
 ```
 
-Set `GROUP_SIZE=8` before either command to request the lower-throughput
+Set `GROUP_SIZE=8` before either of the first two commands to request the lower-throughput
 fallback. The stage scripts propagate the selected size to the recipe, smoke
 validator, formal day 1, and formal day 2.
+
+The third command is the controlled `summary_only` PUCT ablation at the fixed
+8x16 shape. It keeps the dense-guidance recipe unchanged except that an
+expanded node uses `0.8 * own_reward + 0.2 * best_child_reward` for its Q
+value instead of using the best-child reward directly.
 
 The setup stage downloads `Qwen/Qwen3.6-27B` into the local model cache and
 prepares an isolated vLLM 0.19 actor runtime. The text-only task freezes and

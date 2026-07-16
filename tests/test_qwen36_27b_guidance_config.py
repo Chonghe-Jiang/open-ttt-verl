@@ -8,6 +8,10 @@ CONFIG = (
     ROOT
     / "guidance_ttt/config/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_best_child_500step.yaml"
 )
+BLENDED_CONFIG = (
+    ROOT
+    / "guidance_ttt/config/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_blended_500step.yaml"
+)
 
 
 def test_qwen36_27b_guidance_preserves_the_summary_only_method():
@@ -67,3 +71,38 @@ def test_qwen36_27b_five_gpu_stage_and_smoke_gated_two_day_chain():
     assert 'group_size="${GROUP_SIZE:-16}"' in submitter
     assert 'GROUP_SIZE_OVERRIDE="${group_size}"' in submitter
     assert "for mode in" not in submitter
+
+
+def test_qwen36_27b_blended_ablation_changes_only_the_puct_q_rule():
+    baseline = yaml.safe_load(CONFIG.read_text())
+    blended = yaml.safe_load(BLENDED_CONFIG.read_text())
+
+    assert blended["ttt"]["puct_q_mode"] == "blended"
+    assert baseline["ttt"]["puct_q_mode"] == "best_child"
+
+    baseline["ttt"].pop("puct_q_mode")
+    blended["ttt"].pop("puct_q_mode")
+    baseline["run"].pop("output_dir")
+    baseline["run"].pop("experiment_name")
+    blended["run"].pop("output_dir")
+    blended["run"].pop("experiment_name")
+    assert blended == baseline
+
+
+def test_qwen36_27b_blended_submitter_uses_group16_and_smoke_gate():
+    stage = (
+        ROOT / "scripts/slurm_polyomino_b200_5gpu_qwen36_27b_guidance_group8_stage.sbatch"
+    ).read_text()
+    submitter = (
+        ROOT
+        / "scripts/submit_qwen36_27b_guidance_blended_b200_5gpu_group16_two_day.sh"
+    ).read_text()
+
+    assert 'CONFIG_OVERRIDE:-${DEFAULT_CONFIG}' in stage
+    assert 'PUCT_Q_MODE_OVERRIDE:-best_child' in stage
+    assert "EXPECTED_PUCT_Q_MODE" in stage
+    assert "GROUP_SIZE_OVERRIDE=16" not in submitter
+    assert "group_size=16" in submitter
+    assert "PUCT_Q_MODE_OVERRIDE=blended" in submitter
+    assert 'dependency="afterok:${smoke}"' in submitter
+    assert 'dependency="afterok:${day1}"' in submitter

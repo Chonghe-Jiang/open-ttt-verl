@@ -42,6 +42,7 @@ Use the dedicated submitters for the dense 27B experiments:
 ```bash
 scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
 scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_blended_b200_5gpu_group16_two_day.sh <tag>
 ```
 
 It assigns GPUs 0-3 to Qwen3.6-27B guidance training/rollout and GPU 4 to the
@@ -54,6 +55,11 @@ The formal stages share a fresh output directory, resume automatically, save
 every step, and retain only the latest checkpoint. The setup uses an isolated
 vLLM 0.19 runtime with the Qwen3.6 packed-LoRA and Gated DeltaNet Triton
 allocator fixes.
+
+The blended submitter is a fixed 8x16 `summary_only` ablation. It changes only
+PUCT Q to `0.8 * own_reward + 0.2 * best_child_reward`; the actor, execution
+model, objective, prompts, sampling temperature, checkpoint policy, and
+smoke-gated two-day continuation match the direct-best-child run.
 
 ## Paper-aligned five-GPU experiments
 

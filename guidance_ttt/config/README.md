@@ -69,10 +69,11 @@ logits/entropy tensors. Historical files under `backup/` are left unchanged.
 
 ## Qwen3.6-27B dense guidance scaling
 
-The current dense actor-scale pair is:
+The current dense actor-scale recipes are:
 
 - `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_best_child_500step.yaml`
 - `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step.yaml`
+- `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_blended_500step.yaml`
 
 Both assign four B200s to Qwen3.6-27B FSDP training/rollout and keep
 GPT-OSS-120B isolated on the fifth B200. They use LoRA rank 32, guidance
@@ -80,6 +81,11 @@ temperature 0.9, `entropic_adaptive_beta`, direct best-child PUCT,
 `ttt_reinforce_is`, per-step saves, auto-resume, and one retained checkpoint.
 The launchers default to the validated 8x16 shape by overriding the recipes'
 conservative 8x8 fallback value.
+
+The blended `summary_only` recipe is a controlled search ablation: after a
+node has been expanded, its PUCT Q value is `0.8 * own_reward + 0.2 *
+best_child_reward`. All non-search settings match the direct-best-child
+`summary_only` recipe, and its dedicated launcher fixes the shape at 8x16.
 
 `summary_only` uses a 4096-token prompt and 8192-token response budget.
 `code_delta` uses 8192 + 8192 and a 16384-token rollout context so the selected
