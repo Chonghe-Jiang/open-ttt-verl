@@ -1,21 +1,73 @@
 import asyncio
+import json
 
 import pytest
 from omegaconf import OmegaConf
+from verl.experimental.agent_loop.agent_loop import truncate_prompt_ids
 
 from guidance_ttt.agent_loop import (
     EXECUTION_SUMMARY_SECTIONS,
     AgentLoopBase,
     GuidanceExecutionAgentLoop,
+    _GUIDANCE_LIBRARIES,
+    _shared_guidance_library,
     _normalize_task_config,
     _verifier_config_from_task_config,
     _verify_execution_without_fallback,
     build_agent_loop_output,
     build_execution_summary,
 )
-from guidance_ttt.state import LLMRequest, LLMResponse, VerificationResult
+from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.state import LLMRequest, LLMResponse, LibraryEntry, LibraryNode, VerificationResult
 from guidance_ttt.tasks import get_task_spec
 from guidance_ttt.verifier.frontiercs_adapter import FrontierCSResult
+
+
+@pytest.mark.parametrize(
+    ("truncation", "expected"),
+    [
+        ("left", [4, 5, 6, 7]),
+        ("right", [0, 1, 2, 3]),
+        ("middle", [0, 1, 6, 7]),
+    ],
+)
+def test_dynamic_agent_loop_prompt_is_truncated_before_generation(truncation, expected):
+    assert truncate_prompt_ids(list(range(8)), max_length=4, truncation=truncation) == expected
+
+
+def test_dynamic_agent_loop_prompt_error_is_actionable():
+    with pytest.raises(ValueError, match=r"6 tokens.*prompt_length=4.*before generating"):
+        truncate_prompt_ids(list(range(6)), max_length=4, truncation="error")
+
+
+def test_dynamic_agent_loop_prompt_within_budget_is_unchanged():
+    prompt_ids = [1, 2, 3]
+
+    assert truncate_prompt_ids(prompt_ids, max_length=4, truncation="middle") is prompt_ids
+
+
+@pytest.mark.anyio
+async def test_apply_chat_template_truncates_dynamic_prompt_before_it_is_returned(monkeypatch):
+    class StubAgentLoop(AgentLoopBase):
+        async def run(self, sampling_params, **kwargs):
+            raise NotImplementedError
+
+    loop = StubAgentLoop.__new__(StubAgentLoop)
+    loop.processor = None
+    loop.tokenizer = object()
+    loop.apply_chat_template_kwargs = {}
+    loop.system_prompt = []
+    loop.rollout_config = OmegaConf.create({"prompt_length": 4})
+    loop.data_config = OmegaConf.create({"truncation": "middle"})
+    loop.loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        "verl.experimental.agent_loop.agent_loop.apply_chat_template",
+        lambda *args, **kwargs: list(range(8)),
+    )
+
+    prompt_ids = await loop.apply_chat_template([{"role": "user", "content": "ignored"}])
+
+    assert prompt_ids == [0, 1, 6, 7]
 
 
 def test_agent_loop_output_trains_only_guidance_tokens():
@@ -32,6 +84,54 @@ def test_agent_loop_output_trains_only_guidance_tokens():
     assert output.response_mask == [1, 1]
     assert output.reward_score == 3.0
     assert output.extra_fields["solution"] == "def run(): pass"
+
+
+def test_shared_guidance_library_reuses_one_archive_instance(tmp_path):
+    path = tmp_path / "library.json"
+    root = LibraryNode(
+        id="root",
+        problem_id="test",
+        timestep=0,
+        entry_id="seed",
+        value=1.0,
+        raw_score=1.0,
+        visits=0,
+        parent_id=None,
+    )
+    entry = LibraryEntry(
+        id="seed",
+        parent_id=None,
+        problem_id="test",
+        timestep=0,
+        guidance="seed",
+        execution_thinking="",
+        solution="int main() {}",
+        verifier_reward=1.0,
+        verifier_raw_score=1.0,
+        verifier_status="valid",
+        verifier_message="ok",
+        summary="seed",
+        reusable_idea="seed",
+        failure_mode=None,
+    )
+    config = {
+        "rollout_n": 8,
+        "puct_c": 1.0,
+        "puct_q_mode": "best_child",
+        "max_buffer_size": 1000,
+        "topk_children": 2,
+    }
+    GuidanceLibrary(path, initial_nodes=[root], **config)
+    # Attach the seed entry through the on-disk representation used by tests.
+    data = json.loads(path.read_text())
+    data["entries"] = {entry.id: entry.to_dict()}
+    path.write_text(json.dumps(data))
+    _GUIDANCE_LIBRARIES.pop(str(path.resolve()), None)
+
+    first = _shared_guidance_library(path, config)
+    second = _shared_guidance_library(path, config)
+
+    assert first is second
 
 
 def test_verification_result_for_execution_error_has_zero_reward():

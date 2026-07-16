@@ -52,6 +52,43 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 DEFAULT_ROUTING_CACHE_SIZE = 10000
+PROMPT_TRUNCATION_MODES = frozenset({"left", "right", "middle", "error"})
+
+
+def truncate_prompt_ids(prompt_ids: list[int], *, max_length: int, truncation: str) -> list[int]:
+    """Apply the configured prompt-length policy before an agent-loop generation.
+
+    ``PreTrainedTokenizer.pad`` does not truncate sequences longer than
+    ``max_length``. Agent-loop prompts therefore need to be bounded before
+    they are sent to the rollout server; truncating only while assembling the
+    training batch would make the response conditional on a different prompt
+    from the one used to compute its training log probabilities.
+    """
+    if max_length <= 0:
+        raise ValueError(f"Agent-loop prompt max_length must be positive, got {max_length}")
+    if truncation not in PROMPT_TRUNCATION_MODES:
+        raise ValueError(
+            f"Unknown agent-loop prompt truncation mode {truncation!r}; "
+            f"expected one of {sorted(PROMPT_TRUNCATION_MODES)}"
+        )
+
+    prompt_length = len(prompt_ids)
+    if prompt_length <= max_length:
+        return prompt_ids
+    if truncation == "error":
+        raise ValueError(
+            f"Agent-loop prompt has {prompt_length} tokens, exceeding the configured "
+            f"prompt_length={max_length}. Set data.truncation to left, right, or middle, "
+            "or increase the prompt budget before generating the rollout."
+        )
+    if truncation == "left":
+        return prompt_ids[-max_length:]
+    if truncation == "right":
+        return prompt_ids[:max_length]
+
+    left_length = max_length // 2
+    right_length = max_length - left_length
+    return prompt_ids[:left_length] + prompt_ids[-right_length:]
 
 
 @ray.remote
@@ -354,6 +391,22 @@ class AgentLoopBase(ABC):
         if remove_system_prompt:
             prompt_ids = prompt_ids[len(self.system_prompt) :]
 
+        prompt_length = int(self.rollout_config.prompt_length)
+        truncation = str(self.data_config.get("truncation", "error"))
+        original_length = len(prompt_ids)
+        prompt_ids = truncate_prompt_ids(
+            prompt_ids,
+            max_length=prompt_length,
+            truncation=truncation,
+        )
+        if len(prompt_ids) != original_length:
+            logger.warning(
+                "Truncated dynamic agent-loop prompt from %s to %s tokens with policy=%s before generation",
+                original_length,
+                len(prompt_ids),
+                truncation,
+            )
+
         return prompt_ids
 
     @abstractmethod
@@ -591,17 +644,30 @@ class AgentLoopWorker:
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
 
         # TODO(wuxibin): remove padding and use tensordict.
+        prompt_length = int(self.rollout_config.prompt_length)
+        if len(output.prompt_ids) > prompt_length:
+            raise ValueError(
+                f"Agent loop returned an overlong prompt ({len(output.prompt_ids)} tokens; "
+                f"configured prompt_length={prompt_length}). Dynamic prompts must be truncated "
+                "before generation so rollout and training contexts remain identical."
+            )
+
         self.tokenizer.padding_side = "left"
         prompt_output = self.tokenizer.pad(
             {"input_ids": output.prompt_ids},
             padding="max_length",
-            max_length=self.rollout_config.prompt_length,
+            max_length=prompt_length,
             return_tensors="pt",
             return_attention_mask=True,
         )
         if prompt_output["input_ids"].dim() == 1:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
             prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
+        if prompt_output["input_ids"].shape[-1] != prompt_length:
+            raise RuntimeError(
+                "Agent-loop prompt padding produced an unexpected width: "
+                f"actual={prompt_output['input_ids'].shape[-1]}, expected={prompt_length}"
+            )
 
         self.tokenizer.padding_side = "right"
         response_output = self.tokenizer.pad(

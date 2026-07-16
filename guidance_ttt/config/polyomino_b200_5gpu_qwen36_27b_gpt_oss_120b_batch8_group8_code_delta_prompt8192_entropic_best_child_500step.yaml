@@ -1,19 +1,19 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_batch8_group8_code_delta_entropic_best_child_500step
+  output_dir: outputs/guidance_ttt/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen3_8b_actor_gpt_oss_120b_exec_b200_2gpu_batch8_group8_code_delta_entropic_best_child_500step
-  model_path: models/Qwen3-8B
+  experiment_name: polyomino_qwen36_27b_actor_gpt_oss_120b_exec_b200_5gpu_batch8_group8_code_delta_prompt8192_entropic_best_child_500step
+  model_path: models/Qwen3.6-27B
   seed: 0
   num_initial_states: 1
   num_steps: 500
   total_epochs: 500
   adv_estimator: entropic_adaptive_beta
-  max_prompt_length: 12288
-  max_response_length: 4096
+  max_prompt_length: 8192
+  max_response_length: 8192
   filter_overlong_prompts: false
   truncation: middle
   learning_rate: 4.0e-5
-  ppo_mini_batch_size: 8
+  ppo_mini_batch_size: 4
   ppo_micro_batch_size_per_gpu: 2
   use_kl_loss: true
   kl_loss_coef: 0.05
@@ -21,7 +21,7 @@ run:
   temperature: 0.9
   tensor_model_parallel_size: 1
   gpu_memory_utilization: 0.7
-  n_gpus_per_node: 1
+  n_gpus_per_node: 4
   nnodes: 1
   save_freq: 1
   test_freq: -1
@@ -73,6 +73,8 @@ verl_overrides:
   - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
   - actor_rollout_ref.model.lora_rank=32
   - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.model.exclude_modules='.*visual.*'
+  - actor_rollout_ref.actor.freeze_vision_tower=True
   - actor_rollout_ref.rollout.tensor_model_parallel_size=1
   - actor_rollout_ref.rollout.load_format=safetensors
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
@@ -93,14 +95,17 @@ verl_overrides:
   - actor_rollout_ref.rollout.max_model_len=16384
   - actor_rollout_ref.rollout.max_num_seqs=16
   - actor_rollout_ref.rollout.max_num_batched_tokens=32768
-  - actor_rollout_ref.rollout.enforce_eager=False
+  - +actor_rollout_ref.rollout.engine_kwargs.vllm.language_model_only=True
+  - actor_rollout_ref.rollout.enforce_eager=True
   - actor_rollout_ref.actor.use_torch_compile=False
   - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
   - actor_rollout_ref.ref.use_torch_compile=False
   - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
-  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  # Qwen3.6-27B's 248320 x 5120 bf16 embedding is ~2.37 GiB, so the
+  # FSDP-to-vLLM weight-transfer bucket must be larger than the 2 GiB default.
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096
   - trainer.resume_mode=auto
   - trainer.max_actor_ckpt_to_keep=1
   - trainer.max_critic_ckpt_to_keep=1

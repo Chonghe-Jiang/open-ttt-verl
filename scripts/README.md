@@ -35,6 +35,26 @@ the guidance actor remains on the Apptainer image's verl-compatible stack. The
 Coder-Next setup additionally verifies the `Qwen3NextForCausalLM` FP8 model
 configuration before enabling its smoke jobs.
 
+## Five-GPU Qwen3.6-27B guidance scaling
+
+Use the dedicated submitters for the dense 27B experiments:
+
+```bash
+scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
+```
+
+It assigns GPUs 0-3 to Qwen3.6-27B guidance training/rollout and GPU 4 to the
+GPT-OSS-120B execution server. Each chain is `setup -> 1-step smoke -> 23h day1
+-> 23h day2`; every dependency uses `afterok`. The default smoke and formal
+shape is the validated 8x16 setting. Use `GROUP_SIZE=8 <command>` for the
+fallback shape.
+
+The formal stages share a fresh output directory, resume automatically, save
+every step, and retain only the latest checkpoint. The setup uses an isolated
+vLLM 0.19 runtime with the Qwen3.6 packed-LoRA and Gated DeltaNet Triton
+allocator fixes.
+
 ## Paper-aligned five-GPU experiments
 
 The generic launcher requires explicit environment values. Use a fresh output
@@ -69,10 +89,11 @@ sbatch --dependency="afterok:$FIRST" \
 Substitute the matching `prompt_refinement` recipe and
 `EXPECTED_PROMPT_MODE=summary_only` for the summary-only condition.
 
-Each five-GPU task currently requests 96 CPUs and 768 GiB of host memory because
-large JSON libraries and concurrent verifier work approached the previous
-memory limit. This resource shape can wait longer than GPU count alone would
-suggest; reduce it only after the library persistence path is more efficient.
+Each five-GPU task currently requests 96 CPUs and 768 GiB of host memory. The
+agent loop now shares one locked in-process archive across concurrent
+trajectories, removing the previous per-trajectory `library.json` duplication.
+The allocation remains conservative for model workers, FrontierCS, and Ray; it
+can wait longer than GPU count alone would suggest.
 
 ## Acceptance jobs
 

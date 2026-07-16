@@ -51,6 +51,8 @@ class ExecutionVerification:
 
 _EXECUTION_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
 _EXECUTION_SEMAPHORES_LOCK = threading.Lock()
+_GUIDANCE_LIBRARIES: dict[str, GuidanceLibrary] = {}
+_GUIDANCE_LIBRARIES_LOCK = threading.Lock()
 
 
 def _execution_semaphore_key(config: dict[str, Any]) -> str:
@@ -63,6 +65,27 @@ def _execution_semaphore_key(config: dict[str, Any]) -> str:
         sort_keys=True,
         default=str,
     )
+
+
+def _shared_guidance_library(path: str | Path, runtime_config: dict[str, Any]) -> GuidanceLibrary:
+    """Reuse one JSON archive per AgentLoopWorker process.
+
+    A batch can run 64-128 concurrent trajectories. Constructing one
+    ``GuidanceLibrary`` per trajectory decoded the complete, eventually
+    gigabyte-sized archive that many times and caused AgentLoopWorker RSS to
+    grow past 100 GiB. GuidanceLibrary already serializes access with its
+    thread/file locks, so sharing it is both safe and substantially cheaper.
+    """
+    key = str(Path(path).expanduser().resolve())
+    with _GUIDANCE_LIBRARIES_LOCK:
+        library = _GUIDANCE_LIBRARIES.get(key)
+        if library is None:
+            library = GuidanceLibrary(path, **runtime_config)
+            library.assert_runtime_config(**runtime_config)
+            _GUIDANCE_LIBRARIES[key] = library
+        else:
+            library.assert_runtime_config(**runtime_config)
+        return library
 
 
 try:
@@ -240,8 +263,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             "max_buffer_size": int(extra_info.get("max_buffer_size", 1000)),
             "topk_children": int(extra_info.get("topk_children", 2)),
         }
-        library = GuidanceLibrary(library_path, **library_runtime_config)
-        library.assert_runtime_config(**library_runtime_config)
+        library = _shared_guidance_library(library_path, library_runtime_config)
         selected_node = library.acquire_group(
             group_uid,
             visible_timestep_exclusive=int(global_step),
@@ -293,25 +315,32 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         execution_text = ""
         execution_reasoning = ""
         execution_error: str | None = None
-        try:
-            execution_response = await self._complete_execution(
-                LLMRequest(
-                    system=execution_prompt.system,
-                    user=execution_prompt.user,
-                    model=self.execution_llm_config.get("model", "mock-exec"),
-                    temperature=float(self.execution_llm_config.get("temperature", 0.2)),
-                    max_tokens=_execution_max_tokens(self.execution_llm_config),
-                    metadata={"purpose": "execution"},
+        if guidance_format_ok:
+            try:
+                execution_response = await self._complete_execution(
+                    LLMRequest(
+                        system=execution_prompt.system,
+                        user=execution_prompt.user,
+                        model=self.execution_llm_config.get("model", "mock-exec"),
+                        temperature=float(self.execution_llm_config.get("temperature", 0.2)),
+                        max_tokens=_execution_max_tokens(self.execution_llm_config),
+                        metadata={"purpose": "execution"},
+                    )
                 )
-            )
-            execution_text = execution_response.text
-            execution_reasoning = execution_response.reasoning
-            execution_response_metadata = execution_response.metadata
-            execution_response_usage = execution_response.usage
-        except Exception as exc:
+                execution_text = execution_response.text
+                execution_reasoning = execution_response.reasoning
+                execution_response_metadata = execution_response.metadata
+                execution_response_usage = execution_response.usage
+            except Exception as exc:
+                execution_response_metadata = {}
+                execution_response_usage = {}
+                execution_error = str(exc)
+        else:
             execution_response_metadata = {}
             execution_response_usage = {}
-            execution_error = str(exc)
+            execution_error = (
+                "guidance_format_error: no complete terminal <guidance> block after two generation attempts"
+            )
         execution_result = _verify_execution_without_fallback(
             execution_text=execution_text,
             guidance=guidance,
@@ -392,27 +421,16 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "group_uid": group_uid,
                 "selected_node_id": selected_node.id,
                 "child_node_id": child.id,
-                "guidance": guidance,
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
                 "guidance_prompt_tokens": len(prompt_ids),
                 "guidance_response_tokens": len(response_ids),
-                "raw_guidance_with_specials": guidance_generation.raw_text,
                 "guidance_stop_reason": guidance_generation.stop_reason,
-                "raw_guidance_text": guidance_text,
-                "execution_text": execution_text,
-                "execution_fallback_used": execution_result.fallback_used,
-                "execution_fallback_reason": execution_result.fallback_reason,
-                "original_execution_text": execution_result.original_execution_text,
-                "execution_thinking": execution_thinking,
-                "solution": solution,
-                "verification": verification.to_dict(),
-                "summary": summary,
-                "raw_model_summary": raw_model_summary,
+                "verifier_status": verification.status,
+                "verifier_raw_score": verification.raw_score,
                 "prompt_mode": self.prompt_mode,
                 "summary_semantics": summary_semantics,
                 "library_entry_id": entry.id,
-                "task": task_config,
             },
         )
 
@@ -451,7 +469,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         first_response_ids = first.token_ids[: self.response_length]
         first_text = _decode_response(self.tokenizer, first_response_ids)
         first_raw_text = _decode_response_with_specials(self.tokenizer, first_response_ids)
-        if first_text.strip():
+        _first_guidance, first_format_ok = extract_guidance_or_format_error(first_text)
+        if first_format_ok:
             return GuidanceGeneration(
                 text=first_text,
                 response_ids=first_response_ids,

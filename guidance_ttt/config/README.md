@@ -5,7 +5,7 @@ Modal, Erdos, smoke, and debugging recipes live in `backup/`. Recipe filenames
 encode the platform, allocation, actor/execution models, batch/group shape,
 prompt mode, and run length.
 
-## Recommended B200 long runs
+## Established B200 long runs
 
 The current paper-aligned experiments all use four training B200s and one
 GPT-OSS-120B execution B200:
@@ -51,6 +51,45 @@ styles set `chat_template_kwargs.enable_thinking: false` and require exactly
 token cap (`max_tokens: null`). Use the paired submitters in
 [`scripts/README.md`](../../scripts/README.md) rather than submitting these
 YAML files directly, so the smoke and continuation dependencies are preserved.
+
+The two modes use different actor token budgets. `summary_only` keeps the
+original 4096-token prompt and 8192-token response limits. `code_delta` carries
+the selected candidate's complete source code, so it reserves 12288 tokens for
+the prompt and 4096 for the guidance response, preserving the same 16384-token
+total context. Dynamic agent-loop prompts are bounded before rollout generation
+with `truncation: middle`; this keeps the prompt seen during sampling identical
+to the prompt used for training and prevents mixed-width batch assembly when a
+candidate grows beyond the configured budget.
+
+All active training recipes set
+`actor_rollout_ref.rollout.free_cache_engine=True`. The rollout engine releases
+its KV cache before actor log-probability and update phases, avoiding overlap
+between a large vLLM cache allocation and the training model's temporary
+logits/entropy tensors. Historical files under `backup/` are left unchanged.
+
+## Qwen3.6-27B dense guidance scaling
+
+The current dense actor-scale pair is:
+
+- `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_summary_only_entropic_best_child_500step.yaml`
+- `polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_batch8_group8_code_delta_prompt8192_entropic_best_child_500step.yaml`
+
+Both assign four B200s to Qwen3.6-27B FSDP training/rollout and keep
+GPT-OSS-120B isolated on the fifth B200. They use LoRA rank 32, guidance
+temperature 0.9, `entropic_adaptive_beta`, direct best-child PUCT,
+`ttt_reinforce_is`, per-step saves, auto-resume, and one retained checkpoint.
+The launchers default to the validated 8x16 shape by overriding the recipes'
+conservative 8x8 fallback value.
+
+`summary_only` uses a 4096-token prompt and 8192-token response budget.
+`code_delta` uses 8192 + 8192 and a 16384-token rollout context so the selected
+parent code remains available to guidance.
+
+Qwen3.6 is a multimodal Gated DeltaNet checkpoint. The recipe therefore
+excludes and freezes the visual tower and asks vLLM to load only the language
+model. Use the two smoke-gated submitters documented in
+[`scripts/README.md`](../../scripts/README.md); do not bypass their one-step
+compatibility and memory tests.
 
 ## B200 acceptance and comparison recipes
 

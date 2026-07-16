@@ -30,6 +30,15 @@ CONFIG_QWEN14B_GROUP32_50STEP_PATH = (
 )
 
 
+def test_active_training_configs_release_rollout_cache_between_phases():
+    config_dir = ROOT / "guidance_ttt/config"
+    active_configs = sorted(config_dir.glob("*.yaml"))
+
+    assert active_configs
+    for path in active_configs:
+        assert "actor_rollout_ref.rollout.free_cache_engine=False" not in path.read_text(), path.name
+
+
 def test_b200_smoke_preserves_full_8x16_one_step_shape():
     config = yaml.safe_load(CONFIG_PATH.read_text())
 
@@ -327,6 +336,10 @@ def test_qwen35_9b_two_gpu_group8_smokes_preserve_full_method_and_lora():
             in config["verl_overrides"]
         )
         assert "actor_rollout_ref.rollout.enforce_eager=False" in config["verl_overrides"]
+        if mode == "code_delta":
+            assert config["run"]["max_prompt_length"] == 12288
+            assert config["run"]["max_response_length"] == 4096
+            assert config["run"]["truncation"] == "middle"
 
     stage = (ROOT / "scripts/slurm_polyomino_b200_2gpu_qwen35_9b_group8_stage.sbatch").read_text()
     formal = (ROOT / "scripts/submit_qwen35_9b_b200_2gpu_group8_formal.sh").read_text()
@@ -366,6 +379,10 @@ def test_qwen3_8b_two_gpu_group8_two_day_pipelines_match_paper_method():
         assert "trainer.resume_mode=auto" in config["verl_overrides"]
         assert "trainer.max_actor_ckpt_to_keep=1" in config["verl_overrides"]
         assert "trainer.max_critic_ckpt_to_keep=1" in config["verl_overrides"]
+        if mode == "code_delta":
+            assert config["run"]["max_prompt_length"] == 12288
+            assert config["run"]["max_response_length"] == 4096
+            assert config["run"]["truncation"] == "middle"
 
     main = (ROOT / "guidance_ttt/main_erdos.py").read_text()
     assert "+data.apply_chat_template_kwargs.enable_thinking=True" in main

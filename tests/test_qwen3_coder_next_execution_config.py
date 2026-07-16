@@ -31,6 +31,15 @@ def test_coder_next_variants_preserve_the_qwen3_8b_training_method():
         assert "trainer.max_actor_ckpt_to_keep=1" in config["verl_overrides"]
 
 
+def test_coder_next_code_delta_reserves_more_context_for_growing_source_code():
+    run = yaml.safe_load(CONFIGS["code_delta"].read_text())["run"]
+
+    assert run["max_prompt_length"] == 12288
+    assert run["max_response_length"] == 4096
+    assert run["max_prompt_length"] + run["max_response_length"] == 16384
+    assert run["truncation"] == "middle"
+
+
 def test_coder_next_execution_is_fp8_and_non_thinking():
     for path in CONFIGS.values():
         execution = yaml.safe_load(path.read_text())["llm"]["execution"]
@@ -38,7 +47,8 @@ def test_coder_next_execution_is_fp8_and_non_thinking():
         assert execution["model"] == "Qwen/Qwen3-Coder-Next-FP8"
         assert execution["prompt_style"] == "qwen_no_thinking"
         assert execution["chat_template_kwargs"] == {"enable_thinking": False}
-        assert execution["temperature"] == 0.6
+        expected_temperature = 0.0 if path == CONFIGS["summary_only"] else 0.6
+        assert execution["temperature"] == expected_temperature
         assert execution["top_p"] == 0.95
         assert execution["top_k"] == 20
         assert execution["min_p"] == 0.0

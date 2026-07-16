@@ -8,10 +8,10 @@ run:
   num_steps: 500
   total_epochs: 500
   adv_estimator: entropic_adaptive_beta
-  max_prompt_length: 8192
-  max_response_length: 8192
+  max_prompt_length: 12288
+  max_response_length: 4096
   filter_overlong_prompts: false
-  truncation: error
+  truncation: middle
   learning_rate: 4.0e-5
   ppo_mini_batch_size: 8
   ppo_micro_batch_size_per_gpu: 2
@@ -78,7 +78,7 @@ verl_overrides:
   - actor_rollout_ref.rollout.tensor_model_parallel_size=1
   - actor_rollout_ref.rollout.load_format=safetensors
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
-  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.free_cache_engine=True
   - actor_rollout_ref.rollout.layered_summon=False
   - actor_rollout_ref.rollout.top_p=0.95
   - actor_rollout_ref.rollout.val_kwargs.do_sample=False

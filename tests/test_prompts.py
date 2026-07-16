@@ -955,6 +955,21 @@ Hypothesis: try skyline packing.
     assert guidance == "Hypothesis: try skyline packing."
 
 
+def test_guidance_extraction_uses_terminal_block_after_literal_tags_in_reasoning():
+    text = """Here's a thinking process:
+The contract asks for a <guidance> block, so I must not forget <guidance>.
+I will now provide the actual answer.
+
+<guidance>
+Use contact-point placement with one bounded compaction pass.
+</guidance>"""
+
+    guidance, ok = extract_guidance_or_format_error(text)
+
+    assert ok is True
+    assert guidance == "Use contact-point placement with one bounded compaction pass."
+
+
 def test_guidance_extraction_rejects_empty_nested_guidance_tags():
     text = """<think>
 </think>

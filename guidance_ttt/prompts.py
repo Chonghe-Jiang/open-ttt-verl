@@ -497,7 +497,37 @@ def extract_text_outside_tag(text: str, tag: str) -> str:
 
 
 def extract_guidance_or_format_error(text: str) -> tuple[str, bool]:
-    guidance = extract_tag_or_none(text, "guidance")
+    # Qwen thinking traces can discuss the requested XML contract literally,
+    # leaving unmatched ``<guidance>`` strings before the actual final answer.
+    # Parsing from the first opening tag then rejects a perfectly valid terminal
+    # block and, worse, sends the formatting fallback to the execution model.
+    # Match tags with a stack and select the complete block whose closing tag is
+    # latest in the response. This also preserves support for redundant nested
+    # guidance tags emitted by some chat templates.
+    lower_text = text.lower()
+    open_tag = "<guidance>"
+    close_tag = "</guidance>"
+    stack: list[int] = []
+    complete_blocks: list[tuple[int, int, int]] = []
+    cursor = 0
+    while cursor < len(text):
+        next_open = lower_text.find(open_tag, cursor)
+        next_close = lower_text.find(close_tag, cursor)
+        if next_open == -1 and next_close == -1:
+            break
+        if next_open != -1 and (next_close == -1 or next_open < next_close):
+            stack.append(next_open + len(open_tag))
+            cursor = next_open + len(open_tag)
+            continue
+        if stack:
+            value_start = stack.pop()
+            complete_blocks.append((next_close + len(close_tag), value_start, next_close))
+        cursor = next_close + len(close_tag)
+
+    guidance = None
+    if complete_blocks:
+        _end, value_start, value_end = max(complete_blocks, key=lambda block: block[0])
+        guidance = text[value_start:value_end].strip()
     if guidance is not None:
         unwrapped_guidance = _unwrap_redundant_tag(guidance, "guidance")
         if unwrapped_guidance:
@@ -510,9 +540,9 @@ def _guidance_format_error() -> tuple[str, bool]:
     return (
         "Hypothesis: The guidance model did not emit a valid <guidance> block.\n"
         "Plan:\n"
-        "1. Treat this attempt as a formatting failure because no text was found outside the thinking block.\n"
-        "2. Retry with an explicit tagged guidance response on the next rollout.\n"
-        "What to preserve: The selected library context and Erdos verifier constraints.\n"
+        "1. Treat this attempt as a formatting failure because no complete terminal guidance block was found.\n"
+        "2. Retry with an explicit tagged guidance response.\n"
+        "What to preserve: The selected library context and active task constraints.\n"
         "What to change: Emit exactly one tagged guidance block after any thinking.\n"
         "Expected verifier signal: formatting_error",
         False,

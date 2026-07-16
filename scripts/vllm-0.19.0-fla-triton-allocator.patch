@@ -1,0 +1,23 @@
+diff --git a/vllm/model_executor/layers/fla/ops/utils.py b/vllm/model_executor/layers/fla/ops/utils.py
+--- a/vllm/model_executor/layers/fla/ops/utils.py
++++ b/vllm/model_executor/layers/fla/ops/utils.py
+@@ -19,4 +19,5 @@ import torch
+ from vllm.platforms import current_platform
+ from vllm.triton_utils import triton
+-
++from vllm.triton_utils.allocation import set_triton_allocator
++
+ logger = logging.getLogger(__name__)
+@@ -106,3 +107,8 @@ def input_guard(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
+                 tensor = value
+                 break
+-
++        # Some Gated DeltaNet Triton kernels allocate global scratch space at
++        # launch time.  Colocated vLLM workers do not install an allocator on
++        # this path, which makes Qwen3.5/3.6 fail on the first real prefill.
++        if tensor is not None and tensor.device.type == "cuda":
++            set_triton_allocator(tensor.device)
++
+         if tensor is not None:
+             ctx = torch.accelerator.device_index(tensor.device.index)
+         else:

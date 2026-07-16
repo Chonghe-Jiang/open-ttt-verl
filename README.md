@@ -63,11 +63,16 @@ At rollout time in `code_delta` mode:
 5. The new entry is written as a child of the selected PUCT node. Its complete
    solution and raw delta summary are stored separately in `library.json`, along
    with verifier and execution audit metadata.
-6. GRPO/verl assigns the verifier reward to the guidance response tokens only;
-   execution-model tokens are not trained.
+6. The current recipes compute within-group `entropic_adaptive_beta`
+   advantages, then apply the `ttt_reinforce_is` policy loss to guidance
+   response tokens only. Execution-model tokens are never trained.
 
-For current Polyomino Modal experiments, the recommended path is the validated
-3xH200 code-delta recipe:
+Expanded PUCT nodes use their best observed child reward directly as Q. The
+legacy GRPO advantage estimator and blended `0.8 * parent + 0.2 * best_child`
+Q rule remain available only in explicitly selected comparison recipes.
+
+For historical Polyomino Modal experiments, the validated 3xH200 code-delta
+recipe is:
 
 ```bash
 WORKSPACE=<modal-workspace-name-or-id> \
@@ -474,6 +479,7 @@ current workflow families are:
 | Five-GPU training | 5xB200 | Qwen3-8B 8x64 or Qwen3-14B 8x32 on GPUs 0-3 | GPT-OSS-120B on GPU 4 | Long experiments |
 | Four-GPU shared execution | 4xB200 | Qwen3-8B on GPUs 0-3, 8x32 | Qwen3-8B colocated on GPU 3 | Experimental Qwen execution smoke |
 | Two-GPU execution matrix | 2xB200 | Qwen3-8B on GPU 0, 8x8 | GPT-OSS-120B, Qwen3.6-35B-A3B, or Qwen3-Coder-Next-FP8 on GPU 1 | Smoke-gated, resumable two-day runs |
+| Five-GPU dense guidance | 5xB200 | Qwen3.6-27B on GPUs 0-3, validated at 8x16 | GPT-OSS-120B on GPU 4 | Current actor-scaling runs in both communication modes |
 
 The four recommended long-run recipes use the adaptive entropic advantage
 estimator and direct best-child PUCT Q value. They cover Qwen3-8B/Qwen3-14B
@@ -543,6 +549,13 @@ only the latest actor/critic checkpoint. All use 8 groups x 8 rollouts,
 `entropic_adaptive_beta`, direct best-child PUCT Q values, and the same
 `ttt_reinforce_is` policy-loss path as the larger B200 experiments.
 
+Because `code_delta` includes the selected candidate's source code in the
+guidance prompt, its actor budget is 12288 prompt tokens plus 4096 response
+tokens. `summary_only` uses 4096 plus 8192. Dynamic prompts are truncated, when
+necessary, before rollout generation rather than during batch assembly, so the
+sampling and training contexts remain identical while the total context stays
+within 16384 tokens.
+
 | Execution model | Prompt style | Submitter |
 | --- | --- | --- |
 | GPT-OSS-120B | explicit execution thinking | `scripts/submit_qwen3_8b_b200_2gpu_group8_two_day.sh` |
@@ -560,6 +573,30 @@ configuration against the isolated vLLM 0.19 serving runtime. The actor stays
 on the image's verl-compatible runtime; the two stacks are deliberately not
 mixed.
 
+### Qwen3.6-27B guidance scaling
+
+The dense Qwen3.6-27B guidance experiment uses four B200s for the trainable
+actor and colocated rollout engines plus one B200 for GPT-OSS-120B execution.
+Both `summary_only` and `code_delta` preserve the same RL/search method and
+submit a strict one-step smoke gate before two resumable 23-hour stages. The
+default is the cluster-validated 8 groups x 16 rollouts (128 trajectories per
+step):
+
+```bash
+scripts/submit_qwen36_27b_guidance_b200_5gpu_group8_two_day.sh <tag>
+scripts/submit_qwen36_27b_guidance_code_delta_prompt8192_b200_5gpu_group8_two_day.sh <tag>
+```
+
+Set `GROUP_SIZE=8` before either command to request the lower-throughput
+fallback. The stage scripts propagate the selected size to the recipe, smoke
+validator, formal day 1, and formal day 2.
+
+The setup stage downloads `Qwen/Qwen3.6-27B` into the local model cache and
+prepares an isolated vLLM 0.19 actor runtime. The text-only task freezes and
+excludes the visual tower, while the rollout engine uses language-model-only
+loading. Qwen3.6 Gated DeltaNet rollout also carries the packed-LoRA and Triton
+scratch-allocator fixes required by the colocated verl path.
+
 ## Design Notes
 
 - PUCT selects one library node before prompt assembly.
@@ -575,3 +612,13 @@ mixed.
 - The verifier reward is assigned only to guidance model response tokens.
 - Execution failures are environment outcomes and become library entries with reward `0.0`.
 - The execution-provided summary is stored with verifier reward/status as structured library metadata; the summary should not claim verifier success before verification runs.
+- Guidance extraction selects the final complete `<guidance>` block, so literal
+  tag mentions inside Qwen reasoning do not mask the terminal answer. A malformed
+  response is retried once; a second format failure skips execution and receives
+  reward `0.0`.
+- Concurrent trajectories in one `AgentLoopWorker` share a single locked
+  `GuidanceLibrary` instance. This avoids decoding a large `library.json` once
+  per trajectory while preserving the full archive on disk.
+- Dynamic prompts are truncated before rollout generation, not only during
+  training-batch assembly, keeping rollout and policy-log-probability contexts
+  identical.

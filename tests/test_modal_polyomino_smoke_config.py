@@ -617,7 +617,7 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_config_matches_req
     assert "actor_rollout_ref.rollout.tensor_model_parallel_size=1" in overrides
     assert "actor_rollout_ref.rollout.load_format=safetensors" in overrides
     assert "actor_rollout_ref.rollout.gpu_memory_utilization=0.7" in overrides
-    assert "actor_rollout_ref.rollout.free_cache_engine=False" in overrides
+    assert "actor_rollout_ref.rollout.free_cache_engine=True" in overrides
     assert "actor_rollout_ref.rollout.layered_summon=False" in overrides
     assert "actor_rollout_ref.rollout.enforce_eager=False" in overrides
     assert "actor_rollout_ref.actor.fsdp_config.param_offload=False" in overrides
