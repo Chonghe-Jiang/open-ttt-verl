@@ -3,9 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FRONTIER_DIR="${REPO_ROOT}/reference/Frontier-CS"
+ASSET_ROOT="${ASSET_ROOT:-/work/mit/ppliang_mit/chonghej/open-ttt-verl-guidance-ttt-modal}"
+FRONTIER_DIR="${ASSET_ROOT}/reference/Frontier-CS"
 ALG_DIR="${FRONTIER_DIR}/algorithmic"
-RUNTIME_DIR="${REPO_ROOT}/.runtime"
+RUNTIME_DIR="${ASSET_ROOT}/.runtime"
 SIF_PATH="${SIF_PATH:-/work/mit/ppliang_mit/chonghej/open-ttt-verl/containers/open-ttt-verl-ttt-vllm.sif}"
 CONFIG="${CONFIG:-guidance_ttt/config/polyomino_b200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml}"
 RUN_TAG="${RUN_TAG:-${SLURM_JOB_ID:-manual}}"
@@ -21,9 +22,9 @@ GOJUDGE="${RUNTIME_DIR}/go-judge/bin/go-judge"
 MODE="${1:-run}"
 
 cd "${REPO_ROOT}"
-mkdir -p "${LOG_DIR}" .hf_cache .tmp .triton_cache .ray_tmp .apptainer_home/.cache
+mkdir -p "${LOG_DIR}" .hf_cache .tmp .triton_cache .ray_tmp .apptainer_home/.cache models reference .runtime
 
-for required in "${SIF_PATH}" models/Qwen3-8B/config.json models/gpt-oss-120b/config.json \
+for required in "${SIF_PATH}" "${ASSET_ROOT}/models/Qwen3-8B/config.json" "${ASSET_ROOT}/models/gpt-oss-120b/config.json" \
   "${ALG_DIR}/problems/0/config.yaml" "${NODE_BIN}/node" "${GOJUDGE}" "${RUNTIME_DIR}/go-judge/mount.yaml"; do
   if [[ ! -e "${required}" ]]; then
     echo "Missing required runtime artifact: ${required}" >&2
@@ -49,6 +50,9 @@ APPTAINER_BASE=(
   apptainer exec --nv --cleanenv
   --home "${REPO_ROOT}/.apptainer_home:/container_home"
   --bind "${REPO_ROOT}:/workspace/guidance"
+  --bind "${ASSET_ROOT}/models:/workspace/guidance/models:ro"
+  --bind "${ASSET_ROOT}/reference:/workspace/guidance/reference:ro"
+  --bind "${ASSET_ROOT}/.runtime:/workspace/guidance/.runtime:ro"
   --pwd /workspace/guidance
   --env HF_HOME=/workspace/guidance/.hf_cache
   --env HF_DATASETS_CACHE=/workspace/guidance/.hf_cache/datasets

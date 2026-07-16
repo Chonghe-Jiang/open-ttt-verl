@@ -40,6 +40,28 @@ def test_acquire_group_binds_same_group_to_same_node(tmp_path):
     assert first.id == second.id == root.id
 
 
+def test_group_binds_two_puct_ranked_references_without_changing_main_selection(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="erdos", raw_score=0.5, reward=0.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1, puct_c=0.0)
+    library.attach_entry_to_root(root.id, _entry(root.id, reward=0.0, suffix="root"))
+
+    first_parent = library.acquire_group("0:first", require_solution=True)
+    library.submit_child("0:first", _entry(first_parent.id, reward=1.0, suffix="first"))
+    second_parent = library.acquire_group("1:second", require_solution=True)
+    second_child = library.submit_child("1:second", _entry(second_parent.id, reward=2.0, suffix="second"))
+
+    main_parent = library.acquire_group("2:references", require_solution=True)
+    references = library.reference_nodes_for_group("2:references")
+    snapshot = library.snapshot()
+
+    assert main_parent.id == second_child.id
+    assert len(references) == 2
+    assert len({main_parent.id, *(node.id for node in references)}) == 3
+    assert snapshot["groups"]["2:references"]["reference_node_ids"] == [node.id for node in references]
+    assert [node.id for node in library.reference_nodes_for_group("2:references")] == [node.id for node in references]
+
+
 def test_submit_child_adds_entry_child_and_updates_best(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)

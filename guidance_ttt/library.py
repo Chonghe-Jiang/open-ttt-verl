@@ -214,14 +214,22 @@ class GuidanceLibrary:
                             "solution code. Start a new run from a code-bearing bootstrap library."
                         )
                     return selected
-                selected = self._select_node(
+                blocked_node_ids = self._same_step_blocked_node_ids(visible_timestep_exclusive)
+                ranked = self._rank_nodes(
                     visible_timestep_exclusive=visible_timestep_exclusive,
-                    blocked_node_ids=self._same_step_blocked_node_ids(visible_timestep_exclusive),
                     require_solution=require_solution,
                 )
+                selected = self._first_unblocked_node(ranked, blocked_node_ids)
+                # Keep the alternatives fixed for the life of a group.  They are
+                # ranked by exactly the same PUCT calculation as the main parent;
+                # only the main parent is subject to same-step subtree blocking.
+                reference_node_ids = [
+                    node.id for _score, _value, node, *_rest in ranked if node.id != selected.id
+                ][:2]
                 selected.visits += 1
                 self._groups[group_uid] = {
                     "selected_node_id": selected.id,
+                    "reference_node_ids": reference_node_ids,
                     "submitted": 0,
                     "children": [],
                     "finalized": False,
@@ -321,6 +329,7 @@ class GuidanceLibrary:
         node: LibraryNode,
         *,
         visible_timestep_exclusive: int | None = None,
+        reference_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._thread_lock:
             with self._file_lock():
@@ -348,23 +357,61 @@ class GuidanceLibrary:
                     if entry.parent_id == node.id and entry.verifier_status != "valid"
                     and self._entry_is_visible(entry, visible_timestep_exclusive=visible_timestep_exclusive)
                 ]
+                previous_parent = (
+                    self._nodes.get(selected_node.parent_id)
+                    if selected_node and selected_node.parent_id
+                    else None
+                )
+                reference_entries: list[LibraryEntry] = []
+                for node_id in reference_node_ids or []:
+                    reference_node = self._nodes.get(node_id)
+                    reference_entry = self._visible_entry(
+                        reference_node.entry_id if reference_node is not None else None,
+                        visible_timestep_exclusive=visible_timestep_exclusive,
+                    )
+                    if reference_entry is not None:
+                        reference_entries.append(reference_entry)
                 return {
                     "selected_entry": self._visible_entry(
                         selected_node.entry_id if selected_node is not None else None,
                         visible_timestep_exclusive=visible_timestep_exclusive,
                     ),
                     "lineage_entries": lineage,
+                    "previous_parent_entry": self._visible_entry(
+                        previous_parent.entry_id if previous_parent is not None else None,
+                        visible_timestep_exclusive=visible_timestep_exclusive,
+                    ),
+                    "reference_entries": reference_entries,
                     "global_best_entries": [best_entry] if best_entry else [],
                     "local_failure_entries": failures,
                 }
 
-    def _select_node(
+    def reference_nodes_for_group(
+        self,
+        group_uid: str,
+        *,
+        visible_timestep_exclusive: int | None = None,
+    ) -> list[LibraryNode]:
+        """Return the PUCT-ranked alternatives bound when this group was acquired."""
+        with self._thread_lock:
+            with self._file_lock():
+                self._reload()
+                group = self._groups.get(group_uid)
+                if group is None:
+                    raise KeyError(f"Unknown group_uid: {group_uid}")
+                return [
+                    node
+                    for node_id in group.get("reference_node_ids", [])
+                    if (node := self._nodes.get(str(node_id))) is not None
+                    and self._node_is_visible(node, visible_timestep_exclusive=visible_timestep_exclusive)
+                ]
+
+    def _rank_nodes(
         self,
         *,
         visible_timestep_exclusive: int | None = None,
-        blocked_node_ids: set[str] | None = None,
         require_solution: bool = False,
-    ) -> LibraryNode:
+    ) -> list[tuple[float, float, LibraryNode, int, float, float, float]]:
         visible_nodes = [
             node
             for node in self._nodes.values()
@@ -379,7 +426,7 @@ class GuidanceLibrary:
                 )
             raise ValueError("GuidanceLibrary requires at least one root node")
         initial_ids = {node.id for node in visible_nodes if node.parent_id is None}
-        ranked = rank_archive_nodes(
+        return rank_archive_nodes(
             visible_nodes,
             initial_ids=initial_ids,
             visit_counts=self._puct_n,
@@ -388,11 +435,32 @@ class GuidanceLibrary:
             puct_c=self.puct_c,
             q_mode=self.puct_q_mode,
         )
+
+    @staticmethod
+    def _first_unblocked_node(
+        ranked: list[tuple[float, float, LibraryNode, int, float, float, float]],
+        blocked_node_ids: set[str] | None,
+    ) -> LibraryNode:
         blocked_node_ids = blocked_node_ids or set()
         for _score, _value, node, _n, _q, _prior, _bonus in ranked:
             if node.id not in blocked_node_ids:
                 return node
         return ranked[0][2]
+
+    def _select_node(
+        self,
+        *,
+        visible_timestep_exclusive: int | None = None,
+        blocked_node_ids: set[str] | None = None,
+        require_solution: bool = False,
+    ) -> LibraryNode:
+        return self._first_unblocked_node(
+            self._rank_nodes(
+                visible_timestep_exclusive=visible_timestep_exclusive,
+                require_solution=require_solution,
+            ),
+            blocked_node_ids,
+        )
 
     def _node_has_solution(self, node: LibraryNode) -> bool:
         if not node.entry_id:

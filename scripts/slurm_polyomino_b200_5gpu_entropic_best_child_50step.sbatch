@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="/work/mit/ppliang_mit/chonghej/open-ttt-verl-guidance-ttt-modal"
+REPO_ROOT="${REPO_ROOT:-/work/mit/ppliang_mit/chonghej/open-ttt-verl-guidance-ttt-modal}"
 cd "${REPO_ROOT}"
 
 : "${CONFIG:?submit with CONFIG pointing to one entropic best-child recipe}"
@@ -19,9 +19,9 @@ cd "${REPO_ROOT}"
 : "${EXPECTED_GROUP_SIZE:?submit with EXPECTED_GROUP_SIZE}"
 : "${EXPECTED_PROMPT_MODE:?submit with EXPECTED_PROMPT_MODE}"
 
-export EXPECTED_GPUS=5
-export TRAINING_GPUS=0,1,2,3
-export EXECUTION_GPU=4
+export EXPECTED_GPUS="${EXPECTED_GPUS:-5}"
+export TRAINING_GPUS="${TRAINING_GPUS:-0,1,2,3}"
+export EXECUTION_GPU="${EXECUTION_GPU:-4}"
 STAGE="${STAGE:-direct}"
 
 case "${STAGE}" in

@@ -142,11 +142,22 @@ Summary type: {summary_semantics}
 </selected_candidate>"""
 
 
+def _node_summary_for_guidance(
+    entry: LibraryEntry | None,
+    *,
+    fallback: str,
+    raw_score_label: str,
+) -> str:
+    return _raw_summary_for_prompt(entry, fallback=fallback, raw_score_label=raw_score_label)
+
+
 def build_guidance_prompt(
     *,
     problem_prompt: str,
     selected_node: LibraryNode,
     selected_entry: LibraryEntry | None,
+    previous_parent_entry: LibraryEntry | None = None,
+    reference_entries: list[LibraryEntry] | None = None,
     global_best_entries: list[LibraryEntry],
     local_failure_entries: list[LibraryEntry],
     objective_text: str | None = None,
@@ -166,34 +177,55 @@ def build_guidance_prompt(
         "benchmark access, external models or APIs, learned weights that are not supplied, or unavailable "
         "precomputation."
     )
+    references = list(reference_entries or [])[:2]
+    references.extend([None] * (2 - len(references)))
     if prompt_mode == PROMPT_MODE_CODE_DELTA:
-        selected_context = _selected_candidate_for_guidance(
+        main_parent_context = _selected_candidate_for_guidance(
             selected_entry,
             solution_language=solution_language,
             raw_score_label=raw_score_label,
         )
-        context_intro = """The next section contains the selected candidate's complete code, its incremental
+        context_intro = """The `<main_parent>` block contains the selected candidate's complete code, its incremental
 summary, and its verified score. Treat the code as the authoritative description
-of the current algorithm. The change summary describes only how this candidate
-changed from its own parent; it is not a complete description of the code."""
+of the current algorithm. The `<previous_parent>` and reference blocks provide
+alternative historical summaries and verified scores for comparison. The main
+change summary describes only how the selected candidate changed from its own
+parent; it is not a complete description of the code."""
         history_instruction = (
-            "Use `<parent_code>`, `<change_summary>`, and `<score>` to identify what the candidate currently "
-            "implements, what its previous refinement changed, and what bottleneck the next attempt should address."
+            "Use the main `<parent_code>`, `<change_summary>`, and `<score>` together with `<previous_parent>`, "
+            "`<reference_1>`, and `<reference_2>` to identify what the candidate currently implements, what its "
+            "previous refinement changed, and what bottleneck the next attempt should address."
         )
     else:
-        selected_context = (
-            "<selected_summary>\n"
-            f"{_raw_summary_for_prompt(selected_entry, fallback='No previous summary is attached.', raw_score_label=raw_score_label)}\n"
-            "</selected_summary>"
+        main_parent_context = _node_summary_for_guidance(
+            selected_entry,
+            fallback="No main parent summary is attached.",
+            raw_score_label=raw_score_label,
         )
         context_intro = (
             "The next sections describe the current search state for this problem. Use them\n"
             "as run-local context when deciding the next step."
         )
         history_instruction = (
-            "Use `<selected_summary>` to identify what has already been tried, what worked, and what bottleneck "
-            "the next attempt should address."
+            "Compare the main parent with its immediate predecessor and the two PUCT-ranked references to identify "
+            "what has already been tried, what worked, and what bottleneck the next attempt should address."
         )
+
+    selected_context = f"""<main_parent>
+{main_parent_context}
+</main_parent>
+
+<previous_parent>
+{_node_summary_for_guidance(previous_parent_entry, fallback='The main parent is a root node; it has no previous parent.', raw_score_label=raw_score_label)}
+</previous_parent>
+
+<reference_1>
+{_node_summary_for_guidance(references[0], fallback='No first PUCT reference is available.', raw_score_label=raw_score_label)}
+</reference_1>
+
+<reference_2>
+{_node_summary_for_guidance(references[1], fallback='No second PUCT reference is available.', raw_score_label=raw_score_label)}
+</reference_2>"""
 
     user = f"""<problem>
 {problem_prompt}

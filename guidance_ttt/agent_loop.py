@@ -247,7 +247,15 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             visible_timestep_exclusive=int(global_step),
             require_solution=True,
         )
-        context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
+        reference_nodes = library.reference_nodes_for_group(
+            group_uid,
+            visible_timestep_exclusive=int(global_step),
+        )
+        context = library.context_for_node(
+            selected_node,
+            visible_timestep_exclusive=int(global_step),
+            reference_node_ids=[node.id for node in reference_nodes],
+        )
         selected_entry = context["selected_entry"]
         if selected_entry is None or not selected_entry.solution.strip():
             raise RuntimeError(
@@ -258,6 +266,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             problem_prompt=problem_prompt,
             selected_node=selected_node,
             selected_entry=selected_entry,
+            previous_parent_entry=context["previous_parent_entry"],
+            reference_entries=context["reference_entries"],
             global_best_entries=context["global_best_entries"],
             local_failure_entries=context["local_failure_entries"],
             objective_text=task_spec.guidance_objective(None),

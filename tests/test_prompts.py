@@ -325,8 +325,11 @@ Preserve this exact raw text."""
     assert "Find better C5" in prompt.user
     assert "The next sections describe the current search state for this problem" in prompt.user
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
-    assert prompt.user.index("The next sections describe") < prompt.user.index("<selected_summary>")
-    assert "<selected_summary>" in prompt.user
+    assert prompt.user.index("The next sections describe") < prompt.user.index("<main_parent>")
+    assert "<main_parent>" in prompt.user
+    assert "<previous_parent>" in prompt.user
+    assert "<reference_1>" in prompt.user
+    assert "<reference_2>" in prompt.user
     assert "  Raw summary with intentional leading spaces." in prompt.user
     assert "```python\ndef run(seed=42, budget_s=1, **kwargs):" in prompt.user
     assert "h_values = [0.1, 0.2, 0.7]" in prompt.user
@@ -386,6 +389,44 @@ Preserve this exact raw text."""
     assert "current visible target raw score" not in prompt.user
     assert "(0.4)" not in prompt.user
     assert "successful mutation from 0.4 towards 0.4 or lower" not in prompt.user
+
+
+def test_guidance_prompt_concatenates_main_previous_parent_and_two_references():
+    main = _entry()
+    main.metadata = {"raw_model_summary": "main parent summary"}
+    previous = _entry()
+    previous.id = "previous"
+    previous.verifier_raw_score = 0.5
+    previous.metadata = {"raw_model_summary": "previous parent summary"}
+    reference_1 = _entry()
+    reference_1.id = "reference-1"
+    reference_1.verifier_raw_score = 0.3
+    reference_1.metadata = {"raw_model_summary": "first reference summary"}
+    reference_2 = _entry()
+    reference_2.id = "reference-2"
+    reference_2.verifier_raw_score = 0.2
+    reference_2.metadata = {"raw_model_summary": "second reference summary"}
+
+    prompt = build_guidance_prompt(
+        problem_prompt="Find better C5",
+        selected_node=_node(),
+        selected_entry=main,
+        previous_parent_entry=previous,
+        reference_entries=[reference_1, reference_2],
+        global_best_entries=[],
+        local_failure_entries=[],
+    )
+
+    assert prompt.user.index("<main_parent>") < prompt.user.index("<previous_parent>")
+    assert prompt.user.index("<previous_parent>") < prompt.user.index("<reference_1>")
+    assert prompt.user.index("<reference_1>") < prompt.user.index("<reference_2>")
+    assert "main parent summary" in prompt.user
+    assert "previous parent summary" in prompt.user
+    assert "first reference summary" in prompt.user
+    assert "second reference summary" in prompt.user
+    assert "Score: 0.5" in prompt.user
+    assert "Score: 0.3" in prompt.user
+    assert "Score: 0.2" in prompt.user
 
 
 def test_guidance_prompt_includes_task_specific_mechanism_constraint():
