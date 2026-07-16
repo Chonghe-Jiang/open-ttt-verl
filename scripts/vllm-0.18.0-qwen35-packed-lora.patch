@@ -1,0 +1,86 @@
+diff --git a/vllm/lora/layers/column_parallel_linear.py b/vllm/lora/layers/column_parallel_linear.py
+--- a/vllm/lora/layers/column_parallel_linear.py
++++ b/vllm/lora/layers/column_parallel_linear.py
+@@ -190,9 +190,9 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
+         # There are two LoRA layers
+         # the output_sizes in MergedColumnParallelLinear is not sharded by tp
+         # we need to divide it by the tp_size to get correct slices size
+-        output_sizes = self.base_layer.output_sizes
++        self.output_sizes = self.base_layer.output_sizes
+         self.output_slices = tuple(
+-            divide(output_size, self.tp_size) for output_size in output_sizes
++            divide(output_size, self.tp_size) for output_size in self.output_sizes
+         )
+         self.n_slices = len(self.output_slices)
+         self.output_ids = (self.tp_rank,) * self.n_slices
+@@ -248,6 +248,44 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
+                 ]
+         return sliced_lora_b
+
++    def expand_packed_lora(
++        self,
++        lora_a: list[torch.Tensor],
++        lora_b: list[torch.Tensor],
++    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
++        """Expand logical adapter groups to the fused layer's output slices.
++
++        Qwen3.5 stores ``in_proj_qkv`` as one adapter spanning Q+K+V and
++        ``in_proj_z`` as another adapter, while vLLM executes them as a
++        four-slice ``in_proj_qkvz`` layer.  Split B by output rows and reuse A
++        for every physical slice covered by a logical adapter.
++        """
++        expanded_a: list[torch.Tensor] = []
++        expanded_b: list[torch.Tensor] = []
++        start_idx = 0
++        for a_i, b_i in zip(lora_a, lora_b):
++            b_rows, cumulative_rows, covered = b_i.shape[0], 0, 0
++            for i in range(start_idx, self.n_slices):
++                cumulative_rows += self.output_sizes[i]
++                if cumulative_rows == b_rows:
++                    covered = i - start_idx + 1
++                    break
++            else:
++                raise ValueError(
++                    f"Cannot split LoRA B with {b_rows} rows into "
++                    f"{self.n_slices} slices with output sizes "
++                    f"{self.output_sizes} starting at {start_idx}."
++                )
++
++            start = 0
++            for j in range(covered):
++                size = self.output_sizes[start_idx + j]
++                expanded_b.append(b_i[start : start + size, :])
++                expanded_a.append(a_i)
++                start += size
++            start_idx += covered
++        return expanded_a, expanded_b
++
+     def set_lora(
+         self,
+         index: int,
+@@ -256,6 +294,9 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
+     ):
+         self.reset_lora(index)
+
++        if isinstance(lora_b, list) and len(lora_b) != self.n_slices:
++            lora_a, lora_b = self.expand_packed_lora(lora_a, lora_b)
++
+         if self.tp_size > 1:
+             lora_a = self.slice_lora_a(lora_a)
+             lora_b = self.slice_lora_b(lora_b)
+diff --git a/vllm/lora/model_manager.py b/vllm/lora/model_manager.py
+--- a/vllm/lora/model_manager.py
++++ b/vllm/lora/model_manager.py
+@@ -516,6 +516,12 @@ class LoRAModelManager:
+             else:
+                 parts = module_name.split(".")
+                 replacements = self.packed_modules_mapping[parts[-1]]
++                n_slices = getattr(module, "n_slices", len(replacements))
++                # Qwen3.5's in_proj_qkvz has four physical slices but only
++                # two logical checkpoint modules (in_proj_qkv + in_proj_z).
++                # CUDA-graph warmup needs one dummy LoRA per physical slice.
++                if n_slices != len(replacements):
++                    replacements = [f"slice_{i}" for i in range(n_slices)]
+                 subloras: list[LoRALayerWeights | None] = []
+                 for i, r in enumerate(replacements):
+                     lora = LoRALayerWeights.create_dummy_lora_weights(

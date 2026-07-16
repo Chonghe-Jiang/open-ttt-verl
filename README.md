@@ -35,9 +35,14 @@ The current Guidance-TTT design trains only the guidance actor. The execution
 model is treated as a frozen solver that applies a high-level guidance idea to
 the selected library node's runnable parent code.
 
-`ttt.prompt_mode: summary_only` remains available for compatibility. Current
-Polyomino experiments use `ttt.prompt_mode: code_delta`, which preserves code
-across both model calls and stores only the incremental change summary.
+Polyomino recipes support two communication modes:
+
+- `code_delta` gives guidance the parent solution plus its delta summary. The
+  execution model receives that parent solution and returns an updated complete
+  solution plus a delta summary.
+- `summary_only` gives guidance only the combined solution/delta summary. The
+  execution model still receives the selected parent solution, but guidance
+  does not receive source code.
 
 At rollout time in `code_delta` mode:
 
@@ -49,9 +54,10 @@ At rollout time in `code_delta` mode:
    It returns exactly one `<guidance>` block.
 3. The execution model receives the selected node's complete solution code,
    verifier score/status, and parsed guidance. It improves the parent
-   implementation and returns
-   `<execution_thinking>`, a complete updated `<solution>`, and `<summary>` in
-   one response.
+   implementation and always returns a complete updated `<solution>` and
+   `<summary>`. Legacy models use an explicit `<execution_thinking>` block;
+   Qwen native-thinking and no-thinking recipes use the chat-template mode and
+   require only the two final blocks.
 4. The verifier scores the solution. For Polyomino, this always goes through
    FrontierCS/go-judge.
 5. The new entry is written as a child of the selected PUCT node. Its complete
@@ -467,6 +473,7 @@ current workflow families are:
 | Three-GPU smoke | 3xB200 | Qwen3-8B on GPUs 0-1, 8x16 | GPT-OSS-120B on GPU 2 | One-step acceptance |
 | Five-GPU training | 5xB200 | Qwen3-8B 8x64 or Qwen3-14B 8x32 on GPUs 0-3 | GPT-OSS-120B on GPU 4 | Long experiments |
 | Four-GPU shared execution | 4xB200 | Qwen3-8B on GPUs 0-3, 8x32 | Qwen3-8B colocated on GPU 3 | Experimental Qwen execution smoke |
+| Two-GPU execution matrix | 2xB200 | Qwen3-8B on GPU 0, 8x8 | GPT-OSS-120B, Qwen3.6-35B-A3B, or Qwen3-Coder-Next-FP8 on GPU 1 | Smoke-gated, resumable two-day runs |
 
 The four recommended long-run recipes use the adaptive entropic advantage
 estimator and direct best-child PUCT Q value. They cover Qwen3-8B/Qwen3-14B
@@ -521,6 +528,38 @@ is in
 [`docs/b200_guidance_four_run_results_2026-07-14.md`](docs/b200_guidance_four_run_results_2026-07-14.md).
 The broader documentation map is [`docs/README.md`](docs/README.md).
 
+### Two-GPU execution matrix
+
+The two-GPU workflows reserve GPU 0 for Qwen3-8B LoRA training and GPU 1 for a
+frozen local execution server. Every launcher submits both `code_delta` and
+`summary_only` as an ordered chain:
+
+```text
+setup (when needed) -> one-step smoke -> day 1 (23 h) -> day 2 (23 h)
+```
+
+The day stages resume the same output directory, save every step, and retain
+only the latest actor/critic checkpoint. All use 8 groups x 8 rollouts,
+`entropic_adaptive_beta`, direct best-child PUCT Q values, and the same
+`ttt_reinforce_is` policy-loss path as the larger B200 experiments.
+
+| Execution model | Prompt style | Submitter |
+| --- | --- | --- |
+| GPT-OSS-120B | explicit execution thinking | `scripts/submit_qwen3_8b_b200_2gpu_group8_two_day.sh` |
+| Qwen3.6-35B-A3B | no thinking; `<solution>` + `<summary>` | `scripts/submit_qwen36_35b_exec_b200_2gpu_group8_two_day.sh` |
+| Qwen3-Coder-Next-FP8 | no thinking; `<solution>` + `<summary>` | `scripts/submit_qwen3_coder_next_fp8_exec_b200_2gpu_group8_two_day.sh` |
+
+For example, submit the Coder-Next pair with a readable run tag:
+
+```bash
+scripts/submit_qwen3_coder_next_fp8_exec_b200_2gpu_group8_two_day.sh coder_next_fp8_$(date +%Y%m%d_%H%M%S)
+```
+
+Its setup job downloads `Qwen/Qwen3-Coder-Next-FP8` and validates its FP8
+configuration against the isolated vLLM 0.19 serving runtime. The actor stays
+on the image's verl-compatible runtime; the two stacks are deliberately not
+mixed.
+
 ## Design Notes
 
 - PUCT selects one library node before prompt assembly.
@@ -529,9 +568,10 @@ The broader documentation map is [`docs/README.md`](docs/README.md).
   same verifier evidence and parsed `<guidance>`.
 - Nodes without extracted solution code remain available for reward/audit data
   but are not eligible as future execution parents.
-- Execution LLM returns `<execution_thinking>`, one task-specific `<solution>`
-  code block containing the complete updated candidate, and `<summary>` in a
-  single response.
+- Execution LLM always returns one task-specific `<solution>` code block
+  containing the complete updated candidate and `<summary>` in a single
+  response. Legacy styles also return `<execution_thinking>`; Qwen native and
+  no-thinking styles use exactly the two final blocks.
 - The verifier reward is assigned only to guidance model response tokens.
 - Execution failures are environment outcomes and become library entries with reward `0.0`.
 - The execution-provided summary is stored with verifier reward/status as structured library metadata; the summary should not claim verifier success before verification runs.

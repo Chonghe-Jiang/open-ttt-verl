@@ -31,6 +31,27 @@ ttt:
 directly as Q. Recipes without these fields retain the backward-compatible GRPO
 and `0.8 * parent + 0.2 * best_child` behavior.
 
+## Two-GPU Qwen3-8B execution recipes
+
+The `polyomino_b200_2gpu_qwen3_8b_*_batch8_group8_*_500step.yaml` recipes are
+the current lightweight, resumable B200 family. Each uses one training GPU, one
+execution GPU, 8 groups x 8 samples, `save_freq: 1`,
+`entropic_adaptive_beta`, `puct_q_mode: best_child`, auto-resume, and a
+single retained checkpoint.
+
+| Execution family | Recipe filename fragment | Prompt style |
+| --- | --- | --- |
+| GPT-OSS-120B | `qwen3_8b_gpt_oss_120b` | explicit execution thinking |
+| Qwen3.6-35B-A3B | `qwen3_8b_qwen36_35b_exec` | `qwen_no_thinking` |
+| Qwen3-Coder-Next-FP8 | `qwen3_8b_qwen3_coder_next_fp8_exec` | `qwen_no_thinking` |
+
+Each family has both `code_delta` and `summary_only` files. The no-thinking
+styles set `chat_template_kwargs.enable_thinking: false` and require exactly
+`<solution>` plus `<summary>` from execution. They do not impose an execution
+token cap (`max_tokens: null`). Use the paired submitters in
+[`scripts/README.md`](../../scripts/README.md) rather than submitting these
+YAML files directly, so the smoke and continuation dependencies are preserved.
+
 ## B200 acceptance and comparison recipes
 
 - `polyomino_b200_3gpu_*_smoke.yaml`: two training GPUs plus one GPT-OSS-120B

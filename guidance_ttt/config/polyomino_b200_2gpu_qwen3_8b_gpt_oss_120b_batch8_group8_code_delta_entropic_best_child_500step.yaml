@@ -1,0 +1,107 @@
+run:
+  output_dir: outputs/guidance_ttt/polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_batch8_group8_code_delta_entropic_best_child_500step
+  project_name: guidance_ttt
+  experiment_name: polyomino_qwen3_8b_actor_gpt_oss_120b_exec_b200_2gpu_batch8_group8_code_delta_entropic_best_child_500step
+  model_path: models/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  num_steps: 500
+  total_epochs: 500
+  adv_estimator: entropic_adaptive_beta
+  max_prompt_length: 8192
+  max_response_length: 8192
+  filter_overlong_prompts: false
+  truncation: error
+  learning_rate: 4.0e-5
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 2
+  use_kl_loss: true
+  kl_loss_coef: 0.05
+  rollout_engine: vllm
+  temperature: 0.9
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.7
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: 1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: .hf_cache
+  ray_temp_dir: .ray_tmp
+  tmp_dir: .tmp
+  triton_cache_dir: .triton_cache
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: reference/Frontier-CS
+    judge_url: http://127.0.0.1:8081
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 340
+
+ttt:
+  prompt_mode: code_delta
+  groups_per_batch: 8
+  group_size: 8
+  eval_timeout: 340
+  puct_c: 1.0
+  puct_q_mode: best_child
+  bootstrap:
+    enabled: true
+    required: true
+    max_attempts: 2
+    overwrite_existing: false
+    seed_library_path: guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: openai/gpt-oss-120b
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local-vllm
+    temperature: 0.0
+    max_tokens: null
+    phase1_max_tokens: null
+    timeout_s: 1200
+    concurrency: 16
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.load_format=safetensors
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
+  - actor_rollout_ref.rollout.free_cache_engine=False
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.rollout.top_p=0.95
+  - actor_rollout_ref.rollout.val_kwargs.do_sample=False
+  - actor_rollout_ref.rollout.val_kwargs.temperature=0
+  - actor_rollout_ref.rollout.val_kwargs.top_p=1.0
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=16384
+  - actor_rollout_ref.rollout.max_num_seqs=16
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - trainer.resume_mode=auto
+  - trainer.max_actor_ckpt_to_keep=1
+  - trainer.max_critic_ckpt_to_keep=1
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

@@ -10,8 +10,13 @@ PROMPT_MODE_CODE_DELTA = "code_delta"
 SUPPORTED_PROMPT_MODES = frozenset({PROMPT_MODE_SUMMARY_ONLY, PROMPT_MODE_CODE_DELTA})
 EXECUTION_PROMPT_STYLE_LEGACY = "explicit_execution_thinking"
 EXECUTION_PROMPT_STYLE_QWEN_NATIVE = "qwen_native_thinking"
+EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING = "qwen_no_thinking"
 SUPPORTED_EXECUTION_PROMPT_STYLES = frozenset(
-    {EXECUTION_PROMPT_STYLE_LEGACY, EXECUTION_PROMPT_STYLE_QWEN_NATIVE}
+    {
+        EXECUTION_PROMPT_STYLE_LEGACY,
+        EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
+        EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+    }
 )
 
 
@@ -298,8 +303,23 @@ Include enough information for a later model to understand the candidate’s ove
 
 Only describe mechanisms that are present in the implementation. If a guidance-suggested component was not implemented, explicitly say that it was simplified, approximated, or omitted. Focus on conceptually important implementation choices and do not include source code."""
 
-    if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
-        output_contract = f"""Qwen native thinking is enabled by the chat template. Use that native reasoning channel; do not manually emit <think> or <execution_thinking> in the final answer.
+    if execution_prompt_style in {
+        EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
+        EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+    }:
+        if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+            prompt_style_preamble = (
+                "Qwen native thinking is enabled by the chat template. Use that native reasoning channel; "
+                "do not manually emit <think> or <execution_thinking> in the final answer."
+            )
+            system_suffix = "Reason using Qwen's native thinking channel, then output only the code block and summary."
+        else:
+            prompt_style_preamble = (
+                "Thinking mode is disabled. Do not output <think> or <execution_thinking>; respond directly "
+                "with the required solution and summary."
+            )
+            system_suffix = "Output only the complete solution block and summary block."
+        output_contract = f"""{prompt_style_preamble}
 
 Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.
 The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
@@ -319,7 +339,6 @@ Required final-answer format:
 </summary>
 
 Any final answer that does not follow this exact two-block structure should be treated as invalid."""
-        system_suffix = "Reason using Qwen's native thinking channel, then output only the code block and summary."
     else:
         output_contract = f"""Your response must contain exactly three top-level XML blocks and no extra text before, between, or after them.
 You must output all three XML blocks exactly as shown below.

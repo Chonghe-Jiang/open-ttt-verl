@@ -15,6 +15,26 @@ The cluster workflow separates reusable runners from Slurm allocation files:
 All generated models, caches, logs, checkpoints, and libraries are ignored by
 Git under `models/`, `.hf_cache/`, `.runtime/`, and `outputs/`.
 
+## Two-GPU Qwen3-8B execution matrix
+
+These launchers use one B200 for the trainable Qwen3-8B actor and one B200 for
+the frozen execution model. They submit both communication modes through an
+`afterok` chain: model/runtime preparation (if required), one-step smoke,
+23-hour day 1, then a 23-hour resumable day 2. The formal stages retain the
+latest checkpoint only.
+
+| Execution model | Execution final format | Submit command |
+| --- | --- | --- |
+| GPT-OSS-120B | explicit thinking, solution, summary | `scripts/submit_qwen3_8b_b200_2gpu_group8_two_day.sh <tag>` |
+| Qwen3.6-35B-A3B | solution + summary, no thinking | `scripts/submit_qwen36_35b_exec_b200_2gpu_group8_two_day.sh <tag>` |
+| Qwen3-Coder-Next-FP8 | solution + summary, no thinking | `scripts/submit_qwen3_coder_next_fp8_exec_b200_2gpu_group8_two_day.sh <tag>` |
+
+The Qwen3.6 and Coder-Next launchers use the isolated
+`.runtime/qwen36-exec-site-packages` vLLM 0.19 environment only for execution;
+the guidance actor remains on the Apptainer image's verl-compatible stack. The
+Coder-Next setup additionally verifies the `Qwen3NextForCausalLM` FP8 model
+configuration before enabling its smoke jobs.
+
 ## Paper-aligned five-GPU experiments
 
 The generic launcher requires explicit environment values. Use a fresh output

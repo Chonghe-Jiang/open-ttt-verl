@@ -16,6 +16,7 @@ from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
     EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
+    EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
     PROMPT_MODE_CODE_DELTA,
     PROMPT_MODE_SUMMARY_ONLY,
     Prompt,
@@ -39,8 +40,21 @@ def build_bootstrap_execution_prompt(*, task_spec: TaskSpec, execution_prompt_st
         if fenced_language == "cpp"
         else "A complete self-contained Python program."
     )
-    if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
-        output_contract = f"""Qwen native thinking is enabled by the chat template. Use that native reasoning channel; do not manually emit <think> or <execution_thinking> in the final answer.
+    if execution_prompt_style in {
+        EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
+        EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+    }:
+        if execution_prompt_style == EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+            prompt_style_preamble = (
+                "Qwen native thinking is enabled by the chat template. Use that native reasoning channel; "
+                "do not manually emit <think> or <execution_thinking> in the final answer."
+            )
+        else:
+            prompt_style_preamble = (
+                "Thinking mode is disabled. Do not output <think> or <execution_thinking>; respond directly "
+                "with the required solution and summary."
+            )
+        output_contract = f"""{prompt_style_preamble}
 
 Your final answer must contain exactly two top-level XML blocks and no extra final-answer text before, between, or after them.
 The <solution> block is mandatory and must contain a fenced ```{fenced_language} code block.
@@ -304,7 +318,10 @@ async def _create_bootstrap_entry(
 def _validate_required_blocks(execution_text: str, *, execution_prompt_style: str | None = None) -> None:
     execution_prompt_style = normalize_execution_prompt_style(execution_prompt_style)
     required_tags = ["solution", "summary"]
-    if execution_prompt_style != EXECUTION_PROMPT_STYLE_QWEN_NATIVE:
+    if execution_prompt_style not in {
+        EXECUTION_PROMPT_STYLE_QWEN_NATIVE,
+        EXECUTION_PROMPT_STYLE_QWEN_NO_THINKING,
+    }:
         required_tags.insert(0, "execution_thinking")
     missing = [tag for tag in required_tags if extract_tag_or_none(execution_text, tag) is None]
     if missing:

@@ -188,6 +188,27 @@ def test_qwen_native_execution_prompt_uses_native_thinking_and_two_final_blocks(
     assert "native thinking channel" in prompt.system
 
 
+def test_qwen_no_thinking_execution_prompt_requests_direct_two_block_answer():
+    prompt = build_execution_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        guidance="Add bounded beam search.",
+        solution_language="cpp",
+        prompt_mode="code_delta",
+        execution_prompt_style="qwen_no_thinking",
+    )
+
+    assert "Thinking mode is disabled" in prompt.user
+    assert "respond directly" in prompt.user
+    assert "exactly two top-level XML blocks" in prompt.user
+    assert "internal" not in prompt.user.lower()
+    assert "native thinking" not in prompt.system.lower()
+    assert "<execution_thinking>\n" not in prompt.user
+    assert "<solution>" in prompt.user
+    assert "<summary>" in prompt.user
+
+
 def test_prompt_mode_validation_allows_bootstrap_but_rejects_mixed_non_bootstrap_entry():
     bootstrap = _entry()
     bootstrap.timestep = 0
