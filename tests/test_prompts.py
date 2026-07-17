@@ -429,6 +429,31 @@ def test_guidance_prompt_concatenates_main_previous_parent_and_two_references():
     assert "Score: 0.2" in prompt.user
 
 
+def test_search_aware_policy_guidance_prompt_includes_history_and_hypothesis_schema():
+    prompt = build_guidance_prompt(
+        problem_prompt="Pack polyominoes.",
+        selected_node=_node(),
+        selected_entry=_entry(),
+        global_best_entries=[],
+        local_failure_entries=[],
+        guidance_style="search_aware_policy",
+        search_history={
+            "strategy_frequency": {"aspect_ratio": 12, "lookahead": 9},
+            "failure_strategy_frequency": {"lookahead": 4},
+            "recent_strategies": [
+                {"timestep": 7, "tags": ["aspect_ratio"], "score": 0.4, "status": "valid"},
+            ],
+        },
+    )
+
+    assert "<search_history>" in prompt.user
+    assert "aspect_ratio (12)" in prompt.user
+    assert "Treat high-frequency strategies as already explored" in prompt.user
+    assert "search-policy designer" in prompt.user
+    assert "<search_direction>" in prompt.user
+    assert "<risk_and_falsifier>" in prompt.user
+
+
 def test_guidance_prompt_includes_task_specific_mechanism_constraint():
     spec = get_task_spec("polyomino_packing")
 

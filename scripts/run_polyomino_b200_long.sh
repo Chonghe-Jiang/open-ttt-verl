@@ -168,6 +168,12 @@ fi
 if [[ -n "${TOTAL_EPOCHS_OVERRIDE:-}" ]]; then
   RECIPE_OVERRIDES+=("run.total_epochs=${TOTAL_EPOCHS_OVERRIDE}")
 fi
+if [[ -n "${EXTRA_RECIPE_OVERRIDES:-}" ]]; then
+  IFS=';' read -r -a EXTRA_RECIPE_OVERRIDE_ARRAY <<< "${EXTRA_RECIPE_OVERRIDES}"
+  for override in "${EXTRA_RECIPE_OVERRIDE_ARRAY[@]}"; do
+    [[ -n "${override}" ]] && RECIPE_OVERRIDES+=("${override}")
+  done
+fi
 APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" \
   "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \
   --config "${CONFIG}" run.output_dir="${OUTPUT_DIR}" "${RECIPE_OVERRIDES[@]}"
@@ -175,3 +181,6 @@ APPTAINERENV_CUDA_VISIBLE_DEVICES="${TRAINING_GPUS}" CUDA_VISIBLE_DEVICES="${TRA
   --expected-groups "${EXPECTED_GROUPS}" --expected-group-size "${EXPECTED_GROUP_SIZE}" \
   --expected-prompt-mode "${EXPECTED_PROMPT_MODE:-code_delta}"
 "${APPTAINER_BASE[@]}" python -m guidance_ttt.run_summary "${OUTPUT_DIR}" --config "${CONFIG}"
+if [[ "${WRITE_TOPK_METRICS:-false}" == "true" ]]; then
+  "${APPTAINER_BASE[@]}" python scripts/summarize_topk_guidance_metrics.py "${OUTPUT_DIR}"
+fi

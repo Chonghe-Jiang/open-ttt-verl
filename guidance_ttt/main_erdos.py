@@ -12,7 +12,7 @@ from uuid import uuid4
 import yaml
 
 from guidance_ttt.data import write_slot_parquet
-from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.library import GuidanceLibrary, REFERENCE_SELECTION_PUCT_TOP2
 from guidance_ttt.prompts import normalize_prompt_mode, validate_entry_prompt_mode
 from guidance_ttt.state import LibraryEntry
 from guidance_ttt.tasks import get_task_spec
@@ -60,6 +60,7 @@ def _library_runtime_config(ttt_cfg: dict[str, Any]) -> dict[str, int | float | 
         "puct_q_mode": str(ttt_cfg.get("puct_q_mode", "blended")),
         "max_buffer_size": int(ttt_cfg.get("max_buffer_size", 1000)),
         "topk_children": int(ttt_cfg.get("topk_children", 2)),
+        "reference_selection_mode": str(ttt_cfg.get("reference_selection_mode", REFERENCE_SELECTION_PUCT_TOP2)),
     }
 
 
@@ -116,6 +117,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         puct_q_mode=str(ttt_cfg.get("puct_q_mode", "blended")),
         max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
         topk_children=int(ttt_cfg.get("topk_children", 2)),
+        reference_selection_mode=str(ttt_cfg.get("reference_selection_mode", REFERENCE_SELECTION_PUCT_TOP2)),
     )
 
     agent_loop_config = output_dir / "agent_loop.yaml"
@@ -127,6 +129,7 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
                     "_target_": "guidance_ttt.agent_loop.GuidanceExecutionAgentLoop",
                     "task": task_cfg,
                     "prompt_mode": prompt_mode,
+                    "guidance_style": str(ttt_cfg.get("guidance_style", "baseline")),
                     "execution_llm": config.get("llm", {}).get("execution", {"provider": "mock"}),
                     "eval_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),
                     "verifier_timeout_s": int(ttt_cfg.get("eval_timeout", 60)),

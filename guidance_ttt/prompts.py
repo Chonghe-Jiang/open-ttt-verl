@@ -13,6 +13,18 @@ EXECUTION_PROMPT_STYLE_QWEN_NATIVE = "qwen_native_thinking"
 SUPPORTED_EXECUTION_PROMPT_STYLES = frozenset(
     {EXECUTION_PROMPT_STYLE_LEGACY, EXECUTION_PROMPT_STYLE_QWEN_NATIVE}
 )
+GUIDANCE_STYLE_BASELINE = "baseline"
+GUIDANCE_STYLE_SEARCH_AWARE = "search_aware"
+GUIDANCE_STYLE_POLICY = "policy"
+GUIDANCE_STYLE_SEARCH_AWARE_POLICY = "search_aware_policy"
+SUPPORTED_GUIDANCE_STYLES = frozenset(
+    {
+        GUIDANCE_STYLE_BASELINE,
+        GUIDANCE_STYLE_SEARCH_AWARE,
+        GUIDANCE_STYLE_POLICY,
+        GUIDANCE_STYLE_SEARCH_AWARE_POLICY,
+    }
+)
 
 
 @dataclass
@@ -35,6 +47,40 @@ def normalize_execution_prompt_style(prompt_style: str | None) -> str:
         supported = ", ".join(sorted(SUPPORTED_EXECUTION_PROMPT_STYLES))
         raise ValueError(f"Unsupported execution prompt style {prompt_style!r}; expected one of: {supported}")
     return normalized
+
+
+def normalize_guidance_style(guidance_style: str | None) -> str:
+    normalized = str(guidance_style or GUIDANCE_STYLE_BASELINE).strip().lower()
+    if normalized not in SUPPORTED_GUIDANCE_STYLES:
+        supported = ", ".join(sorted(SUPPORTED_GUIDANCE_STYLES))
+        raise ValueError(f"Unsupported guidance style {guidance_style!r}; expected one of: {supported}")
+    return normalized
+
+
+def _search_history_for_prompt(search_history: dict | None) -> str:
+    history = dict(search_history or {})
+    frequency = dict(history.get("strategy_frequency") or {})
+    failure_frequency = dict(history.get("failure_strategy_frequency") or {})
+    recent = list(history.get("recent_strategies") or [])
+    frequent = ", ".join(f"{tag} ({count})" for tag, count in list(frequency.items())[:8]) or "No prior strategy labels."
+    failures = ", ".join(f"{tag} ({count})" for tag, count in list(failure_frequency.items())[:6]) or "No labelled failures."
+    recent_lines = []
+    for item in recent[:8]:
+        tags = ", ".join(item.get("tags") or []) or "unlabelled"
+        score = item.get("score")
+        score_text = "None" if score is None else f"{float(score):.4f}"
+        recent_lines.append(f"step {item.get('timestep')}: {tags}; score={score_text}; status={item.get('status')}")
+    return "\n".join(
+        [
+            "<search_history>",
+            f"<strategy_frequency>{frequent}</strategy_frequency>",
+            f"<failure_directions>{failures}</failure_directions>",
+            "<recent_trials>",
+            *(recent_lines or ["No recent trials."]),
+            "</recent_trials>",
+            "</search_history>",
+        ]
+    )
 
 
 def summary_semantics_for_entry(entry: LibraryEntry) -> str:
@@ -165,9 +211,14 @@ def build_guidance_prompt(
     raw_score_label: str = "Score",
     solution_language: str = "python",
     prompt_mode: str = PROMPT_MODE_SUMMARY_ONLY,
+    guidance_style: str = GUIDANCE_STYLE_BASELINE,
+    search_history: dict | None = None,
 ) -> Prompt:
     _ = selected_node, global_best_entries, local_failure_entries
     prompt_mode = normalize_prompt_mode(prompt_mode)
+    guidance_style = normalize_guidance_style(guidance_style)
+    search_aware = guidance_style in {GUIDANCE_STYLE_SEARCH_AWARE, GUIDANCE_STYLE_SEARCH_AWARE_POLICY}
+    policy_style = guidance_style in {GUIDANCE_STYLE_POLICY, GUIDANCE_STYLE_SEARCH_AWARE_POLICY}
     objective = objective_text or (
         "Your task is to provide the next **evolutionary guidance** to reach a higher score."
     )
@@ -231,6 +282,38 @@ parent; it is not a complete description of the code."""
 {_node_summary_for_guidance(references[1], fallback='No second PUCT reference is available.', raw_score_label=raw_score_label)}
 </reference_2>"""
 
+    search_history_context = _search_history_for_prompt(search_history) if search_aware else ""
+    style_instruction_parts: list[str] = []
+    next_instruction_number = 4
+    if search_aware:
+        style_instruction_parts.append(f"""
+{next_instruction_number}. Use the search history as a novelty constraint.
+   Treat high-frequency strategies as already explored. Do not propose another
+   aspect-ratio, LER, look-ahead, orientation-pruning, or threshold refinement
+   unless you identify a concrete untested causal mechanism that distinguishes it
+   from the listed trials. Prefer an underexplored and independently testable direction.
+""")
+        next_instruction_number += 1
+    if policy_style:
+        style_instruction_parts.append(f"""
+{next_instruction_number}. Act as a search-policy designer, not a local solution optimizer.
+   Choose one hypothesis about a different search direction. State the predicted
+   verifier improvement, the main risk, and a falsifier that would show the direction
+   should be abandoned. Avoid a bundle of small heuristic coefficients.
+""")
+        next_instruction_number += 1
+    style_instruction = "".join(style_instruction_parts)
+    output_instruction = (
+        "<guidance>\n"
+        "<search_direction>One distinct algorithmic/search direction.</search_direction>\n"
+        "<hypothesis>A falsifiable mechanism and why it should help.</hypothesis>\n"
+        "<expected_gain>Expected verifier signal or improvement.</expected_gain>\n"
+        "<risk_and_falsifier>Main risk and observable failure condition.</risk_and_falsifier>\n"
+        "</guidance>"
+        if policy_style
+        else "<guidance>\nProvide the final evolutionary guidance for the next execution attempt. Describe the main algorithmic direction and keep the guidance conceptual and actionable.\n</guidance>"
+    )
+
     user = f"""<problem>
 {problem_prompt}
 </problem>
@@ -238,6 +321,8 @@ parent; it is not a complete description of the code."""
 {context_intro}
 
 {selected_context}
+
+{search_history_context}
 
 # Objective
 {objective}
@@ -257,13 +342,15 @@ parent; it is not a complete description of the code."""
 3. Propose only executable mechanisms.
    {executable_mechanism_constraint}
 
-4. Produce exactly the required XML structure.
-   Provide internal reasoning and return exactly one `<guidance>` block and no other custom XML blocks, commentary, code, or markdown.
+{style_instruction}
+
+{next_instruction_number}. Produce exactly the required XML structure.
+   Provide internal reasoning and return exactly one `<guidance>` block and no commentary, code, or markdown outside it.
 
 Please do internal reasoning and provide your response exactly in the following format:
 
 <guidance>
-Provide the final evolutionary guidance for the next execution attempt. Describe the main algorithmic direction and keep the guidance conceptual and actionable.
+{output_instruction.removeprefix('<guidance>\n').removesuffix('\n</guidance>')}
 </guidance>
 """
     return Prompt(

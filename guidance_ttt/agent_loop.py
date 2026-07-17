@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.library import GuidanceLibrary, REFERENCE_SELECTION_PUCT_TOP2
 from guidance_ttt.llm_client import make_llm_client
 from guidance_ttt.prompts import (
     PROMPT_MODE_CODE_DELTA,
@@ -20,9 +20,11 @@ from guidance_ttt.prompts import (
     extract_tag_or_none,
     extract_terminal_tag_or_none,
     normalize_prompt_mode,
+    normalize_guidance_style,
     validate_entry_prompt_mode,
 )
 from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult, _jsonable
+from guidance_ttt.strategy import strategy_tags
 from guidance_ttt.tasks import TaskSpec, get_task_spec
 
 
@@ -141,6 +143,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         problem_prompt: str | None = None,
         task: dict[str, Any] | str | None = None,
         prompt_mode: str | None = None,
+        guidance_style: str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -162,6 +165,10 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         self.verifier_timeout_s = int(runtime_timeout if verifier_timeout_s is None else verifier_timeout_s)
         runtime_prompt_mode = _config_get(runtime_config, "prompt_mode")
         self.prompt_mode = normalize_prompt_mode(runtime_prompt_mode if prompt_mode is None else prompt_mode)
+        runtime_guidance_style = _config_get(runtime_config, "guidance_style")
+        self.guidance_style = normalize_guidance_style(
+            runtime_guidance_style if guidance_style is None else guidance_style
+        )
         runtime_problem_prompt = _config_get(runtime_config, "problem_prompt")
         self.problem_prompt_override = problem_prompt if problem_prompt is not None else runtime_problem_prompt
         self.problem_prompt = self.problem_prompt_override or self.task_spec.problem_prompt
@@ -239,6 +246,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             "puct_q_mode": str(extra_info.get("puct_q_mode", "blended")),
             "max_buffer_size": int(extra_info.get("max_buffer_size", 1000)),
             "topk_children": int(extra_info.get("topk_children", 2)),
+            "reference_selection_mode": str(
+                extra_info.get("reference_selection_mode", REFERENCE_SELECTION_PUCT_TOP2)
+            ),
         }
         library = GuidanceLibrary(library_path, **library_runtime_config)
         library.assert_runtime_config(**library_runtime_config)
@@ -275,6 +285,8 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             raw_score_label=task_spec.raw_score_label,
             solution_language=task_spec.solution_language,
             prompt_mode=self.prompt_mode,
+            guidance_style=self.guidance_style,
+            search_history=context.get("search_history"),
         )
         prompt_ids = await self.apply_chat_template(
             [
@@ -286,6 +298,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         response_ids = guidance_generation.response_ids
         guidance_text = guidance_generation.text
         guidance, guidance_format_ok = extract_guidance_or_format_error(guidance_text)
+        reference_selection_metadata = library.group_metadata(group_uid)
 
         execution_prompt = build_execution_prompt(
             problem_prompt=problem_prompt,
@@ -368,6 +381,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 ).hexdigest(),
                 "selected_parent_solution_chars": len(selected_entry.solution),
                 "guidance_format_ok": guidance_format_ok,
+                "guidance_style": self.guidance_style,
+                "guidance_strategy_tags": strategy_tags(guidance),
+                "reference_selection": reference_selection_metadata,
                 "guidance_generation_attempts": guidance_generation.attempts,
                 "guidance_prompt_tokens": len(prompt_ids),
                 "guidance_response_tokens": len(response_ids),
@@ -404,6 +420,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 "child_node_id": child.id,
                 "guidance": guidance,
                 "guidance_format_ok": guidance_format_ok,
+                "guidance_style": self.guidance_style,
+                "guidance_strategy_tags": strategy_tags(guidance),
+                "reference_selection": reference_selection_metadata,
                 "guidance_generation_attempts": guidance_generation.attempts,
                 "guidance_prompt_tokens": len(prompt_ids),
                 "guidance_response_tokens": len(response_ids),

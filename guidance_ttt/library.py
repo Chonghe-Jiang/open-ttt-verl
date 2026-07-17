@@ -12,6 +12,22 @@ from uuid import uuid4
 
 from guidance_ttt.puct import PUCT_Q_BLEND, normalize_puct_q_mode, rank_archive_nodes
 from guidance_ttt.state import LibraryEntry, LibraryNode
+from guidance_ttt.strategy import strategy_frequency, strategy_similarity, strategy_tags
+
+
+REFERENCE_SELECTION_PUCT_TOP2 = "puct_top2"
+REFERENCE_SELECTION_DIVERSE_TOP2 = "diverse_top2"
+SUPPORTED_REFERENCE_SELECTION_MODES = frozenset(
+    {REFERENCE_SELECTION_PUCT_TOP2, REFERENCE_SELECTION_DIVERSE_TOP2}
+)
+
+
+def normalize_reference_selection_mode(mode: str | None) -> str:
+    normalized = str(mode or REFERENCE_SELECTION_PUCT_TOP2).strip().lower()
+    if normalized not in SUPPORTED_REFERENCE_SELECTION_MODES:
+        supported = ", ".join(sorted(SUPPORTED_REFERENCE_SELECTION_MODES))
+        raise ValueError(f"Unsupported reference selection mode {mode!r}; expected one of: {supported}")
+    return normalized
 
 
 class GuidanceLibrary:
@@ -27,6 +43,7 @@ class GuidanceLibrary:
         puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int = 1000,
         topk_children: int = 2,
+        reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
     ) -> None:
         self.path = Path(path)
         self.rollout_n = int(rollout_n)
@@ -34,6 +51,7 @@ class GuidanceLibrary:
         self.puct_q_mode = normalize_puct_q_mode(puct_q_mode)
         self.max_buffer_size = int(max_buffer_size)
         self.topk_children = int(topk_children)
+        self.reference_selection_mode = normalize_reference_selection_mode(reference_selection_mode)
         self._thread_lock = threading.RLock()
         self._nodes: dict[str, LibraryNode] = {}
         self._entries: dict[str, LibraryEntry] = {}
@@ -78,6 +96,7 @@ class GuidanceLibrary:
         puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
+        reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
     ) -> None:
         """Apply run-specific sampling config to an unused seed archive."""
         expected = self._coerce_runtime_config(
@@ -86,6 +105,7 @@ class GuidanceLibrary:
             puct_q_mode=puct_q_mode,
             max_buffer_size=max_buffer_size,
             topk_children=topk_children,
+            reference_selection_mode=reference_selection_mode,
         )
         with self._thread_lock:
             with self._file_lock():
@@ -100,6 +120,7 @@ class GuidanceLibrary:
                 self.puct_q_mode = expected["puct_q_mode"]
                 self.max_buffer_size = expected["max_buffer_size"]
                 self.topk_children = expected["topk_children"]
+                self.reference_selection_mode = expected["reference_selection_mode"]
                 self._save()
 
     def assert_runtime_config(
@@ -110,6 +131,7 @@ class GuidanceLibrary:
         puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
+        reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
     ) -> None:
         """Fail fast when a persisted archive disagrees with the active recipe."""
         expected = self._coerce_runtime_config(
@@ -118,6 +140,7 @@ class GuidanceLibrary:
             puct_q_mode=puct_q_mode,
             max_buffer_size=max_buffer_size,
             topk_children=topk_children,
+            reference_selection_mode=reference_selection_mode,
         )
         actual = self._runtime_config()
         mismatches = []
@@ -147,6 +170,7 @@ class GuidanceLibrary:
         puct_q_mode: str = PUCT_Q_BLEND,
         max_buffer_size: int,
         topk_children: int,
+        reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
     ) -> dict[str, int | float | str]:
         config: dict[str, int | float | str] = {
             "rollout_n": int(rollout_n),
@@ -154,6 +178,7 @@ class GuidanceLibrary:
             "puct_q_mode": normalize_puct_q_mode(puct_q_mode),
             "max_buffer_size": int(max_buffer_size),
             "topk_children": int(topk_children),
+            "reference_selection_mode": normalize_reference_selection_mode(reference_selection_mode),
         }
         if config["rollout_n"] <= 0:
             raise ValueError(f"rollout_n must be positive, got {config['rollout_n']!r}")
@@ -166,6 +191,7 @@ class GuidanceLibrary:
             "puct_q_mode": self.puct_q_mode,
             "max_buffer_size": self.max_buffer_size,
             "topk_children": self.topk_children,
+            "reference_selection_mode": self.reference_selection_mode,
         }
 
     def _assert_group_accounting(self) -> None:
@@ -223,13 +249,13 @@ class GuidanceLibrary:
                 # Keep the alternatives fixed for the life of a group.  They are
                 # ranked by exactly the same PUCT calculation as the main parent;
                 # only the main parent is subject to same-step subtree blocking.
-                reference_node_ids = [
-                    node.id for _score, _value, node, *_rest in ranked if node.id != selected.id
-                ][:2]
+                reference_nodes = self._reference_nodes_for_selection(ranked, selected)
+                reference_node_ids = [node.id for node in reference_nodes]
                 selected.visits += 1
                 self._groups[group_uid] = {
                     "selected_node_id": selected.id,
                     "reference_node_ids": reference_node_ids,
+                    "reference_selection": self._reference_selection_metadata(selected, reference_nodes),
                     "submitted": 0,
                     "children": [],
                     "finalized": False,
@@ -357,6 +383,13 @@ class GuidanceLibrary:
                     if entry.parent_id == node.id and entry.verifier_status != "valid"
                     and self._entry_is_visible(entry, visible_timestep_exclusive=visible_timestep_exclusive)
                 ]
+                visible_entries = [
+                    entry
+                    for entry in self._entries.values()
+                    if self._entry_is_visible(entry, visible_timestep_exclusive=visible_timestep_exclusive)
+                ]
+                recent_entries = sorted(visible_entries, key=lambda entry: (entry.timestep, entry.id), reverse=True)[:12]
+                invalid_entries = [entry for entry in visible_entries if entry.verifier_status != "valid"]
                 previous_parent = (
                     self._nodes.get(selected_node.parent_id)
                     if selected_node and selected_node.parent_id
@@ -384,6 +417,19 @@ class GuidanceLibrary:
                     "reference_entries": reference_entries,
                     "global_best_entries": [best_entry] if best_entry else [],
                     "local_failure_entries": failures,
+                    "search_history": {
+                        "strategy_frequency": strategy_frequency(entry.guidance for entry in visible_entries),
+                        "failure_strategy_frequency": strategy_frequency(entry.guidance for entry in invalid_entries),
+                        "recent_strategies": [
+                            {
+                                "timestep": entry.timestep,
+                                "tags": strategy_tags(entry.guidance),
+                                "score": entry.verifier_raw_score,
+                                "status": entry.verifier_status,
+                            }
+                            for entry in recent_entries
+                        ],
+                    },
                 }
 
     def reference_nodes_for_group(
@@ -405,6 +451,93 @@ class GuidanceLibrary:
                     if (node := self._nodes.get(str(node_id))) is not None
                     and self._node_is_visible(node, visible_timestep_exclusive=visible_timestep_exclusive)
                 ]
+
+    def group_metadata(self, group_uid: str) -> dict[str, Any]:
+        """Return immutable sampling metadata recorded when a group was acquired."""
+        with self._thread_lock:
+            with self._file_lock():
+                self._reload()
+                group = self._groups.get(group_uid)
+                if group is None:
+                    raise KeyError(f"Unknown group_uid: {group_uid}")
+                return dict(group.get("reference_selection") or {})
+
+    def _reference_nodes_for_selection(
+        self,
+        ranked: list[tuple[float, float, LibraryNode, int, float, float, float]],
+        selected: LibraryNode,
+    ) -> list[LibraryNode]:
+        candidates = [node for _score, _value, node, *_rest in ranked if node.id != selected.id]
+        if self.reference_selection_mode == REFERENCE_SELECTION_PUCT_TOP2:
+            return candidates[:2]
+        if not candidates:
+            return []
+
+        first = candidates[0]
+        # Search only the leading PUCT candidates, then prefer an unrelated branch
+        # and the lowest strategy-text similarity. This keeps the second reference
+        # high-quality while breaking the common top-2 family collapse.
+        pool = candidates[1 : min(len(candidates), 16)]
+        if not pool:
+            return [first]
+        selected_text = self._node_strategy_text(selected)
+        first_text = self._node_strategy_text(first)
+        selected_branch = self._strategy_branch_id(selected)
+        first_branch = self._strategy_branch_id(first)
+
+        def key(item: tuple[int, LibraryNode]) -> tuple[int, int, float, int]:
+            rank, candidate = item
+            candidate_branch = self._strategy_branch_id(candidate)
+            branch_diversity = int(candidate_branch != selected_branch) + int(candidate_branch != first_branch)
+            unrelated = int(
+                not self._nodes_are_lineage_related(candidate.id, selected.id)
+                and not self._nodes_are_lineage_related(candidate.id, first.id)
+            )
+            similarity = max(
+                strategy_similarity(self._node_strategy_text(candidate), selected_text),
+                strategy_similarity(self._node_strategy_text(candidate), first_text),
+            )
+            return branch_diversity, unrelated, -similarity, -rank
+
+        _, second = max(enumerate(pool, start=1), key=key)
+        return [first, second]
+
+    def _node_strategy_text(self, node: LibraryNode) -> str:
+        entry = self._entries.get(node.entry_id) if node.entry_id else None
+        if entry is None:
+            return ""
+        raw_summary = (entry.metadata or {}).get("raw_model_summary")
+        return "\n".join(
+            str(part)
+            for part in (entry.guidance, raw_summary, entry.summary, entry.reusable_idea)
+            if isinstance(part, str) and part.strip()
+        )
+
+    def _strategy_branch_id(self, node: LibraryNode) -> str:
+        lineage = list(reversed(self._ancestor_node_ids(node.id)))
+        return lineage[1] if len(lineage) > 1 else lineage[0]
+
+    def _nodes_are_lineage_related(self, left_id: str, right_id: str) -> bool:
+        return left_id in self._ancestor_node_ids(right_id) or right_id in self._ancestor_node_ids(left_id)
+
+    def _reference_selection_metadata(
+        self,
+        selected: LibraryNode,
+        references: list[LibraryNode],
+    ) -> dict[str, Any]:
+        reference_texts = [self._node_strategy_text(node) for node in references]
+        return {
+            "mode": self.reference_selection_mode,
+            "selected_branch_id": self._strategy_branch_id(selected),
+            "reference_node_ids": [node.id for node in references],
+            "reference_branch_ids": [self._strategy_branch_id(node) for node in references],
+            "reference_strategy_similarity": (
+                strategy_similarity(reference_texts[0], reference_texts[1]) if len(reference_texts) == 2 else None
+            ),
+            "reference_lineage_related": (
+                self._nodes_are_lineage_related(references[0].id, references[1].id) if len(references) == 2 else None
+            ),
+        }
 
     def _rank_nodes(
         self,
@@ -668,6 +801,8 @@ class GuidanceLibrary:
         }
         if self.puct_q_mode != PUCT_Q_BLEND:
             config["puct_q_mode"] = self.puct_q_mode
+        if self.reference_selection_mode != REFERENCE_SELECTION_PUCT_TOP2:
+            config["reference_selection_mode"] = self.reference_selection_mode
         store = {
             "nodes": {node_id: node.to_dict() for node_id, node in self._nodes.items()},
             "entries": {entry_id: entry.to_dict() for entry_id, entry in self._entries.items()},
@@ -714,6 +849,9 @@ class GuidanceLibrary:
         )
         self.max_buffer_size = int(config.get("max_buffer_size", data.get("max_buffer_size", self.max_buffer_size)))
         self.topk_children = int(config.get("topk_children", data.get("topk_children", self.topk_children)))
+        self.reference_selection_mode = normalize_reference_selection_mode(
+            config.get("reference_selection_mode", self.reference_selection_mode)
+        )
         has_puct_n = "puct_n" in data
         self._puct_n = {str(node_id): int(count) for node_id, count in (data.get("puct_n") or {}).items()}
         self._puct_m = {str(node_id): float(value) for node_id, value in (data.get("puct_m") or {}).items()}

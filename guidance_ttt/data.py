@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from guidance_ttt.puct import PUCT_Q_BLEND, normalize_puct_q_mode
+from guidance_ttt.library import REFERENCE_SELECTION_PUCT_TOP2, normalize_reference_selection_mode
 
 
 def _slot_task_config(task: str, task_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -26,9 +27,11 @@ def build_slot_records(
     puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
+    reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
 ) -> list[dict[str, Any]]:
     task_config_payload = _slot_task_config(task, task_config)
     normalized_puct_q_mode = normalize_puct_q_mode(puct_q_mode)
+    normalized_reference_selection_mode = normalize_reference_selection_mode(reference_selection_mode)
     records = [
         {
             "data_source": "guidance_ttt",
@@ -46,6 +49,7 @@ def build_slot_records(
                 "puct_c": float(puct_c),
                 "max_buffer_size": int(max_buffer_size),
                 "topk_children": int(topk_children),
+                "reference_selection_mode": normalized_reference_selection_mode,
             },
         }
         for slot_idx in range(int(num_slots))
@@ -68,6 +72,7 @@ def write_slot_parquet(
     puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
+    reference_selection_mode: str = REFERENCE_SELECTION_PUCT_TOP2,
 ) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +86,7 @@ def write_slot_parquet(
         puct_q_mode=puct_q_mode,
         max_buffer_size=max_buffer_size,
         topk_children=topk_children,
+        reference_selection_mode=reference_selection_mode,
     )
     try:
         import pandas as pd
