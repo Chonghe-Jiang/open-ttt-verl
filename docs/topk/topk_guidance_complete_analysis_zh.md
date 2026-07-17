@@ -120,3 +120,27 @@ step 24 完成、记录最高分 81.2193 后，下一步在 actor 的 `compute_l
 - [分数 Excel](../topk_guidance_score_history.xlsx)
 - [SVG 曲线图](../topk_guidance_score_history.svg)
 - [PNG 曲线图](../topk_guidance_score_history.png)
+
+## 后续实验计划：top-k guidance 消融
+
+为验证平台期是否主要来自 reference 同质化与 guidance 的局部启发式收敛，后续四组实验保持同一训练预算，仅改变 guidance/search 配置。每组均使用 Polynomino 8×8、8 张 B200、Qwen3-8B TTT guidance、GPT-OSS-120B execution、50 step、`groups_per_batch=8`、`group_size=8`、`puct_c=1.0`、`puct_q_mode=best_child`；verifier、execution prompt 及其余训练超参不变。
+
+| 实验 | Guidance/search 改动 | 验证目标 | 已提交作业 |
+|---|---|---|---:|
+| Exp 1：Diverse References | reference 改为 PUCT Top-1 + 前列高分候选中策略文本最不相似、且不同祖先分支的节点 | 验证 reference 同质化是否导致收敛 | 163661 |
+| Exp 2：Search-Aware Prompt | prompt 注入已探索策略、失败方向、近期试验及策略频率；高频方向被明确标记为已探索 | 验证搜索历史能否提升探索多样性 | 163662 |
+| Exp 3：Policy Guidance Prompt | guidance 输出一个可证伪的 search policy hypothesis：搜索方向、机制、预期收益、风险/证伪条件 | 验证 guidance 作为树搜索策略是否优于局部 solution optimizer | 163663 |
+| Exp 4：Combined | 同时启用 Diverse References、Search-Aware 和 Policy Guidance | 验证完整搜索策略是否突破平台 | 163664 |
+
+作业使用完整 8 卡 B200 节点（7 卡用于 TTT，1 卡用于 GPT-OSS execution），已提交到 `b200-batch` 队列；撰写本节时均处于 `PENDING (Priority)`，会在完整节点空闲后自动启动。
+
+每个运行结束后会自动写入 `topk_guidance_metrics.json`，统一记录：
+
+- best verifier score；
+- valid execution rate；
+- guidance strategy diversity（当前为 guidance 文本的词汇 Jaccard 多样性代理，保留原始 guidance/summary 以供后续 embedding 分析）；
+- Aspect/LER/look-ahead 等策略标签覆盖率；
+- reference diversity（不同祖先分支数、reference strategy similarity、lineage relation）；
+- 首次严格超过当前最佳分数 81.3115 的 step；若未突破则记录为 `null`。
+
+本轮实现版本为 `topk-guidance` 分支 commit `28db605c`。
