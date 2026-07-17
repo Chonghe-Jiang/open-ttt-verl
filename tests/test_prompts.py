@@ -327,7 +327,7 @@ Preserve this exact raw text."""
     assert prompt.user.index("</problem>") < prompt.user.index("The next sections describe")
     assert prompt.user.index("The next sections describe") < prompt.user.index("<main_parent>")
     assert "<main_parent>" in prompt.user
-    assert "<previous_parent>" in prompt.user
+    assert "<previous_parent>" not in prompt.user
     assert "<reference_1>" in prompt.user
     assert "<reference_2>" in prompt.user
     assert "  Raw summary with intentional leading spaces." in prompt.user

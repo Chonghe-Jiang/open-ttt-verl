@@ -187,13 +187,13 @@ def build_guidance_prompt(
         )
         context_intro = """The `<main_parent>` block contains the selected candidate's complete code, its incremental
 summary, and its verified score. Treat the code as the authoritative description
-of the current algorithm. The `<previous_parent>` and reference blocks provide
-alternative historical summaries and verified scores for comparison. The main
+of the current algorithm. When present, the `<previous_parent>` and reference
+blocks provide alternative historical summaries and verified scores for comparison. The main
 change summary describes only how the selected candidate changed from its own
 parent; it is not a complete description of the code."""
         history_instruction = (
-            "Use the main `<parent_code>`, `<change_summary>`, and `<score>` together with `<previous_parent>`, "
-            "`<reference_1>`, and `<reference_2>` to identify what the candidate currently implements, what its "
+            "Use the main `<parent_code>`, `<change_summary>`, and `<score>` together with any supplied "
+            "`<previous_parent>`, `<reference_1>`, and `<reference_2>` blocks to identify what the candidate currently implements, what its "
             "previous refinement changed, and what bottleneck the next attempt should address."
         )
     else:
@@ -207,17 +207,21 @@ parent; it is not a complete description of the code."""
             "as run-local context when deciding the next step."
         )
         history_instruction = (
-            "Compare the main parent with its immediate predecessor and the two PUCT-ranked references to identify "
+            "Compare the main parent with its immediate predecessor (when supplied) and the two PUCT-ranked references to identify "
             "what has already been tried, what worked, and what bottleneck the next attempt should address."
         )
 
-    selected_context = f"""<main_parent>
-{main_parent_context}
-</main_parent>
+    previous_parent_context = ""
+    if previous_parent_entry is not None:
+        previous_parent_context = f"""
 
 <previous_parent>
-{_node_summary_for_guidance(previous_parent_entry, fallback='The main parent is a root node; it has no previous parent.', raw_score_label=raw_score_label)}
-</previous_parent>
+{_node_summary_for_guidance(previous_parent_entry, fallback='', raw_score_label=raw_score_label)}
+</previous_parent>"""
+
+    selected_context = f"""<main_parent>
+{main_parent_context}
+</main_parent>{previous_parent_context}
 
 <reference_1>
 {_node_summary_for_guidance(references[0], fallback='No first PUCT reference is available.', raw_score_label=raw_score_label)}
