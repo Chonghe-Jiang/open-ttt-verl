@@ -26,6 +26,9 @@ def build_slot_records(
     puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
+    discover_compat: bool = False,
+    groups_per_batch: int | None = None,
+    score_direction: str = "max",
 ) -> list[dict[str, Any]]:
     task_config_payload = _slot_task_config(task, task_config)
     normalized_puct_q_mode = normalize_puct_q_mode(puct_q_mode)
@@ -46,6 +49,9 @@ def build_slot_records(
                 "puct_c": float(puct_c),
                 "max_buffer_size": int(max_buffer_size),
                 "topk_children": int(topk_children),
+                "discover_compat": bool(discover_compat),
+                "groups_per_batch": int(groups_per_batch if groups_per_batch is not None else num_slots),
+                "score_direction": str(score_direction),
             },
         }
         for slot_idx in range(int(num_slots))
@@ -68,6 +74,9 @@ def write_slot_parquet(
     puct_q_mode: str = PUCT_Q_BLEND,
     max_buffer_size: int = 1000,
     topk_children: int = 2,
+    discover_compat: bool = False,
+    groups_per_batch: int | None = None,
+    score_direction: str = "max",
 ) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +90,9 @@ def write_slot_parquet(
         puct_q_mode=puct_q_mode,
         max_buffer_size=max_buffer_size,
         topk_children=topk_children,
+        discover_compat=discover_compat,
+        groups_per_batch=groups_per_batch,
+        score_direction=score_direction,
     )
     try:
         import pandas as pd

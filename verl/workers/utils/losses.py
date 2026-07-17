@@ -133,7 +133,7 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
     loss_mode = config.policy_loss.get("loss_mode", "vanilla")
 
     policy_loss_fn = get_policy_loss_fn(loss_mode)
-    pg_loss, pg_metrics = policy_loss_fn(
+    policy_loss_kwargs = dict(
         old_log_prob=old_log_prob,
         log_prob=log_prob,
         advantages=advantages,
@@ -142,6 +142,9 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         config=config,
         rollout_is_weights=rollout_is_weights,
     )
+    if loss_mode == "ttt_reinforce_is":
+        policy_loss_kwargs["rollout_log_probs"] = data.get("rollout_log_probs", None)
+    pg_loss, pg_metrics = policy_loss_fn(**policy_loss_kwargs)
 
     # AggregationType.MEAN for pg metrics: assumes policy_loss_fn normalizes by local_bsz/local_tokens
     # Ex: in compute_policy_loss_vanilla, pg_metrics are pg_clipfrac, ppo_kl, pg_clipfrac_lower

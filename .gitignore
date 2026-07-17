@@ -11,6 +11,7 @@ __pycache__/
 outputs/
 models/
 reference/
+external/discover/
 .ray_tmp/
 .hf_cache/
 .tmp/

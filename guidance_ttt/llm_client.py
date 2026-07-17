@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -176,6 +177,339 @@ class OpenAICompatibleLLMClient:
                     delay = self.retry_backoff_s * (2**attempt)
                 time.sleep(max(0.0, delay))
         raise AssertionError("unreachable")
+
+
+class GPTOSSTwoPhaseOpenAICompatibleLLMClient(OpenAICompatibleLLMClient):
+    """OpenAI-compatible GPT-OSS client with Discover's forced-final sampling.
+
+    The regular chat-completions endpoint parses Harmony output into separate
+    reasoning and content fields, which makes an exact continuation impossible
+    after a length stop.  vLLM's completions endpoint accepts and returns token
+    IDs, so both phases operate on the original Harmony sequence just like the
+    official Discover ``TwoPhaseTokenCompleter``.
+    """
+
+    PHASE2_PREFILL = "\n\n... okay, I am out of thinking tokens. I need to send my final message now."
+    GPTOSS_FINAL_MARKER = "<|end|><|start|>assistant<|channel|>final<|message|>"
+    GPTOSS_FINAL_CHANNEL_INDICATOR = "<|channel|>final<|message|>"
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.phase1_max_tokens = int(config["phase1_max_tokens"])
+        self.context_window = int(config.get("context_window", 32768))
+        self.context_buffer = int(config.get("context_buffer", 50))
+        if self.phase1_max_tokens <= 0:
+            raise ValueError("phase1_max_tokens must be positive")
+        if self.context_window <= self.phase1_max_tokens + self.context_buffer:
+            raise ValueError(
+                "context_window must exceed phase1_max_tokens + context_buffer "
+                f"({self.context_window} <= {self.phase1_max_tokens} + {self.context_buffer})"
+            )
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        return await asyncio.to_thread(self._complete_two_phase, request)
+
+    def _complete_two_phase(self, request: LLMRequest) -> LLMResponse:
+        prompt_ids = self._render_harmony_prompt(request)
+        phase1_max = self.phase1_max_tokens - len(prompt_ids)
+        if phase1_max <= 0:
+            raise ValueError(
+                f"Prompt length {len(prompt_ids)} exceeds phase1_max_tokens "
+                f"{self.phase1_max_tokens}"
+            )
+
+        phase1_data = self._post_json(
+            "/completions",
+            self._completion_payload(
+                request=request,
+                prompt_ids=prompt_ids,
+                max_tokens=phase1_max,
+            ),
+        )
+        phase1_choice = (phase1_data.get("choices") or [{}])[0]
+        phase1_ids = self._choice_token_ids(phase1_choice, phase="phase1")
+        phase1_finish = str(phase1_choice.get("finish_reason") or "")
+        stop_ids = set(self._harmony_stop_token_ids())
+        hit_stop = (
+            bool(phase1_ids and phase1_ids[-1] in stop_ids)
+            or phase1_finish == "stop"
+        )
+        exhausted = not hit_stop and (
+            phase1_finish == "length" or len(phase1_ids) >= phase1_max
+        )
+
+        forced_final = False
+        prefill_ids: list[int] = []
+        phase2_ids: list[int] = []
+        phase2_finish = ""
+        discarded_phase1_ids: list[int] = []
+        combined_ids = list(phase1_ids)
+
+        if exhausted:
+            forced_final = True
+            if not self._contains_subsequence(
+                phase1_ids, self._encode_harmony(self.GPTOSS_FINAL_CHANNEL_INDICATOR)
+            ):
+                # A length stop can land in the middle of Harmony's multi-token
+                # final-channel header.  Appending the forced header after that
+                # fragment creates an invalid stream (for example,
+                # ``<|channel|><normal text>``).  Remove only a suffix that is a
+                # strict prefix of one of the valid final headers, then inject
+                # the complete Discover prefill below.
+                phase1_ids, discarded_phase1_ids = self._trim_incomplete_final_header(
+                    phase1_ids
+                )
+                end_ids = self._encode_harmony("<|end|>")
+                if self._ends_with(phase1_ids, end_ids):
+                    prefill = (
+                        self.PHASE2_PREFILL
+                        + "<|start|>assistant<|channel|>final<|message|>"
+                    )
+                else:
+                    prefill = self.PHASE2_PREFILL + self.GPTOSS_FINAL_MARKER
+                prefill_ids = self._encode_harmony(prefill)
+
+            phase2_prompt_ids = prompt_ids + phase1_ids + prefill_ids
+            phase2_max = self.context_window - len(phase2_prompt_ids) - self.context_buffer
+            if phase2_max <= 0:
+                raise RuntimeError(
+                    "No GPT-OSS phase-2 budget remains after forced-final prefill: "
+                    f"context_window={self.context_window}, prompt={len(prompt_ids)}, "
+                    f"phase1={len(phase1_ids)}, prefill={len(prefill_ids)}, "
+                    f"buffer={self.context_buffer}"
+                )
+            phase2_data = self._post_json(
+                "/completions",
+                self._completion_payload(
+                    request=request,
+                    prompt_ids=phase2_prompt_ids,
+                    max_tokens=phase2_max,
+                ),
+            )
+            phase2_choice = (phase2_data.get("choices") or [{}])[0]
+            phase2_ids = self._choice_token_ids(phase2_choice, phase="phase2")
+            phase2_finish = str(phase2_choice.get("finish_reason") or "")
+            combined_ids = phase1_ids + prefill_ids + phase2_ids
+
+        reasoning, text, harmony_parse_fallback = self._parse_harmony_output_resilient(
+            combined_ids=combined_ids,
+            phase1_ids=phase1_ids,
+            phase2_ids=phase2_ids,
+            forced_final=forced_final,
+            injected_prefill=bool(prefill_ids),
+        )
+        completion_tokens = (
+            len(phase1_ids)
+            + len(discarded_phase1_ids)
+            + len(prefill_ids)
+            + len(phase2_ids)
+        )
+        usage = {
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": completion_tokens,
+            "total_tokens": len(prompt_ids) + completion_tokens,
+            "phase1_completion_tokens": len(phase1_ids),
+            "phase1_discarded_header_tokens": len(discarded_phase1_ids),
+            "phase2_prefill_tokens": len(prefill_ids),
+            "phase2_completion_tokens": len(phase2_ids),
+        }
+        final_finish = phase2_finish if forced_final else phase1_finish
+        metadata = {
+            "provider": "openai_compatible",
+            **request.metadata,
+            "two_phase": True,
+            "forced_final": forced_final,
+            "phase1_finish_reason": phase1_finish,
+            "phase2_finish_reason": phase2_finish or None,
+            "phase1_max_context_tokens": self.phase1_max_tokens,
+            "context_window": self.context_window,
+            "context_buffer": self.context_buffer,
+            "harmony_parse_fallback": harmony_parse_fallback,
+        }
+        return LLMResponse(
+            text=text,
+            model=phase1_data.get("model") or request.model,
+            finish_reason=final_finish,
+            reasoning=reasoning,
+            usage=usage,
+            metadata=metadata,
+        )
+
+    def _completion_payload(
+        self,
+        *,
+        request: LLMRequest,
+        prompt_ids: list[int],
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "prompt": prompt_ids,
+            "temperature": request.temperature,
+            "max_tokens": int(max_tokens),
+            "stop_token_ids": self._harmony_stop_token_ids(),
+            "return_token_ids": True,
+            "skip_special_tokens": False,
+        }
+        for key in ("top_p", "top_k", "min_p"):
+            if key in self.request_options:
+                payload[key] = self.request_options[key]
+        return payload
+
+    @staticmethod
+    def _choice_token_ids(choice: dict[str, Any], *, phase: str) -> list[int]:
+        token_ids = choice.get("token_ids")
+        if not isinstance(token_ids, list) or not all(
+            isinstance(token_id, int) for token_id in token_ids
+        ):
+            raise RuntimeError(
+                f"GPT-OSS two-phase {phase} response did not include integer token_ids; "
+                "vLLM >= 0.17 with return_token_ids support is required"
+            )
+        return list(token_ids)
+
+    def _render_harmony_prompt(self, request: LLMRequest) -> list[int]:
+        try:
+            from vllm.entrypoints.openai.parser.harmony_utils import (
+                get_system_message,
+                parse_chat_inputs_to_harmony_messages,
+                render_for_completion,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "GPT-OSS two-phase execution requires vLLM's Harmony utilities"
+            ) from exc
+        reasoning_effort = self.request_options.get("reasoning_effort")
+        messages = [get_system_message(reasoning_effort=reasoning_effort)]
+        messages.extend(
+            parse_chat_inputs_to_harmony_messages(
+                [
+                    {"role": "system", "content": request.system},
+                    {"role": "user", "content": request.user},
+                ]
+            )
+        )
+        return list(render_for_completion(messages))
+
+    @staticmethod
+    def _harmony_stop_token_ids() -> list[int]:
+        try:
+            from vllm.entrypoints.openai.parser.harmony_utils import (
+                get_stop_tokens_for_assistant_actions,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "GPT-OSS two-phase execution requires vLLM's Harmony utilities"
+            ) from exc
+        return list(get_stop_tokens_for_assistant_actions())
+
+    @staticmethod
+    def _encode_harmony(text: str) -> list[int]:
+        try:
+            from vllm.entrypoints.openai.parser.harmony_utils import get_encoding
+        except ImportError as exc:
+            raise RuntimeError(
+                "GPT-OSS two-phase execution requires vLLM's Harmony utilities"
+            ) from exc
+        return list(get_encoding().encode(text, allowed_special="all"))
+
+    @staticmethod
+    def _parse_harmony_output(token_ids: list[int]) -> tuple[str, str]:
+        try:
+            from vllm.entrypoints.openai.parser.harmony_utils import parse_chat_output
+        except ImportError as exc:
+            raise RuntimeError(
+                "GPT-OSS two-phase execution requires vLLM's Harmony utilities"
+            ) from exc
+        reasoning, final_content, _is_tool_call = parse_chat_output(token_ids)
+        return str(reasoning or ""), str(final_content or "")
+
+    def _parse_harmony_output_resilient(
+        self,
+        *,
+        combined_ids: list[int],
+        phase1_ids: list[int],
+        phase2_ids: list[int],
+        forced_final: bool,
+        injected_prefill: bool,
+    ) -> tuple[str, str, bool]:
+        try:
+            reasoning, text = self._parse_harmony_output(combined_ids)
+            return reasoning, text, False
+        except RuntimeError as exc:
+            # openai_harmony.HarmonyError derives from RuntimeError.  Do not
+            # hide configuration/import failures raised by our wrapper.
+            if exc.__class__.__name__ != "HarmonyError":
+                raise
+            if not forced_final:
+                raise
+
+        # The final phase starts immediately after a final-channel message
+        # marker, so its decoded generated tokens are exactly the final answer.
+        # This fallback handles arbitrary length cuts inside a Harmony header
+        # without losing an otherwise valid executor answer.
+        phase1_reasoning = self._best_effort_reasoning(phase1_ids)
+        if injected_prefill:
+            return phase1_reasoning, self._decode_harmony(phase2_ids), True
+
+        # If phase 1 had already entered the final channel, preserve any final
+        # content it emitted before the cutoff and append the continuation.
+        try:
+            reasoning, partial_final = self._parse_harmony_output(phase1_ids)
+        except RuntimeError:
+            reasoning, partial_final = phase1_reasoning, ""
+        return reasoning, partial_final + self._decode_harmony(phase2_ids), True
+
+    def _best_effort_reasoning(self, token_ids: list[int]) -> str:
+        try:
+            reasoning, _final = self._parse_harmony_output(token_ids)
+            if reasoning:
+                return reasoning
+        except RuntimeError:
+            pass
+        decoded = self._decode_harmony(token_ids)
+        return re.sub(r"<\|[^|]+\|>", "", decoded).strip()
+
+    @staticmethod
+    def _decode_harmony(token_ids: list[int]) -> str:
+        try:
+            from vllm.entrypoints.openai.parser.harmony_utils import get_encoding
+        except ImportError as exc:
+            raise RuntimeError(
+                "GPT-OSS two-phase execution requires vLLM's Harmony utilities"
+            ) from exc
+        return str(get_encoding().decode(token_ids))
+
+    def _trim_incomplete_final_header(
+        self, token_ids: list[int]
+    ) -> tuple[list[int], list[int]]:
+        header_variants = (
+            self.GPTOSS_FINAL_MARKER,
+            "<|start|>assistant<|channel|>final<|message|>",
+            self.GPTOSS_FINAL_CHANNEL_INDICATOR,
+        )
+        longest = 0
+        for header in header_variants:
+            header_ids = self._encode_harmony(header)
+            for prefix_len in range(1, len(header_ids)):
+                if self._ends_with(token_ids, header_ids[:prefix_len]):
+                    longest = max(longest, prefix_len)
+        if not longest:
+            return list(token_ids), []
+        return list(token_ids[:-longest]), list(token_ids[-longest:])
+
+    @staticmethod
+    def _contains_subsequence(tokens: list[int], pattern: list[int]) -> bool:
+        if not pattern or len(pattern) > len(tokens):
+            return False
+        return any(
+            tokens[index : index + len(pattern)] == pattern
+            for index in range(len(tokens) - len(pattern) + 1)
+        )
+
+    @staticmethod
+    def _ends_with(tokens: list[int], suffix: list[int]) -> bool:
+        return bool(suffix) and len(suffix) <= len(tokens) and tokens[-len(suffix) :] == suffix
 
 
 _LOCAL_PIPELINE_CACHE: dict[str, Callable] = {}
@@ -577,6 +911,8 @@ def make_llm_client(config: dict) -> BaseLLMClient:
     if provider == "mock":
         return MockLLMClient()
     if provider in {"openai", "openai_compatible"}:
+        if config.get("phase1_max_tokens") is not None:
+            return GPTOSSTwoPhaseOpenAICompatibleLLMClient(config)
         return OpenAICompatibleLLMClient(config)
     if provider in {"local", "transformers", "local_transformers"}:
         return LocalTransformersLLMClient(config)

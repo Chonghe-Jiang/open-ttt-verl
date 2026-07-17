@@ -262,6 +262,9 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             "puct_q_mode": str(extra_info.get("puct_q_mode", "blended")),
             "max_buffer_size": int(extra_info.get("max_buffer_size", 1000)),
             "topk_children": int(extra_info.get("topk_children", 2)),
+            "discover_compat": bool(extra_info.get("discover_compat", False)),
+            "groups_per_batch": int(extra_info.get("groups_per_batch", 1)),
+            "score_direction": str(extra_info.get("score_direction", "max")),
         }
         library = _shared_guidance_library(library_path, library_runtime_config)
         selected_node = library.acquire_group(
@@ -329,7 +332,10 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                 )
                 execution_text = execution_response.text
                 execution_reasoning = execution_response.reasoning
-                execution_response_metadata = execution_response.metadata
+                execution_response_metadata = {
+                    **execution_response.metadata,
+                    "finish_reason": execution_response.finish_reason,
+                }
                 execution_response_usage = execution_response.usage
             except Exception as exc:
                 execution_response_metadata = {}
@@ -420,7 +426,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             extra_fields={
                 "group_uid": group_uid,
                 "selected_node_id": selected_node.id,
-                "child_node_id": child.id,
+                "child_node_id": None if child is None else child.id,
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
                 "guidance_prompt_tokens": len(prompt_ids),

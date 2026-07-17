@@ -1492,6 +1492,31 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+                        discover_kl_coef = float(
+                            self.config.algorithm.get("discover_kl_coef", 0.0) or 0.0
+                        )
+                        if discover_kl_coef > 0.0:
+                            if "rollout_log_probs" not in batch.batch:
+                                raise RuntimeError(
+                                    "Discover-compatible KL requires rollout_log_probs; "
+                                    "set actor_rollout_ref.rollout.calculate_log_probs=True"
+                                )
+                            if "ref_log_prob" not in batch.batch:
+                                raise RuntimeError(
+                                    "Discover-compatible KL requires ref_log_prob from the frozen base policy"
+                                )
+                            from guidance_ttt.verl_ext import add_discover_centered_kl_to_advantages
+
+                            batch.batch["advantages"], discover_kl_metrics = (
+                                add_discover_centered_kl_to_advantages(
+                                    advantages=batch.batch["advantages"],
+                                    rollout_log_probs=batch.batch["rollout_log_probs"],
+                                    ref_log_probs=batch.batch["ref_log_prob"],
+                                    response_mask=batch.batch["response_mask"],
+                                    coef=discover_kl_coef,
+                                )
+                            )
+                            metrics.update(discover_kl_metrics)
 
                     # update critic
                     if self.use_critic:

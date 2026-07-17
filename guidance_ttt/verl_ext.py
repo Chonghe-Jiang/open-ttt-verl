@@ -8,6 +8,15 @@ import numpy as np
 import torch
 
 
+def _config_get(config: Any | None, key: str, default: Any = None) -> Any:
+    if config is None:
+        return default
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(config, key, default)
+
+
 def _group_indices(index: np.ndarray | list[Any] | None, size: int) -> dict[Any, list[int]]:
     if index is None:
         index = np.arange(size)
@@ -52,9 +61,18 @@ def compute_entropic_adaptive_beta(
         scores = token_level_rewards.sum(dim=-1).float()
         advantages = torch.zeros_like(token_level_rewards, dtype=torch.float32)
         groups = _group_indices(index, scores.shape[0])
-        for indices in groups.values():
+        remove_constant_groups = bool(_config_get(config, "remove_constant_reward_groups", False))
+        grouped_indices = list(groups.values())
+        has_variable_group = any(
+            len(indices) >= 2 and not torch.allclose(scores[indices], scores[indices][0])
+            for indices in grouped_indices
+        )
+        for group_idx, indices in enumerate(grouped_indices):
             group_scores = scores[indices]
             if len(indices) < 2 or torch.allclose(group_scores, group_scores[0]):
+                keep_official_empty_batch_fallback = not has_variable_group and group_idx == 0
+                if remove_constant_groups and not keep_official_empty_batch_fallback:
+                    response_mask[indices] = 0
                 continue
             beta = _solve_adaptive_beta(group_scores)
             exp_scores = torch.exp(beta * (group_scores - group_scores.max()))
@@ -63,6 +81,51 @@ def compute_entropic_adaptive_beta(
             for local_idx, batch_idx in enumerate(indices):
                 advantages[batch_idx] = scalar_advantages[local_idx] * response_mask[batch_idx]
     return advantages, advantages
+
+
+def add_discover_centered_kl_to_advantages(
+    *,
+    advantages: torch.Tensor,
+    rollout_log_probs: torch.Tensor,
+    ref_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    coef: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Apply Discover's centered token-level base-policy term to advantages.
+
+    The official implementation computes ``d = log pi_rollout - log pi_base``
+    over active response tokens and adds ``coef * (mean(d) - d)``.  Centering
+    preserves zero mean while discouraging tokens that moved too far from the
+    frozen base policy.
+    """
+    if advantages.shape != rollout_log_probs.shape or advantages.shape != ref_log_probs.shape:
+        raise ValueError(
+            "Discover KL tensors must have identical shapes: "
+            f"advantages={tuple(advantages.shape)}, rollout={tuple(rollout_log_probs.shape)}, "
+            f"ref={tuple(ref_log_probs.shape)}"
+        )
+    if response_mask.shape != advantages.shape:
+        raise ValueError(
+            f"response_mask shape {tuple(response_mask.shape)} does not match {tuple(advantages.shape)}"
+        )
+    mask = response_mask.to(dtype=torch.float32)
+    active_tokens = mask.sum()
+    if float(active_tokens.item()) <= 0.0 or float(coef) == 0.0:
+        return advantages, {
+            "discover/kl_logprob_diff_mean": 0.0,
+            "discover/kl_advantage_abs_mean": 0.0,
+        }
+    logprob_diff = (rollout_log_probs.float() - ref_log_probs.float()) * mask
+    mean_diff = logprob_diff.sum() / active_tokens
+    kl_advantage = float(coef) * mask * (mean_diff - logprob_diff)
+    updated = advantages.float() + kl_advantage
+    metrics = {
+        "discover/kl_logprob_diff_mean": float(mean_diff.detach().item()),
+        "discover/kl_advantage_abs_mean": float(
+            (kl_advantage.abs().sum() / active_tokens).detach().item()
+        ),
+    }
+    return updated.to(dtype=advantages.dtype), metrics
 
 
 def compute_ttt_reinforce_is(
@@ -91,8 +154,11 @@ def compute_ttt_reinforce_is(
     else:
         loss = (losses * response_mask).sum() / response_mask.sum().clamp_min(1.0)
     valid_weights = is_weights[response_mask.bool()]
+    active_tokens = response_mask.sum().clamp_min(1.0)
     metrics = {
-        "actor/ppo_kl": float(((old_log_prob - log_prob) * response_mask).sum().detach().item()),
+        "actor/ppo_kl": float(
+            (((old_log_prob - log_prob) * response_mask).sum() / active_tokens).detach().item()
+        ),
         "policy/ttt_is_mean": float(valid_weights.mean().item()) if valid_weights.numel() else 0.0,
         "policy/ttt_is_max": float(valid_weights.max().item()) if valid_weights.numel() else 0.0,
     }
@@ -118,4 +184,3 @@ try:
     register_ttt_algorithms()
 except ModuleNotFoundError:
     pass
-

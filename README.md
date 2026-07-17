@@ -139,6 +139,7 @@ The cluster recipes currently cover two complementary execution layouts:
 | Guidance actor | Execution model | Allocation | Comparison |
 | --- | --- | --- | --- |
 | Qwen3-8B | Evolvent GPT-5.4 API | 1xB200 | 8x16 `summary_only`, up to 50 steps, no checkpoints |
+| Qwen3-8B | local GPT-OSS-120B high-reasoning two-phase | 2xB200 | Discover-compatible 8x16 `summary_only`, one-day bounded, no checkpoints |
 | Qwen3.6-27B | local GPT-OSS-120B | 5xB200 | `summary_only`/`code_delta` x `best_child`/`blended`, 8x16, no checkpoints |
 
 The GPT-5.4 path reads its key from ignored `.secrets/evolvent_api_key`, probes
@@ -147,6 +148,15 @@ summary after brief reasoning. The 27B path uses four B200s for guidance and a
 fifth for execution; Qwen3.6 actor/reference forwards use non-packed batches
 with FlashAttention 2 on standard attention layers to preserve rollout/training
 probability parity.
+
+The GPT-OSS-120B two-phase path uses vLLM token-ID completions rather than the
+chat-completions endpoint. Phase 1 spends a fixed prompt-plus-reasoning budget
+in the native GPT-OSS reasoning channel; if that budget is exhausted, the client
+injects a Harmony final-channel prefill and uses the remaining context for the
+final answer. These recipes must use `prompt_style: qwen_native_thinking` so the
+final channel contains only `<solution>` and `<summary>` blocks. Requiring a
+manual `<execution_thinking>` block in the final answer can cause early final
+stops before any C++ code is emitted.
 
 Reproducible commands and operational details are indexed in
 [`scripts/README.md`](scripts/README.md); all active YAML recipes are indexed in
@@ -482,6 +492,15 @@ python -m guidance_ttt.run_summary \
 
 ## Tests
 
+For new controlled comparisons with the official Discover implementation, set
+`ttt.discover_compat: true` in a fresh output directory. This preserves the
+Guidance-to-Execution architecture while aligning the adaptive-entropic RL
+objective, centered base-policy KL, per-rollout PUCT accounting, failed-rollout
+handling, independent seed lineages, and batch-end archive filtering. The
+batch/group shape remains an experiment parameter. See
+[`guidance_ttt/config/README.md`](guidance_ttt/config/README.md) for the exact
+compatibility contract.
+
 ```bash
 pytest -q tests
 python -m compileall -q guidance_ttt verl
@@ -498,6 +517,7 @@ current workflow families are:
 | Three-GPU smoke | 3xB200 | Qwen3-8B on GPUs 0-1, 8x16 | GPT-OSS-120B on GPU 2 | One-step acceptance |
 | Five-GPU training | 5xB200 | Qwen3-8B 8x64 or Qwen3-14B 8x32 on GPUs 0-3 | GPT-OSS-120B on GPU 4 | Long experiments |
 | Four-GPU shared execution | 4xB200 | Qwen3-8B on GPUs 0-3, 8x32 | Qwen3-8B colocated on GPU 3 | Experimental Qwen execution smoke |
+| Two-GPU GPT-OSS high-reasoning | 2xB200 | Qwen3-8B on GPU 0, 8x16 | GPT-OSS-120B two-phase on GPU 1 | Discover-compatible one-day runs |
 | Two-GPU execution matrix | 2xB200 | Qwen3-8B on GPU 0, 8x8 | GPT-OSS-120B, Qwen3.6-35B-A3B, or Qwen3-Coder-Next-FP8 on GPU 1 | Smoke-gated, resumable two-day runs |
 | Five-GPU dense guidance | 5xB200 | Qwen3.6-27B on GPUs 0-3, validated at 8x16 | GPT-OSS-120B on GPU 4 | Current actor-scaling runs in both communication modes |
 
@@ -553,6 +573,25 @@ submission examples. The preserved snapshot of the previous four-run baseline
 is in
 [`docs/b200_guidance_four_run_results_2026-07-14.md`](docs/b200_guidance_four_run_results_2026-07-14.md).
 The broader documentation map is [`docs/README.md`](docs/README.md).
+
+### Two-GPU GPT-OSS high-reasoning Discover run
+
+The bounded one-day Discover-compatible run uses Qwen3-8B as the guidance actor
+on GPU 0 and a local GPT-OSS-120B execution server on GPU 1. It keeps the
+8 groups x 16 rollouts shape, uses `summary_only`, disables checkpoint writing,
+and starts from `guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json`.
+
+```bash
+sbatch scripts/slurm_polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_discover_two_phase_1day.sbatch
+```
+
+The active recipe is
+`guidance_ttt/config/polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt.yaml`.
+It sets `reasoning_effort: high`, `phase1_max_tokens: 22000`,
+`context_window: 32768`, and `prompt_style: qwen_native_thinking`. The Slurm
+launcher validates these fields before starting the container because this
+prompt style is required for the two-phase forced-final path to return code
+instead of another explicit execution-thinking block.
 
 ### Two-GPU execution matrix
 

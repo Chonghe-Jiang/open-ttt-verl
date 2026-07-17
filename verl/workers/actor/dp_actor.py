@@ -612,7 +612,7 @@ class DataParallelPPOActor(BasePPOActor):
                     policy_loss_fn = get_policy_loss_fn(loss_mode)
 
                     # Compute policy loss (any function is expected to return 2 values)
-                    pg_loss, pg_metrics = policy_loss_fn(
+                    policy_loss_kwargs = dict(
                         old_log_prob=old_log_prob,
                         log_prob=log_prob,
                         advantages=advantages,
@@ -621,6 +621,9 @@ class DataParallelPPOActor(BasePPOActor):
                         config=self.config,
                         rollout_is_weights=rollout_is_weights,
                     )
+                    if loss_mode == "ttt_reinforce_is":
+                        policy_loss_kwargs["rollout_log_probs"] = model_inputs.get("rollout_log_probs", None)
+                    pg_loss, pg_metrics = policy_loss_fn(**policy_loss_kwargs)
                     micro_batch_metrics.update(pg_metrics)
 
                     # Skip if using bypass_mode loss (metrics already computed in pg_metrics)

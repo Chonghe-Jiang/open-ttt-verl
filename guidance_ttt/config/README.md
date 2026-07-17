@@ -31,6 +31,40 @@ ttt:
 directly as Q. Recipes without these fields retain the backward-compatible GRPO
 and `0.8 * parent + 0.2 * best_child` behavior.
 
+## Discover-compatible search and RL core
+
+New experiments can opt into the official Discover search/training semantics
+without changing the Guidance-to-Execution communication architecture:
+
+```yaml
+run:
+  adv_estimator: entropic_adaptive_beta
+  learning_rate: 4.0e-5
+  temperature: 1.0
+  use_kl_loss: false
+ttt:
+  discover_compat: true
+  groups_per_batch: 8
+  group_size: 16
+  puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
+```
+
+The compatibility path keeps batch/group shape configurable, but fixes the
+remaining mechanics: one PUCT visit per rollout (including failures), failed
+rollouts excluded from the candidate archive, batch-end top-2 filtering,
+independent seed-root lineages, direction-normalized raw score for PUCT,
+adaptive-entropic LOO advantages, constant-reward-group removal, centered
+base-policy KL in the advantage with coefficient `0.1`, untruncated token-level
+importance sampling, one optimizer epoch, and the official Adam
+hyperparameters.
+
+Compatibility is persisted in `library.json` and validated on resume. Do not
+enable it in an existing output directory produced by the legacy per-group
+PUCT accounting path; start from a fresh output directory instead.
+
 ## Two-GPU Qwen3-8B execution recipes
 
 The `polyomino_b200_2gpu_qwen3_8b_*_batch8_group8_*_500step.yaml` recipes are
@@ -150,6 +184,41 @@ llm:
     max_tokens: null
     phase1_max_tokens: null
 ```
+
+For GPT-OSS high-reasoning runs, setting a non-null
+`phase1_max_tokens` enables Discover's token-exact two-phase completion over
+the vLLM completions endpoint. The value is a total prompt-plus-phase-1 budget,
+not a standalone output limit. If phase 1 exhausts this budget, the client
+inserts the Harmony final-channel prefill and uses the remaining context for
+the answer:
+
+```yaml
+llm:
+  execution:
+    reasoning_effort: high
+    max_tokens: null
+    phase1_max_tokens: 22000
+    context_window: 32768
+    context_buffer: 50
+```
+
+The two-phase path requires a vLLM server that supports token-ID prompts and
+`return_token_ids` on `/v1/completions` (vLLM 0.17 in the B200 image). Leaving
+`phase1_max_tokens: null` retains the single-request chat-completions path.
+Use `prompt_style: qwen_native_thinking` with GPT-OSS two-phase high-reasoning
+runs. Phase 1 already occupies the native reasoning channel, so the final
+answer should contain only `<solution>` and `<summary>` blocks. The legacy
+explicit `<execution_thinking>` final-answer contract can make phase 2 stop
+after a short natural-language explanation, producing verifier parse errors
+because no C++17 code block was emitted.
+
+The active two-GPU high-reasoning recipe is:
+
+- `polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt.yaml`
+
+It pairs Qwen3-8B guidance on GPU 0 with GPT-OSS-120B execution on GPU 1,
+uses 8 groups x 16 rollouts, disables checkpoint writing, and is launched by
+`scripts/slurm_polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_discover_two_phase_1day.sbatch`.
 
 The code-delta recipes cap concurrent execution requests and FrontierCS judge
 workers at 16. One agent-loop worker owns the global execution semaphore, so

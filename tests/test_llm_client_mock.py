@@ -6,6 +6,7 @@ import time
 
 import guidance_ttt.llm_client as llm_client_module
 from guidance_ttt.llm_client import (
+    GPTOSSTwoPhaseOpenAICompatibleLLMClient,
     LLMRequest,
     LocalTransformersLLMClient,
     LocalVLLMLLMClient,
@@ -135,6 +136,194 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
     assert captured["payload"]["verbosity"] == "low"
     assert response.reasoning == "Consider several skyline mutations."
     assert response.text.startswith("<solution>")
+
+
+@pytest.mark.anyio
+async def test_gptoss_two_phase_client_forces_final_with_remaining_context(monkeypatch):
+    client = make_llm_client(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-vllm",
+            "reasoning_effort": "high",
+            "phase1_max_tokens": 10,
+            "context_window": 20,
+            "context_buffer": 1,
+        }
+    )
+    assert isinstance(client, GPTOSSTwoPhaseOpenAICompatibleLLMClient)
+
+    monkeypatch.setattr(client, "_render_harmony_prompt", lambda request: [1, 2])
+    monkeypatch.setattr(client, "_harmony_stop_token_ids", lambda: [99])
+
+    def fake_encode(text):
+        if text == client.GPTOSS_FINAL_CHANNEL_INDICATOR:
+            return [70]
+        if text == "<|end|>":
+            return [71]
+        return [80, 81]
+
+    monkeypatch.setattr(client, "_encode_harmony", fake_encode)
+    monkeypatch.setattr(
+        client,
+        "_parse_harmony_output",
+        lambda token_ids: ("long reasoning", "<solution>code</solution>"),
+    )
+    calls = []
+
+    def fake_post_json(path, payload):
+        calls.append((path, payload))
+        if len(calls) == 1:
+            return {
+                "model": "openai/gpt-oss-120b",
+                "choices": [{"token_ids": list(range(10, 18)), "finish_reason": "length"}],
+            }
+        return {
+            "model": "openai/gpt-oss-120b",
+            "choices": [{"token_ids": [90, 91, 99], "finish_reason": "stop"}],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="openai/gpt-oss-120b",
+            temperature=0.0,
+            max_tokens=None,
+            metadata={"purpose": "execution"},
+        )
+    )
+
+    assert [path for path, _payload in calls] == ["/completions", "/completions"]
+    assert calls[0][1]["prompt"] == [1, 2]
+    assert calls[0][1]["max_tokens"] == 8
+    assert calls[0][1]["return_token_ids"] is True
+    assert calls[1][1]["prompt"] == [1, 2] + list(range(10, 18)) + [80, 81]
+    assert calls[1][1]["max_tokens"] == 7
+    assert response.text == "<solution>code</solution>"
+    assert response.reasoning == "long reasoning"
+    assert response.finish_reason == "stop"
+    assert response.usage == {
+        "prompt_tokens": 2,
+        "completion_tokens": 13,
+        "total_tokens": 15,
+        "phase1_completion_tokens": 8,
+        "phase1_discarded_header_tokens": 0,
+        "phase2_prefill_tokens": 2,
+        "phase2_completion_tokens": 3,
+    }
+    assert response.metadata["forced_final"] is True
+    assert response.metadata["phase1_finish_reason"] == "length"
+    assert response.metadata["phase2_finish_reason"] == "stop"
+    assert response.metadata["harmony_parse_fallback"] is False
+
+
+def test_gptoss_two_phase_trims_partial_final_channel_header(monkeypatch):
+    client = GPTOSSTwoPhaseOpenAICompatibleLLMClient(
+        {
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-vllm",
+            "phase1_max_tokens": 10,
+            "context_window": 20,
+            "context_buffer": 1,
+        }
+    )
+    encodings = {
+        client.GPTOSS_FINAL_MARKER: [7, 8, 9, 10, 11, 12],
+        "<|start|>assistant<|channel|>final<|message|>": [8, 9, 10, 11, 12],
+        client.GPTOSS_FINAL_CHANNEL_INDICATOR: [10, 11, 12],
+    }
+    monkeypatch.setattr(client, "_encode_harmony", lambda text: encodings[text])
+
+    kept, discarded = client._trim_incomplete_final_header([1, 2, 7, 8, 9, 10])
+
+    assert kept == [1, 2]
+    assert discarded == [7, 8, 9, 10]
+
+
+def test_gptoss_two_phase_harmony_error_falls_back_to_phase2_text(monkeypatch):
+    client = GPTOSSTwoPhaseOpenAICompatibleLLMClient(
+        {
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-vllm",
+            "phase1_max_tokens": 10,
+            "context_window": 20,
+            "context_buffer": 1,
+        }
+    )
+
+    class HarmonyError(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        client,
+        "_parse_harmony_output",
+        lambda _tokens: (_ for _ in ()).throw(HarmonyError("bad header")),
+    )
+    monkeypatch.setattr(
+        client,
+        "_best_effort_reasoning",
+        lambda _tokens: "truncated reasoning",
+    )
+    monkeypatch.setattr(client, "_decode_harmony", lambda tokens: "final answer")
+
+    reasoning, text, fallback = client._parse_harmony_output_resilient(
+        combined_ids=[1, 2, 3],
+        phase1_ids=[1],
+        phase2_ids=[3],
+        forced_final=True,
+        injected_prefill=True,
+    )
+
+    assert reasoning == "truncated reasoning"
+    assert text == "final answer"
+    assert fallback is True
+
+
+@pytest.mark.anyio
+async def test_gptoss_two_phase_client_keeps_natural_phase1_completion(monkeypatch):
+    client = GPTOSSTwoPhaseOpenAICompatibleLLMClient(
+        {
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-vllm",
+            "reasoning_effort": "high",
+            "phase1_max_tokens": 10,
+            "context_window": 20,
+            "context_buffer": 1,
+        }
+    )
+    monkeypatch.setattr(client, "_render_harmony_prompt", lambda request: [1, 2])
+    monkeypatch.setattr(client, "_harmony_stop_token_ids", lambda: [99])
+    monkeypatch.setattr(
+        client,
+        "_parse_harmony_output",
+        lambda token_ids: ("brief reasoning", "final answer"),
+    )
+    calls = []
+
+    def fake_post_json(path, payload):
+        calls.append((path, payload))
+        return {
+            "model": "openai/gpt-oss-120b",
+            "choices": [{"token_ids": [10, 11, 99], "finish_reason": "stop"}],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="openai/gpt-oss-120b",
+            temperature=0.0,
+            max_tokens=None,
+        )
+    )
+
+    assert len(calls) == 1
+    assert response.text == "final answer"
+    assert response.metadata["forced_final"] is False
+    assert response.usage["phase2_completion_tokens"] == 0
 
 
 @pytest.mark.anyio

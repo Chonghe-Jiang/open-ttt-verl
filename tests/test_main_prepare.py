@@ -441,6 +441,77 @@ def test_verl_overrides_enable_entropic_adaptive_beta_from_recipe(tmp_path):
     assert slots[0]["extra_info"]["puct_q_mode"] == "best_child"
 
 
+def test_discover_compat_prepares_independent_roots_and_official_training_overrides(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "discover-compat"),
+            "model_path": "Qwen/Qwen3-8B",
+            "num_initial_states": 1,
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "discover_compat": True,
+            "prompt_mode": "summary_only",
+            "groups_per_batch": 2,
+            "group_size": 3,
+            "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "max_buffer_size": 1000,
+            "topk_children": 2,
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+
+    prepared = prepare_run(config)
+    library = yaml.safe_load(prepared["library_path"].read_text())
+    slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
+    overrides = build_verl_overrides(config, prepared, [])
+
+    roots = [node for node in library["nodes"].values() if node["parent_id"] is None]
+    assert len(roots) == 2
+    assert library["config"]["discover_compat"] is True
+    assert library["config"]["groups_per_batch"] == 2
+    assert library["config"]["score_direction"] == "max"
+    assert slots[0]["extra_info"]["discover_compat"] is True
+    assert slots[0]["extra_info"]["groups_per_batch"] == 2
+    assert "algorithm.adv_estimator=entropic_adaptive_beta" in overrides
+    assert "algorithm.rollout_correction.rollout_is=null" in overrides
+    assert "+algorithm.discover_kl_coef=0.1" in overrides
+    assert "+algorithm.remove_constant_reward_groups=True" in overrides
+    assert "actor_rollout_ref.actor.use_kl_loss=False" in overrides
+    assert "actor_rollout_ref.actor.ppo_mini_batch_size=2" in overrides
+    assert "actor_rollout_ref.actor.ppo_epochs=1" in overrides
+    assert "actor_rollout_ref.actor.shuffle=False" in overrides
+    assert "actor_rollout_ref.actor.optim.betas=[0.9,0.95]" in overrides
+    assert "actor_rollout_ref.actor.optim.weight_decay=0.0" in overrides
+    assert "actor_rollout_ref.actor.optim.lr_scheduler_type=constant" in overrides
+    assert "actor_rollout_ref.rollout.temperature=1.0" in overrides
+    assert "actor_rollout_ref.rollout.top_p=1.0" in overrides
+
+
+def test_discover_compat_rejects_nonofficial_puct_configuration(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "discover-bad"),
+            "model_path": "Qwen/Qwen3-8B",
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "discover_compat": True,
+            "groups_per_batch": 2,
+            "group_size": 3,
+            "puct_c": 1.0,
+            "puct_q_mode": "blended",
+            "eval_timeout": 5,
+        },
+        "llm": {"execution": {"provider": "mock"}},
+    }
+
+    with pytest.raises(ValueError, match="puct_q_mode='blended'"):
+        prepare_run(config)
+
+
 def test_verl_overrides_allow_non_failing_prompt_truncation(tmp_path):
     config = {
         "run": {

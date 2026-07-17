@@ -53,13 +53,39 @@ def apply_recipe_overrides(config: dict[str, Any], overrides: list[str]) -> dict
     return OmegaConf.to_container(merged, resolve=True)
 
 
-def _library_runtime_config(ttt_cfg: dict[str, Any]) -> dict[str, int | float | str]:
+def _discover_compat_enabled(ttt_cfg: dict[str, Any]) -> bool:
+    return bool(ttt_cfg.get("discover_compat", False))
+
+
+def _validate_discover_compat(ttt_cfg: dict[str, Any]) -> None:
+    if not _discover_compat_enabled(ttt_cfg):
+        return
+    expected = {
+        "puct_c": 1.0,
+        "puct_q_mode": "best_child",
+        "max_buffer_size": 1000,
+        "topk_children": 2,
+    }
+    mismatches = []
+    for key, expected_value in expected.items():
+        actual = ttt_cfg.get(key, expected_value)
+        if actual != expected_value:
+            mismatches.append(f"{key}={actual!r} (expected {expected_value!r})")
+    if mismatches:
+        raise ValueError("Discover-compatible sampling config mismatch: " + "; ".join(mismatches))
+
+
+def _library_runtime_config(ttt_cfg: dict[str, Any], *, score_direction: str = "max") -> dict[str, Any]:
+    discover_compat = _discover_compat_enabled(ttt_cfg)
     return {
         "rollout_n": int(ttt_cfg["group_size"]),
         "puct_c": float(ttt_cfg.get("puct_c", 1.0)),
-        "puct_q_mode": str(ttt_cfg.get("puct_q_mode", "blended")),
+        "puct_q_mode": str(ttt_cfg.get("puct_q_mode", "best_child" if discover_compat else "blended")),
         "max_buffer_size": int(ttt_cfg.get("max_buffer_size", 1000)),
         "topk_children": int(ttt_cfg.get("topk_children", 2)),
+        "discover_compat": discover_compat,
+        "groups_per_batch": int(ttt_cfg["groups_per_batch"]),
+        "score_direction": str(score_direction),
     }
 
 
@@ -68,12 +94,13 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     ttt_cfg = config["ttt"]
     task_cfg = dict(config.get("task") or {"id": "erdos_min_overlap"})
     task_spec = get_task_spec(str(task_cfg.get("id", "erdos_min_overlap")))
+    _validate_discover_compat(ttt_cfg)
     prompt_mode = normalize_prompt_mode(ttt_cfg.get("prompt_mode"))
     output_dir = Path(run_cfg["output_dir"]).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     library_path = output_dir / "library.json"
-    library_config = _library_runtime_config(ttt_cfg)
+    library_config = _library_runtime_config(ttt_cfg, score_direction=task_spec.score_direction)
     if not library_path.exists():
         bootstrap_cfg = dict(ttt_cfg.get("bootstrap") or {})
         seed_library_path = bootstrap_cfg.get("seed_library_path")
@@ -90,8 +117,15 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
                     temp_library_path.unlink()
             library = GuidanceLibrary(library_path)
             library.configure_pristine_archive(**library_config)
+            if library_config["discover_compat"]:
+                library.ensure_pristine_root_count(int(ttt_cfg["groups_per_batch"]))
         else:
-            root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
+            initial_state_count = (
+                int(ttt_cfg["groups_per_batch"])
+                if library_config["discover_compat"]
+                else int(run_cfg.get("num_initial_states", 1))
+            )
+            root_nodes = [task_spec.create_root_node() for _ in range(initial_state_count)]
             library = GuidanceLibrary(
                 library_path,
                 initial_nodes=root_nodes,
@@ -113,9 +147,12 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         task_config=task_cfg,
         rollout_n=int(ttt_cfg["group_size"]),
         puct_c=float(ttt_cfg.get("puct_c", 1.0)),
-        puct_q_mode=str(ttt_cfg.get("puct_q_mode", "blended")),
+        puct_q_mode=str(library_config["puct_q_mode"]),
         max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
         topk_children=int(ttt_cfg.get("topk_children", 2)),
+        discover_compat=library_config["discover_compat"],
+        groups_per_batch=int(ttt_cfg["groups_per_batch"]),
+        score_direction=task_spec.score_direction,
     )
 
     agent_loop_config = output_dir / "agent_loop.yaml"
@@ -146,6 +183,18 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
 def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extra_overrides: list[str]) -> list[str]:
     run_cfg = config["run"]
     ttt_cfg = config["ttt"]
+    discover_compat = _discover_compat_enabled(ttt_cfg)
+    _validate_discover_compat(ttt_cfg)
+    adv_estimator = "entropic_adaptive_beta" if discover_compat else run_cfg.get("adv_estimator", "grpo")
+    rollout_is = "null" if discover_compat else "token"
+    actor_kl_enabled = False if discover_compat else bool(run_cfg.get("use_kl_loss", True))
+    learning_rate = 4.0e-5 if discover_compat else float(run_cfg.get("learning_rate", 1e-5))
+    rollout_temperature = 1.0 if discover_compat else float(run_cfg.get("temperature", 1.0))
+    ppo_mini_batch_size = (
+        int(ttt_cfg["groups_per_batch"])
+        if discover_compat
+        else int(run_cfg.get("ppo_mini_batch_size", ttt_cfg["groups_per_batch"]))
+    )
     zmq_key = f"{prepared['output_dir']}:{os.getpid()}"
     zmq_suffix = f"guidance-ttt-{hashlib.sha1(zmq_key.encode()).hexdigest()[:12]}"
     ray_temp_dir = Path(run_cfg.get("ray_temp_dir", Path.cwd() / ".ray_tmp")).expanduser().resolve()
@@ -158,9 +207,9 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
     tmp_dir.mkdir(parents=True, exist_ok=True)
     triton_cache_dir.mkdir(parents=True, exist_ok=True)
     overrides = [
-        f"algorithm.adv_estimator={run_cfg.get('adv_estimator', 'grpo')}",
+        f"algorithm.adv_estimator={adv_estimator}",
         "algorithm.use_kl_in_reward=False",
-        "algorithm.rollout_correction.rollout_is=token",
+        f"algorithm.rollout_correction.rollout_is={rollout_is}",
         "algorithm.rollout_correction.rollout_is_threshold=2.0",
         f"data.train_files={prepared['slot_parquet']}",
         f"data.val_files={prepared['slot_parquet']}",
@@ -172,17 +221,17 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         "+data.apply_chat_template_kwargs.enable_thinking=True",
         f"actor_rollout_ref.model.path={run_cfg['model_path']}",
         "actor_rollout_ref.model.use_remove_padding=False",
-        f"actor_rollout_ref.actor.optim.lr={float(run_cfg.get('learning_rate', 1e-5))}",
-        f"actor_rollout_ref.actor.ppo_mini_batch_size={int(run_cfg.get('ppo_mini_batch_size', ttt_cfg['groups_per_batch']))}",
+        f"actor_rollout_ref.actor.optim.lr={learning_rate}",
+        f"actor_rollout_ref.actor.ppo_mini_batch_size={ppo_mini_batch_size}",
         f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={int(run_cfg.get('ppo_micro_batch_size_per_gpu', 1))}",
         "actor_rollout_ref.actor.policy_loss.loss_mode=ttt_reinforce_is",
-        f"actor_rollout_ref.actor.use_kl_loss={bool(run_cfg.get('use_kl_loss', True))}",
+        f"actor_rollout_ref.actor.use_kl_loss={actor_kl_enabled}",
         f"actor_rollout_ref.actor.kl_loss_coef={float(run_cfg.get('kl_loss_coef', 0.05))}",
         "actor_rollout_ref.actor.kl_loss_type=low_var_kl",
         f"actor_rollout_ref.rollout.name={run_cfg.get('rollout_engine', 'vllm')}",
         "actor_rollout_ref.rollout.mode=async",
         f"actor_rollout_ref.rollout.n={int(ttt_cfg['group_size'])}",
-        f"actor_rollout_ref.rollout.temperature={float(run_cfg.get('temperature', 1.0))}",
+        f"actor_rollout_ref.rollout.temperature={rollout_temperature}",
         "actor_rollout_ref.rollout.calculate_log_probs=True",
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={int(run_cfg.get('tensor_model_parallel_size', 1))}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={float(run_cfg.get('gpu_memory_utilization', 0.5))}",
@@ -218,6 +267,20 @@ def build_verl_overrides(config: dict[str, Any], prepared: dict[str, Path], extr
         if env_value:
             overrides.append(f"+ray_kwargs.ray_init.runtime_env.env_vars.{env_name}={env_value}")
     overrides.extend(config.get("verl_overrides", []))
+    if discover_compat:
+        overrides.extend(
+            [
+                "+algorithm.discover_kl_coef=0.1",
+                "+algorithm.remove_constant_reward_groups=True",
+                "actor_rollout_ref.actor.ppo_epochs=1",
+                "actor_rollout_ref.actor.shuffle=False",
+                "actor_rollout_ref.actor.loss_agg_mode=token-mean",
+                "actor_rollout_ref.actor.optim.betas=[0.9,0.95]",
+                "actor_rollout_ref.actor.optim.weight_decay=0.0",
+                "actor_rollout_ref.actor.optim.lr_scheduler_type=constant",
+                "actor_rollout_ref.rollout.top_p=1.0",
+            ]
+        )
     overrides.extend(extra_overrides)
     return overrides
 
