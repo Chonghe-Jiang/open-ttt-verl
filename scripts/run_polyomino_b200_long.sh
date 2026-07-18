@@ -14,6 +14,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_b200_3gpu_smoke_${RUN_T
 EXPECTED_GPUS="${EXPECTED_GPUS:-3}"
 TRAINING_GPUS="${TRAINING_GPUS:-0,1}"
 EXECUTION_GPU="${EXECUTION_GPU:-2}"
+EXECUTION_TENSOR_PARALLEL_SIZE="${EXECUTION_TENSOR_PARALLEL_SIZE:-1}"
 EXPECTED_GROUPS="${EXPECTED_GROUPS:-8}"
 EXPECTED_GROUP_SIZE="${EXPECTED_GROUP_SIZE:-16}"
 LOG_DIR="${REPO_ROOT}/outputs/slurm"
@@ -142,7 +143,7 @@ APPTAINERENV_CUDA_VISIBLE_DEVICES="${EXECUTION_GPU}" CUDA_VISIBLE_DEVICES="${EXE
   "${APPTAINER_BASE[@]}" vllm serve /workspace/guidance/models/gpt-oss-120b \
   --served-model-name openai/gpt-oss-120b \
   --host 127.0.0.1 --port 8000 --dtype auto --trust-remote-code \
-  --tensor-parallel-size 1 --gpu-memory-utilization 0.88 \
+  --tensor-parallel-size "${EXECUTION_TENSOR_PARALLEL_SIZE}" --gpu-memory-utilization 0.88 \
   --max-model-len 32768 --max-num-seqs 16 --enforce-eager \
   --download-dir /workspace/guidance/.hf_cache/hub \
   > "${LOG_DIR}/gpt-oss-120b-vllm-${RUN_TAG}.log" 2>&1 &

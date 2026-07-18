@@ -132,7 +132,7 @@ step 24 完成、记录最高分 81.2193 后，下一步在 actor 的 `compute_l
 | Exp 3：Policy Guidance Prompt | guidance 输出一个可证伪的 search policy hypothesis：搜索方向、机制、预期收益、风险/证伪条件 | 验证 guidance 作为树搜索策略是否优于局部 solution optimizer | 163663 |
 | Exp 4：Combined | 同时启用 Diverse References、Search-Aware 和 Policy Guidance | 验证完整搜索策略是否突破平台 | 163664 |
 
-作业使用完整 8 卡 B200 节点（7 卡用于 TTT，1 卡用于 GPT-OSS execution），已提交到 `b200-batch` 队列；撰写本节时均处于 `PENDING (Priority)`，会在完整节点空闲后自动启动。
+作业使用完整 8 卡 B200 节点：GPU 0–3 用于 TTT，GPU 4–7 以 4-way tensor parallel 运行 GPT-OSS execution。这样保留 8×8 的 64 条训练样本，并满足训练 batch 必须被 4 张训练卡整除的约束。作业会提交到 `b200-batch` 队列，在完整节点空闲后自动启动。
 
 每个运行结束后会自动写入 `topk_guidance_metrics.json`，统一记录：
 

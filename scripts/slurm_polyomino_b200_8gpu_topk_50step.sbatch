@@ -20,14 +20,15 @@ cd "${REPO_ROOT}"
 : "${EXPECTED_PROMPT_MODE:?submit with EXPECTED_PROMPT_MODE}"
 
 export EXPECTED_GPUS="${EXPECTED_GPUS:-8}"
-export TRAINING_GPUS="${TRAINING_GPUS:-0,1,2,3,4,5,6}"
-export EXECUTION_GPU="${EXECUTION_GPU:-7}"
+export TRAINING_GPUS="${TRAINING_GPUS:-0,1,2,3}"
+export EXECUTION_GPU="${EXECUTION_GPU:-4,5,6,7}"
+export EXECUTION_TENSOR_PARALLEL_SIZE="${EXECUTION_TENSOR_PARALLEL_SIZE:-4}"
 export STAGE="${STAGE:-direct}"
 export EXPECTED_GROUPS="${EXPECTED_GROUPS:-400}"
 export WRITE_TOPK_METRICS="${WRITE_TOPK_METRICS:-true}"
 
-if [[ "${EXPECTED_GPUS}" != "8" || "${TRAINING_GPUS}" != "0,1,2,3,4,5,6" || "${EXECUTION_GPU}" != "7" ]]; then
-  echo "This recipe reserves 7 B200 GPUs for TTT and GPU 7 for GPT-OSS execution." >&2
+if [[ "${EXPECTED_GPUS}" != "8" || "${TRAINING_GPUS}" != "0,1,2,3" || "${EXECUTION_GPU}" != "4,5,6,7" || "${EXECUTION_TENSOR_PARALLEL_SIZE}" != "4" ]]; then
+  echo "This recipe reserves GPUs 0-3 for TTT and GPUs 4-7 for 4-way GPT-OSS execution." >&2
   exit 2
 fi
 
