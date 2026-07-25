@@ -390,8 +390,7 @@ class PolyominoInferenceAblationRunner:
         summary = model_summary.strip() if model_summary and model_summary.strip() else _fallback_summary(thinking)
         solution = self.task_spec.solution_extractor(text) or ""
         format_ok = bool(
-            extract_tag_or_none(text, "think") is not None
-            and model_summary is not None
+            model_summary is not None
             and extract_tag_or_none(text, "solution") is not None
             and solution
         )

@@ -16,8 +16,8 @@ def test_glm52_inference_config_is_cpu_only_openrouter_sampling():
     assert search["discover_compat"] is True
     assert search["groups_per_batch"] == 8
     assert search["group_size"] == 16
-    assert search["generation_concurrency"] == 8
-    assert search["evaluation_concurrency"] == 16
+    assert search["generation_concurrency"] == 128
+    assert search["evaluation_concurrency"] == 128
     assert search["puct_c"] == 1.0
     assert search["puct_q_mode"] == "best_child"
     assert search["max_buffer_size"] == 1000

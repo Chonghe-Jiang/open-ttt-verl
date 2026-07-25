@@ -1,5 +1,8 @@
 import asyncio
+import io
+import json
 import os
+import urllib.error
 
 import pytest
 import time
@@ -150,6 +153,60 @@ def test_openai_compatible_client_accepts_request_timeout(monkeypatch):
 
     assert isinstance(client, OpenAICompatibleLLMClient)
     assert client.timeout_s == 600
+
+
+class _HTTPResponse:
+    status = 200
+
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+def test_openai_compatible_client_retries_malformed_json_and_http_503(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "not-a-real-key",
+            "max_retries": 2,
+            "retry_backoff_s": 0,
+        }
+    )
+    malformed = _HTTPResponse({})
+    malformed.payload = b'{"choices": ['
+    unavailable = urllib.error.HTTPError(
+        "https://openrouter.ai/api/v1/chat/completions",
+        503,
+        "unavailable",
+        {},
+        io.BytesIO(b"temporary"),
+    )
+    successful = _HTTPResponse(
+        {
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        }
+    )
+    responses = iter([malformed, unavailable, successful])
+
+    def urlopen(*_args, **_kwargs):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", urlopen)
+
+    data = client._post_json("/chat/completions", {"model": "z-ai/glm-5.2"})
+
+    assert data["choices"][0]["message"]["content"] == "ok"
 
 
 @pytest.mark.anyio

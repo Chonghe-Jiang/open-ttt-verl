@@ -66,8 +66,8 @@ def _config(tmp_path: Path, *, num_steps: int = 1) -> dict:
             "discover_compat": True,
             "groups_per_batch": 8,
             "group_size": 16,
-            "generation_concurrency": 8,
-            "evaluation_concurrency": 16,
+            "generation_concurrency": 128,
+            "evaluation_concurrency": 128,
             "eval_timeout": 10,
             "puct_c": 1.0,
             "puct_q_mode": "best_child",
@@ -179,10 +179,13 @@ def test_fixed_prompt_attaches_only_selected_parent_summary_and_full_code(tmp_pa
     assert "<global_best>" not in prompt.user
     assert "<local_failures>" not in prompt.user
     assert "<guidance>" not in prompt.user
-    assert prompt.user.index("<summary>") < prompt.user.index("<solution>", prompt.user.index("Return exactly"))
+    assert "guidance" not in prompt.system.lower()
+    assert "guidance" not in prompt.user.lower()
+    assert "<think>" not in prompt.user
+    assert prompt.user.index("<solution>", prompt.user.index("Return exactly")) < prompt.user.index("<summary>")
 
 
-def test_one_step_uses_eight_generation_and_sixteen_evaluation_workers(tmp_path):
+def test_one_step_runs_all_eight_by_sixteen_candidates_concurrently(tmp_path):
     client = ConcurrentFakeClient()
     verifier = ConcurrentVerifier()
     runner = _runner(tmp_path, client, verifier)
@@ -200,8 +203,8 @@ def test_one_step_uses_eight_generation_and_sixteen_evaluation_workers(tmp_path)
         for group_index in range(8)
         for candidate_index in range(16)
     ]
-    assert client.max_active == 8
-    assert verifier.max_active == 16
+    assert client.max_active == 128
+    assert verifier.max_active == 128
     assert len(verifier.calls) == 128
     assert len(ablation_entries) == 128
     assert len({entry["parent_id"] for entry in ablation_entries}) == 8

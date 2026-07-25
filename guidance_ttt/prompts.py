@@ -347,23 +347,16 @@ FrontierCS score: {selected_node.raw_score}
 </parent_solution>
 </selected_parent>
 
-Create one new complete C++17 solver by analyzing and modifying the selected
-parent solver. Preserve useful mechanisms when appropriate, but make a concrete
-algorithmic change that could improve the FrontierCS score. The problem block is
-authoritative. The new program must read the instance from stdin and emit exactly
-the required placement format.
+Create one new complete C++17 solver by directly analyzing and modifying the
+selected parent solver. Preserve useful mechanisms when appropriate, but make a
+concrete algorithmic change that could improve the FrontierCS score. The problem
+block is authoritative. The new program must read the instance from stdin and
+emit exactly the required placement format.
 
-Return exactly these three top-level XML blocks, in this order, with no text
-before, between, or after them:
-
-<think>
-Briefly explain the concrete change and why it may improve packing quality.
-</think>
-
-<summary>
-Concise reusable description of the implemented algorithm and the change from
-the selected parent. Do not include source code or benchmark-specific outputs.
-</summary>
+This experiment uses only your direct execution response. Return exactly these
+two top-level XML blocks, in this order, with no text before, between, or after
+them. Put the complete program first so that it remains available even if the
+later summary is truncated.
 
 <solution>
 ```cpp
@@ -371,14 +364,19 @@ the selected parent. Do not include source code or benchmark-specific outputs.
 ```
 </solution>
 
-Every XML block must be closed. The solution must contain exactly one fenced cpp
-code block with the full program.
+<summary>
+Concise reusable description of the implemented algorithm and the change from
+the selected parent. Do not include source code or benchmark-specific outputs.
+</summary>
+
+The solution block must be closed and must contain exactly one fenced cpp code
+block with the full program.
 """
     return Prompt(
         system=(
-            "You are an expert C++ optimization researcher improving one selected "
-            "Polyomino Packing solver. Produce one independently testable candidate "
-            "using the exact response contract."
+            "You are the sole execution model in an inference-only search. Directly "
+            "improve one selected Polyomino Packing solver and produce one independently "
+            "testable C++17 candidate using the exact response contract."
         ),
         user=user,
     )
