@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import threading
 import urllib.error
 
 import pytest
@@ -139,6 +140,58 @@ async def test_openai_compatible_client_forwards_reasoning_options(monkeypatch):
     assert captured["path"] == "/chat/completions"
     assert captured["payload"]["reasoning"] == {"effort": "high", "exclude": False}
     assert captured["payload"]["top_p"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_client_uses_configured_http_concurrency(monkeypatch):
+    monkeypatch.setenv("OR_KEY", "openrouter-test-key")
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OR_KEY",
+            "concurrency": 128,
+        }
+    )
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_post_json(_path, payload):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return {
+                "model": payload["model"],
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    try:
+        await asyncio.gather(
+            *(
+                client.complete(
+                    LLMRequest(
+                        system="system",
+                        user=f"user-{index}",
+                        model="z-ai/glm-5.2",
+                        temperature=1.0,
+                        max_tokens=128,
+                    )
+                )
+                for index in range(128)
+            )
+        )
+    finally:
+        client.close()
+
+    assert client.concurrency == 128
+    assert max_active == 128
 
 
 def test_openai_compatible_client_accepts_request_timeout(monkeypatch):

@@ -1,5 +1,5 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_cpu_openrouter_glm52_inference_puct_direct_batch8_group16_concurrency128_50step
+  output_dir: outputs/guidance_ttt/polyomino_cpu_openrouter_glm52_inference_puct_direct_batch8_group16_http128_50step
   num_steps: 50
   seed_library_path: guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
 
@@ -41,5 +41,6 @@ llm:
     max_tokens: 32768
     max_model_len: 131072
     timeout_s: 1200
+    concurrency: 128
     max_retries: 6
     retry_backoff_s: 2.0

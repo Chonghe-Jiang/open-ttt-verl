@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 import urllib.error
 import urllib.request
@@ -104,6 +105,11 @@ class OpenAICompatibleLLMClient:
         self.timeout_s = float(config.get("timeout_s", 120))
         self.max_retries = max(0, int(config.get("max_retries", 0)))
         self.retry_backoff_s = max(0.0, float(config.get("retry_backoff_s", 1.0)))
+        self.concurrency = max(1, int(config.get("concurrency", 32)))
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.concurrency,
+            thread_name_prefix="openai-compatible",
+        )
         self.request_options = {
             key: dict(config[key]) if key in {"chat_template_kwargs", "reasoning"} else config[key]
             for key in (
@@ -130,7 +136,8 @@ class OpenAICompatibleLLMClient:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         payload.update(self.request_options)
-        data = await asyncio.to_thread(self._post_json, "/chat/completions", payload)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(self._executor, self._post_json, "/chat/completions", payload)
         choice = data.get("choices", [{}])[0]
         message = choice.get("message") or {}
         text = message.get("content") or choice.get("text") or ""
@@ -141,6 +148,9 @@ class OpenAICompatibleLLMClient:
             usage=data.get("usage", {}),
             metadata={"provider": "openai_compatible", **request.metadata},
         )
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
 
     def _post_json(self, path: str, payload: dict) -> dict:
         retry_errors: list[str] = []

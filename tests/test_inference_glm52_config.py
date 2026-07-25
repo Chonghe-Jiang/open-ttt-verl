@@ -29,4 +29,5 @@ def test_glm52_inference_config_is_cpu_only_openrouter_sampling():
     assert execution["reasoning"] == {"effort": "high", "exclude": False}
     assert execution["temperature"] == 1.0
     assert execution["max_tokens"] == 32768
+    assert execution["concurrency"] == 128
     assert "guidance" not in config["llm"]
