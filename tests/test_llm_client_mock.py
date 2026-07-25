@@ -100,6 +100,44 @@ async def test_openai_compatible_client_can_read_api_key_from_named_env(monkeypa
     assert client.api_key == "openrouter-test-key"
 
 
+@pytest.mark.anyio
+async def test_openai_compatible_client_forwards_reasoning_options(monkeypatch):
+    monkeypatch.setenv("OR_KEY", "openrouter-test-key")
+    client = make_llm_client(
+        {
+            "provider": "openai_compatible",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OR_KEY",
+            "reasoning": {"effort": "high", "exclude": False},
+            "top_p": 1.0,
+        }
+    )
+    captured = {}
+
+    def fake_post_json(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "model": "z-ai/glm-5.2",
+            "choices": [{"message": {"content": "<solution>ok</solution>"}, "finish_reason": "stop"}],
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="z-ai/glm-5.2",
+            temperature=1.0,
+            max_tokens=32768,
+        )
+    )
+
+    assert captured["path"] == "/chat/completions"
+    assert captured["payload"]["reasoning"] == {"effort": "high", "exclude": False}
+    assert captured["payload"]["top_p"] == 1.0
+
+
 def test_openai_compatible_client_accepts_request_timeout(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-key")
     client = make_llm_client(

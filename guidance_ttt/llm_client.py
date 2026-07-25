@@ -101,6 +101,19 @@ class OpenAICompatibleLLMClient:
                 "OpenAI-compatible executor requires endpoint/base_url and api_key, api_key_env, or ENDPOINT/API_KEY env vars"
             )
         self.timeout_s = float(config.get("timeout_s", 120))
+        self.request_options = {
+            key: dict(config[key]) if key in {"chat_template_kwargs", "reasoning"} else config[key]
+            for key in (
+                "top_p",
+                "top_k",
+                "min_p",
+                "chat_template_kwargs",
+                "reasoning",
+                "reasoning_effort",
+                "verbosity",
+            )
+            if key in config
+        }
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         payload = {
@@ -113,6 +126,7 @@ class OpenAICompatibleLLMClient:
         }
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        payload.update(self.request_options)
         data = await asyncio.to_thread(self._post_json, "/chat/completions", payload)
         choice = data.get("choices", [{}])[0]
         message = choice.get("message") or {}

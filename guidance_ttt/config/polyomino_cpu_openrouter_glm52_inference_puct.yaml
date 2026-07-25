@@ -1,0 +1,43 @@
+run:
+  output_dir: outputs/guidance_ttt/polyomino_cpu_openrouter_glm52_inference_puct_discover_batch8_group16_50step
+  num_steps: 50
+  seed_library_path: guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json
+
+task:
+  id: polyomino_packing
+  frontiercs:
+    base_dir: /opt/Frontier-CS
+    judge_url: http://127.0.0.1:8081
+    problem_id: "0"
+    n_cases: 70
+    time_limit_s: 2
+    memory_mb: 256
+    total_timeout_s: 340
+
+search:
+  discover_compat: true
+  groups_per_batch: 8
+  group_size: 16
+  generation_concurrency: 8
+  evaluation_concurrency: 16
+  eval_timeout: 340
+  puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: z-ai/glm-5.2
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OR_KEY
+    tokenizer: /models/Qwen3-8B
+    reasoning:
+      effort: high
+      exclude: false
+    temperature: 1.0
+    top_p: 1.0
+    max_tokens: 32768
+    max_model_len: 131072
+    timeout_s: 1200
