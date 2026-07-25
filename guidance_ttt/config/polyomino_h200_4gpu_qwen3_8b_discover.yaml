@@ -3,9 +3,7 @@
 # Parameter alignment:
 # - Model: Qwen/Qwen3-8B, per user request; this intentionally replaces the
 #   official hosted large-model setting and is not a hardware limitation.
-# - Steps: 50, groups_per_batch: 8, group_size: 32, rollouts/step: 256.
-#   The official source uses group size 64 / 512 rollouts per step; this local
-#   recipe conservatively halves group size for 4x H200 throughput.
+# - Steps: 50, groups_per_batch: 8, group_size: 16, rollouts/step: 128.
 # - Temperature: 1.0, LoRA rank: 32, LR: 4e-5.
 # - Adam: beta1=0.9, beta2=0.95, eps=1e-8.
 # - KL coefficient: 0.1. Objective: entropic_adaptive_beta, target KL ln(2)
@@ -14,9 +12,9 @@
 # - Checkpoint interval: save_freq=2, matching the source default.
 
 run:
-  output_dir: outputs/guidance_ttt/polyomino_h200_4gpu_qwen3_8b_discover
+  output_dir: outputs/guidance_ttt/polyomino_h200_4gpu_qwen3_8b_discover_batch8_group16_aligned
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen3_8b_direct_discover_h200_4gpu
+  experiment_name: polyomino_qwen3_8b_direct_discover_h200_4gpu_batch8_group16_aligned
   model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
@@ -64,10 +62,14 @@ task:
 
 ttt:
   agent_loop: polyomino_discover_task
+  discover_compat: true
   groups_per_batch: 8
-  group_size: 32
+  group_size: 16
   eval_timeout: 1000
   puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
   bootstrap:
     enabled: false
     required: false

@@ -3,6 +3,7 @@ import json
 import re
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -62,11 +63,15 @@ def _config(tmp_path: Path, *, num_steps: int = 1) -> dict:
             "frontiercs": {"problem_id": "0", "n_cases": 70},
         },
         "search": {
+            "discover_compat": True,
+            "groups_per_batch": 8,
             "group_size": 16,
             "generation_concurrency": 8,
             "evaluation_concurrency": 16,
             "eval_timeout": 10,
             "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "max_buffer_size": 1000,
             "topk_children": 2,
         },
         "llm": {
@@ -84,14 +89,15 @@ def _config(tmp_path: Path, *, num_steps: int = 1) -> dict:
 class ConcurrentFakeClient:
     def __init__(self, *, fail_index: int | None = None):
         self.fail_index = fail_index
-        self.calls: list[int] = []
+        self.calls: list[tuple[int, int]] = []
         self.active = 0
         self.max_active = 0
 
     async def complete(self, request):
         assert request.temperature == 0.0
+        group_index = int(request.metadata["group_index"])
         index = int(request.metadata["candidate_index"])
-        self.calls.append(index)
+        self.calls.append((group_index, index))
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         try:
@@ -103,6 +109,7 @@ class ConcurrentFakeClient:
 <solution>
 ```cpp
 #include <bits/stdc++.h>
+// group-index: {group_index}
 // candidate-index: {index}
 int main() {{ return 0; }}
 ```
@@ -122,14 +129,16 @@ class ConcurrentVerifier:
         self.lock = threading.Lock()
         self.active = 0
         self.max_active = 0
-        self.calls: list[int] = []
+        self.calls: list[tuple[int, int]] = []
 
     def __call__(self, text, *, timeout_s, config):
-        match = re.search(r"candidate-index: (\d+)", text)
-        assert match is not None
-        index = int(match.group(1))
+        group_match = re.search(r"group-index: (\d+)", text)
+        candidate_match = re.search(r"candidate-index: (\d+)", text)
+        assert group_match is not None and candidate_match is not None
+        group_index = int(group_match.group(1))
+        index = int(candidate_match.group(1))
         with self.lock:
-            self.calls.append(index)
+            self.calls.append((group_index, index))
             self.active += 1
             self.max_active = max(self.max_active, self.active)
         try:
@@ -140,7 +149,7 @@ class ConcurrentVerifier:
                 valid=True,
                 status="valid",
                 message="accepted",
-                artifacts={"candidate_index": index},
+                artifacts={"group_index": group_index, "candidate_index": index},
             )
         finally:
             with self.lock:
@@ -186,18 +195,24 @@ def test_one_step_uses_eight_generation_and_sixteen_evaluation_workers(tmp_path)
         if (entry.get("metadata") or {}).get("inference_ablation")
     ]
 
-    assert sorted(client.calls) == list(range(16))
+    assert sorted(client.calls) == [
+        (group_index, candidate_index)
+        for group_index in range(8)
+        for candidate_index in range(16)
+    ]
     assert client.max_active == 8
     assert verifier.max_active == 16
-    assert len(verifier.calls) == 16
-    assert len(ablation_entries) == 16
-    assert {entry["parent_id"] for entry in ablation_entries} == {"seed-root"}
+    assert len(verifier.calls) == 128
+    assert len(ablation_entries) == 128
+    assert len({entry["parent_id"] for entry in ablation_entries}) == 8
     assert {entry["guidance"] for entry in ablation_entries} == {""}
     assert {entry["verifier_status"] for entry in ablation_entries} == {"valid"}
-    assert snapshot["groups"]["inference:1:group0"]["finalized"] is True
-    assert snapshot["puct_T"] == 1
+    assert all(snapshot["groups"][f"inference:1:group{index}"]["finalized"] for index in range(8))
+    assert snapshot["puct_T"] == 128
     assert summary["run"]["training_enabled"] is False
-    assert summary["steps"][0]["candidate_count"] == 16
+    assert summary["run"]["groups_per_batch"] == 8
+    assert summary["steps"][0]["candidate_count"] == 128
+    assert len(summary["steps"][0]["selected_node_ids"]) == 8
     assert (runner.output_dir / "run_summary.md").exists()
 
 
@@ -214,10 +229,14 @@ def test_generation_failure_is_written_as_invalid_child_without_cancelling_group
         if (entry.get("metadata") or {}).get("inference_ablation")
     ]
 
-    assert len(client.calls) == 16
-    assert len(verifier.calls) == 15
-    assert sum(entry["verifier_status"] == "execution_error" for entry in entries) == 1
-    assert snapshot["groups"]["inference:1:group0"]["finalized"] is True
+    assert len(client.calls) == 128
+    assert len(verifier.calls) == 120
+    assert sum(entry["verifier_status"] == "execution_error" for entry in entries) == 8
+    assert all(snapshot["groups"][f"inference:1:group{index}"]["finalized"] for index in range(8))
+    failed_entry_ids = {
+        entry["id"] for entry in entries if entry["verifier_status"] == "execution_error"
+    }
+    assert all(node["entry_id"] not in failed_entry_ids for node in snapshot["nodes"].values())
 
 
 def test_resume_only_generates_missing_candidate_indices(tmp_path):
@@ -225,7 +244,11 @@ def test_resume_only_generates_missing_candidate_indices(tmp_path):
     verifier = ConcurrentVerifier()
     runner = _runner(tmp_path, client, verifier)
     library = runner.prepare()
-    selected = library.acquire_group("inference:1:group0", visible_timestep_exclusive=1)
+    selected = library.acquire_group(
+        "inference:1:group0",
+        visible_timestep_exclusive=1,
+        require_solution=True,
+    )
     for index in range(3):
         library.submit_child(
             "inference:1:group0",
@@ -247,20 +270,23 @@ def test_resume_only_generates_missing_candidate_indices(tmp_path):
                 metadata={
                     "inference_ablation": True,
                     "group_uid": "inference:1:group0",
+                    "group_index": 0,
                     "candidate_index": index,
                     "selected_node_id": selected.id,
                 },
             ),
         )
-    assert library.snapshot()["puct_T"] == 0
+    assert library.snapshot()["puct_T"] == 3
 
     asyncio.run(runner.run())
     snapshot = GuidanceLibrary(runner.library_path, rollout_n=16).snapshot()
 
-    assert sorted(client.calls) == list(range(3, 16))
-    assert snapshot["groups"]["inference:1:group0"]["submitted"] == 16
-    assert snapshot["groups"]["inference:1:group0"]["finalized"] is True
-    assert snapshot["puct_T"] == 1
+    assert len(client.calls) == 125
+    counts = Counter(group_index for group_index, _candidate_index in client.calls)
+    assert counts == {0: 13, 1: 16, 2: 16, 3: 16, 4: 16, 5: 16, 6: 16, 7: 16}
+    assert all(snapshot["groups"][f"inference:1:group{index}"]["submitted"] == 16 for index in range(8))
+    assert all(snapshot["groups"][f"inference:1:group{index}"]["finalized"] for index in range(8))
+    assert snapshot["puct_T"] == 128
 
 
 def test_modal_inference_ablation_config_and_launcher_are_inference_only():
@@ -270,7 +296,10 @@ def test_modal_inference_ablation_config_and_launcher_are_inference_only():
     launcher = Path("scripts/run_modal_polyomino_inference_puct.sh").read_text()
 
     assert config["run"]["num_steps"] == 50
+    assert config["search"]["discover_compat"] is True
+    assert config["search"]["groups_per_batch"] == 8
     assert config["search"]["group_size"] == 16
+    assert config["search"]["puct_q_mode"] == "best_child"
     assert config["search"]["generation_concurrency"] == 8
     assert config["search"]["evaluation_concurrency"] == 16
     assert config["llm"]["execution"]["model"] == "openai/gpt-oss-120b"

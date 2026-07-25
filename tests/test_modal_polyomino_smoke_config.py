@@ -589,11 +589,17 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_config_matches_req
     assert config["run"]["n_gpus_per_node"] == 2
     assert config["run"]["tensor_model_parallel_size"] == 1
     assert config["run"]["gpu_memory_utilization"] == 0.7
-    assert config["run"]["ppo_mini_batch_size"] == 4
+    assert config["run"]["ppo_mini_batch_size"] == 8
     assert config["run"]["ppo_micro_batch_size_per_gpu"] == 2
-    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step")
-    assert config["ttt"]["groups_per_batch"] == 4
+    assert config["run"]["output_dir"].endswith(
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step"
+    )
+    assert config["ttt"]["discover_compat"] is True
+    assert config["ttt"]["groups_per_batch"] == 8
     assert config["ttt"]["group_size"] == 16
+    assert config["ttt"]["puct_q_mode"] == "best_child"
+    assert config["ttt"]["max_buffer_size"] == 1000
+    assert config["ttt"]["topk_children"] == 2
     assert config["ttt"]["bootstrap"]["seed_library_path"] == (
         "guidance_ttt/seeds/polyomino_packing/openrouter_gpt55_bootstrap_library.json"
     )
@@ -639,7 +645,7 @@ def test_modal_polyomino_gpt_oss_120b_3gpu_group16_h200_tuned_script_targets_req
         "polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml"
     )
     assert module.REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR.endswith(
-        "polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
+        "polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step"
     )
     assert module.gpt_oss_120b_3gpu_group16_h200_tuned_training_command() == [
         "python",
@@ -705,12 +711,16 @@ def test_modal_polyomino_qwen3_8b_discover_tiny_config_matches_direct_recipe_sha
     assert config["run"]["adam_beta1"] == 0.9
     assert config["run"]["adam_beta2"] == 0.95
     assert config["run"]["adam_eps"] == 1.0e-8
-    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_qwen3_8b_discover_tiny")
+    assert config["run"]["output_dir"].endswith("polyomino_modal_h200_qwen3_8b_discover_tiny_aligned")
     assert config["run"]["hf_cache_dir"] == "/cache/huggingface"
     assert config["ttt"]["agent_loop"] == "polyomino_discover_task"
+    assert config["ttt"]["discover_compat"] is True
     assert config["ttt"]["groups_per_batch"] == 1
     assert config["ttt"]["group_size"] == 1
     assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 1
+    assert config["ttt"]["puct_q_mode"] == "best_child"
+    assert config["ttt"]["max_buffer_size"] == 1000
+    assert config["ttt"]["topk_children"] == 2
     assert config["ttt"]["bootstrap"] == {"enabled": False, "required": False}
     assert config["task"]["id"] == "polyomino_packing"
     assert config["task"]["frontiercs"]["base_dir"] == "/opt/Frontier-CS"
@@ -740,7 +750,7 @@ def test_modal_polyomino_qwen3_8b_discover_tiny_script_targets_requested_config(
         "polyomino_modal_h200_qwen3_8b_discover_tiny.yaml"
     )
     assert module.REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR.endswith(
-        "polyomino_modal_h200_qwen3_8b_discover_tiny"
+        "polyomino_modal_h200_qwen3_8b_discover_tiny_aligned"
     )
     assert module.qwen3_8b_discover_tiny_training_command() == [
         "python",

@@ -272,7 +272,8 @@ Actions:
   and one H200 for the local `openai/gpt-oss-120b` execution server. The active
   config is
   `guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml`.
-  The run uses `groups_per_batch: 4`, `group_size: 16`, execution concurrency
+  The run uses Discover-compatible sampling with `groups_per_batch: 8`,
+  `group_size: 16`, execution concurrency
   8, `max_prompt_length: 4096`, `max_response_length: 8192`,
   `filter_overlong_prompts: false`, and `truncation: middle`.
 
@@ -292,14 +293,14 @@ Training outputs are written to:
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_history_smoke
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_single_summary
 /runs/guidance_ttt/polyomino_modal_h200_2gpu_openrouter_gpt55_single_summary
-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step
 ```
 
 For the 50-step GPT-OSS-120B recipe, guidance actor checkpoints are written to:
 
 ```text
-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_5/actor
-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step/checkpoints/global_step_10/actor
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step/checkpoints/global_step_5/actor
+/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step/checkpoints/global_step_10/actor
 ...
 ```
 

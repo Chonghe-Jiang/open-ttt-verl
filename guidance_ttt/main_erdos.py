@@ -51,6 +51,44 @@ def apply_recipe_overrides(config: dict[str, Any], overrides: list[str]) -> dict
     return OmegaConf.to_container(merged, resolve=True)
 
 
+def _library_runtime_config(
+    ttt_cfg: dict[str, Any],
+    *,
+    task_id: str,
+    score_direction: str,
+) -> dict[str, Any]:
+    is_polyomino = task_id == "polyomino_packing"
+    if is_polyomino:
+        expected = {
+            "discover_compat": True,
+            "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "max_buffer_size": 1000,
+            "topk_children": 2,
+        }
+        mismatches = [
+            f"{key}={ttt_cfg[key]!r} (expected {expected_value!r})"
+            for key, expected_value in expected.items()
+            if key in ttt_cfg and ttt_cfg[key] != expected_value
+        ]
+        if mismatches:
+            raise ValueError(
+                "Polyomino sampling must use the guidance-ttt Discover-compatible profile: "
+                + "; ".join(mismatches)
+            )
+    discover_compat = True if is_polyomino else bool(ttt_cfg.get("discover_compat", False))
+    return {
+        "rollout_n": int(ttt_cfg["group_size"]),
+        "puct_c": 1.0 if is_polyomino else float(ttt_cfg.get("puct_c", 1.0)),
+        "puct_q_mode": "best_child" if is_polyomino else str(ttt_cfg.get("puct_q_mode", "best_child")),
+        "max_buffer_size": 1000 if is_polyomino else int(ttt_cfg.get("max_buffer_size", 1000)),
+        "topk_children": 2 if is_polyomino else int(ttt_cfg.get("topk_children", 2)),
+        "discover_compat": discover_compat,
+        "groups_per_batch": int(ttt_cfg["groups_per_batch"]),
+        "score_direction": str(score_direction),
+    }
+
+
 def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     run_cfg = config["run"]
     ttt_cfg = config["ttt"]
@@ -60,6 +98,11 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     library_path = output_dir / "library.json"
+    library_config = _library_runtime_config(
+        ttt_cfg,
+        task_id=task_spec.task_id,
+        score_direction=task_spec.score_direction,
+    )
     if not library_path.exists():
         bootstrap_cfg = dict(ttt_cfg.get("bootstrap") or {})
         seed_library_path = bootstrap_cfg.get("seed_library_path")
@@ -74,16 +117,25 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
             finally:
                 if temp_library_path.exists():
                     temp_library_path.unlink()
+            library = GuidanceLibrary(library_path)
+            library.configure_pristine_archive(**library_config)
+            if library_config["discover_compat"]:
+                library.ensure_pristine_root_count(int(ttt_cfg["groups_per_batch"]))
         else:
-            root_nodes = [task_spec.create_root_node() for _ in range(int(run_cfg.get("num_initial_states", 1)))]
-            GuidanceLibrary(
+            initial_state_count = (
+                int(ttt_cfg["groups_per_batch"])
+                if library_config["discover_compat"]
+                else int(run_cfg.get("num_initial_states", 1))
+            )
+            root_nodes = [task_spec.create_root_node() for _ in range(initial_state_count)]
+            library = GuidanceLibrary(
                 library_path,
                 initial_nodes=root_nodes,
-                rollout_n=int(ttt_cfg["group_size"]),
-                puct_c=float(ttt_cfg.get("puct_c", 1.0)),
-                max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
-                topk_children=int(ttt_cfg.get("topk_children", 2)),
+                **library_config,
             )
+    else:
+        library = GuidanceLibrary(library_path, **library_config)
+    library.assert_runtime_config(**library_config)
 
     slot_parquet = output_dir / "ttt_slots.parquet"
     write_slot_parquet(
@@ -93,9 +145,13 @@ def prepare_run(config: dict[str, Any]) -> dict[str, Path]:
         task=task_spec.task_id,
         task_config=task_cfg,
         rollout_n=int(ttt_cfg["group_size"]),
-        puct_c=float(ttt_cfg.get("puct_c", 1.0)),
-        max_buffer_size=int(ttt_cfg.get("max_buffer_size", 1000)),
-        topk_children=int(ttt_cfg.get("topk_children", 2)),
+        puct_c=float(library_config["puct_c"]),
+        puct_q_mode=str(library_config["puct_q_mode"]),
+        max_buffer_size=int(library_config["max_buffer_size"]),
+        topk_children=int(library_config["topk_children"]),
+        discover_compat=bool(library_config["discover_compat"]),
+        groups_per_batch=int(library_config["groups_per_batch"]),
+        score_direction=str(library_config["score_direction"]),
     )
 
     agent_loop_name = str(ttt_cfg.get("agent_loop", run_cfg.get("agent_loop", "guidance_execution_task")))

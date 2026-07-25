@@ -1,7 +1,7 @@
 run:
-  output_dir: /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen8b_actor_gpt_oss_120b_exec_modal_h200_3gpu_group16_h200_tuned_50step
+  experiment_name: polyomino_qwen8b_actor_gpt_oss_120b_exec_modal_h200_discover_batch8_group16_h200_tuned_50step
   model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
@@ -12,7 +12,7 @@ run:
   filter_overlong_prompts: false
   truncation: middle
   learning_rate: 4.0e-5
-  ppo_mini_batch_size: 4
+  ppo_mini_batch_size: 8
   ppo_micro_batch_size_per_gpu: 2
   use_kl_loss: true
   kl_loss_coef: 0.05
@@ -42,10 +42,14 @@ task:
     total_timeout_s: 340
 
 ttt:
-  groups_per_batch: 4
+  discover_compat: true
+  groups_per_batch: 8
   group_size: 16
   eval_timeout: 340
   puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
   bootstrap:
     enabled: true
     required: true

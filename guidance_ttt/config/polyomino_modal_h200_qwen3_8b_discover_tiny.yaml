@@ -6,9 +6,9 @@
 # reduced to one 1-sample group so the path can be tested on a single H200.
 
 run:
-  output_dir: /runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny
+  output_dir: /runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny_aligned
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen3_8b_direct_discover_modal_h200_tiny
+  experiment_name: polyomino_qwen3_8b_direct_discover_modal_h200_tiny_aligned
   model_path: Qwen/Qwen3-8B
   seed: 0
   num_initial_states: 1
@@ -56,10 +56,14 @@ task:
 
 ttt:
   agent_loop: polyomino_discover_task
+  discover_compat: true
   groups_per_batch: 1
   group_size: 1
   eval_timeout: 1000
   puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
   bootstrap:
     enabled: false
     required: false

@@ -14,7 +14,7 @@ from guidance_ttt.main_erdos import (
     validate_bootstrap_requirement,
 )
 from guidance_ttt.library import GuidanceLibrary
-from guidance_ttt.state import LibraryEntry
+from guidance_ttt.state import LibraryEntry, make_root_node
 
 
 def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
@@ -46,8 +46,12 @@ def test_prepare_run_writes_library_slots_and_agent_loop_config(tmp_path):
     assert library["config"] == {
         "rollout_n": 3,
         "puct_c": 1.5,
+        "puct_q_mode": "best_child",
         "max_buffer_size": 123,
         "topk_children": 4,
+        "discover_compat": False,
+        "groups_per_batch": 2,
+        "score_direction": "min",
     }
     slots = pd.read_parquet(prepared["slot_parquet"]).to_dict("records")
     assert slots[0]["extra_info"]["task"] == "erdos_min_overlap"
@@ -83,11 +87,13 @@ def test_prepare_run_supports_polyomino_task_config(tmp_path):
             },
         },
         "ttt": {
+            "discover_compat": True,
             "groups_per_batch": 2,
             "group_size": 3,
-            "puct_c": 1.5,
-            "max_buffer_size": 123,
-            "topk_children": 4,
+            "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "max_buffer_size": 1000,
+            "topk_children": 2,
             "eval_timeout": 340,
         },
         "llm": {
@@ -109,6 +115,28 @@ def test_prepare_run_supports_polyomino_task_config(tmp_path):
     assert data[0]["name"] == "guidance_execution_task"
     assert data[0]["task"] == config["task"]
     assert data[0]["verifier_timeout_s"] == 340
+
+
+def test_prepare_run_rejects_non_discover_polyomino_sampling(tmp_path):
+    config = {
+        "run": {
+            "output_dir": str(tmp_path / "outputs" / "polyomino-invalid"),
+            "model_path": "Qwen/Qwen3-8B",
+        },
+        "task": {"id": "polyomino_packing"},
+        "ttt": {
+            "discover_compat": True,
+            "groups_per_batch": 8,
+            "group_size": 16,
+            "puct_c": 1.0,
+            "puct_q_mode": "blended",
+            "max_buffer_size": 1000,
+            "topk_children": 2,
+        },
+    }
+
+    with pytest.raises(ValueError, match="Discover-compatible profile"):
+        prepare_run(config)
 
 
 def test_prepare_run_can_initialize_library_from_seed_path(tmp_path):
@@ -186,7 +214,17 @@ def test_prepare_run_can_initialize_library_from_seed_path(tmp_path):
 
 def test_prepare_run_copies_seed_library_via_atomic_replace(tmp_path, monkeypatch):
     seed_library_path = tmp_path / "seed_library.json"
-    seed_library_path.write_text(json.dumps({"nodes": {}, "entries": {}, "groups": {}, "best_node_id": None}))
+    root = make_root_node(problem_id="polyomino_packing", raw_score=0.0, reward=0.0)
+    seed_library_path.write_text(
+        json.dumps(
+            {
+                "nodes": {root.id: root.to_dict()},
+                "entries": {},
+                "groups": {},
+                "best_node_id": root.id,
+            }
+        )
+    )
     config = {
         "run": {
             "output_dir": str(tmp_path / "outputs" / "atomic_seeded_polyomino"),
@@ -215,10 +253,10 @@ def test_prepare_run_copies_seed_library_via_atomic_replace(tmp_path, monkeypatc
     prepared = prepare_run(config)
 
     assert Path(prepared["library_path"]) in replace_targets
-    assert json.loads(Path(prepared["library_path"]).read_text())["nodes"] == {}
+    assert set(json.loads(Path(prepared["library_path"]).read_text())["nodes"]) == {root.id}
 
 
-def test_prepare_run_does_not_overwrite_existing_library_with_seed_path(tmp_path):
+def test_prepare_run_rejects_existing_pre_discover_library_without_overwriting_it(tmp_path):
     seed_library_path = tmp_path / "seed_library.json"
     seed_library_path.write_text(json.dumps({"nodes": {}, "entries": {}, "groups": {}, "best_node_id": None}))
     config = {
@@ -264,9 +302,10 @@ def test_prepare_run_does_not_overwrite_existing_library_with_seed_path(tmp_path
         )
     )
 
-    prepared = prepare_run(config)
+    with pytest.raises(ValueError, match="archive predates Discover-compatible accounting"):
+        prepare_run(config)
 
-    library = yaml.safe_load(Path(prepared["library_path"]).read_text())
+    library = yaml.safe_load(existing_library.read_text())
     assert "existing-root" in library["nodes"]
     assert "seed-root" not in library["nodes"]
 
@@ -454,11 +493,10 @@ def test_polyomino_h200_qwen_discover_recipe_is_direct_policy_mode(tmp_path):
     assert config["run"]["adam_beta1"] == 0.9
     assert config["run"]["adam_beta2"] == 0.95
     assert config["run"]["adam_eps"] == 1.0e-8
-    assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 256
+    assert config["ttt"]["groups_per_batch"] * config["ttt"]["group_size"] == 128
     assert config["ttt"]["bootstrap"] == {"enabled": False, "required": False}
     assert config["task"]["frontiercs"]["total_timeout_s"] == 1000
-    assert "rollouts/step: 256" in config_text
-    assert "group size 64 / 512 rollouts per step" in config_text
+    assert "rollouts/step: 128" in config_text
     assert "target KL ln(2)" in config_text
 
     lowered = config_text.lower()
@@ -471,7 +509,7 @@ def test_polyomino_h200_qwen_discover_recipe_is_direct_policy_mode(tmp_path):
     assert "execution_llm" not in agent_loop
     assert "actor_rollout_ref.rollout.agent.default_agent_loop=polyomino_discover_task" in overrides
     assert "algorithm.adv_estimator=entropic_adaptive_beta" in overrides
-    assert "actor_rollout_ref.rollout.n=32" in overrides
+    assert "actor_rollout_ref.rollout.n=16" in overrides
     assert "actor_rollout_ref.rollout.temperature=1.0" in overrides
     assert "actor_rollout_ref.actor.kl_loss_coef=0.1" in overrides
     assert "actor_rollout_ref.actor.optim.lr=4e-05" in overrides
@@ -522,7 +560,7 @@ def test_polyomino_qwen_discover_staged_submission_scripts_are_ordered():
     assert '"ttt.group_size=1"' in stage_runner
     assert '"actor_rollout_ref.rollout.tensor_model_parallel_size=1"' in stage_runner
     assert "one_step)" in stage_runner
-    assert 'EXPECTED_ROLLOUT_N="${EXPECTED_ROLLOUT_N:-32}"' in stage_runner
+    assert 'EXPECTED_ROLLOUT_N="${EXPECTED_ROLLOUT_N:-16}"' in stage_runner
     assert "polyomino_qwen3_8b_direct_discover_h200_4gpu_one_step_full_batch" in stage_runner
     one_step_block = stage_runner.split("one_step)", 1)[1].split("full)", 1)[0]
     assert "ttt.groups_per_batch" not in one_step_block
@@ -542,5 +580,6 @@ def test_polyomino_qwen_discover_staged_submission_scripts_are_ordered():
     assert "scripts/run_local_polyomino_h200_qwen3_8b_discover_stage.sh" in slurm
     assert "APPTAINER_IMAGE" in slurm
     assert "CONTAINER_PYTHON_BIN" in slurm
-    assert "apptainer exec --nv" in local_runner
+    assert 'APPTAINER_EXEC=(' in local_runner
+    assert '"$CONTAINER_RUNTIME" exec --nv' in local_runner
     assert '"${APPTAINER_EXEC[@]}" "$CONTAINER_PYTHON_BIN" -m guidance_ttt.main_erdos' in local_runner

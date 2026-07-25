@@ -13,7 +13,7 @@ from guidance_ttt.agent_loop import (
     build_agent_loop_output,
     build_execution_summary,
 )
-from guidance_ttt.state import LLMRequest, LLMResponse, VerificationResult
+from guidance_ttt.state import LLMRequest, LLMResponse, LibraryEntry, VerificationResult
 from guidance_ttt.tasks import get_task_spec
 from guidance_ttt.verifier.frontiercs_adapter import FrontierCSResult
 
@@ -548,7 +548,35 @@ int main() { return 0; }
 
     library_path = tmp_path / "library.json"
     root = get_task_spec("polyomino_packing").create_root_node()
-    GuidanceLibrary(library_path, initial_nodes=[root], rollout_n=1)
+    library = GuidanceLibrary(
+        library_path,
+        initial_nodes=[root],
+        rollout_n=1,
+        puct_q_mode="best_child",
+        discover_compat=True,
+        groups_per_batch=1,
+        score_direction="max",
+    )
+    library.attach_entry_to_root(
+        root.id,
+        LibraryEntry(
+            id="seed-entry",
+            parent_id=root.id,
+            problem_id="polyomino_packing",
+            timestep=0,
+            guidance="seed",
+            execution_thinking="seed",
+            solution="#include <bits/stdc++.h>\nint main() { return 0; }",
+            verifier_reward=1.0,
+            verifier_raw_score=1.0,
+            verifier_status="valid",
+            verifier_message="accepted",
+            summary="seed",
+            reusable_idea="seed",
+            failure_mode=None,
+            metadata={"bootstrap": True},
+        ),
+    )
 
     loop = PolyominoDiscoverAgentLoop.__new__(PolyominoDiscoverAgentLoop)
     loop.server_manager = FakeServerManager()
@@ -587,6 +615,10 @@ int main() { return 0; }
             "group_size": 1,
             "rollout_n": 1,
             "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "discover_compat": True,
+            "groups_per_batch": 1,
+            "score_direction": "max",
         },
     )
 
@@ -599,7 +631,11 @@ int main() { return 0; }
     assert output.extra_fields["solution"].startswith("#include <bits/stdc++.h>")
 
     snapshot = GuidanceLibrary(library_path).snapshot()
-    entry = next(iter(snapshot["entries"].values()))
+    entry = next(
+        entry
+        for entry in snapshot["entries"].values()
+        if (entry.get("metadata") or {}).get("direct_discover")
+    )
     assert entry["verifier_reward"] == 42.0
     assert entry["metadata"]["direct_discover"] is True
     assert entry["metadata"]["raw_action_text"] == cpp_response

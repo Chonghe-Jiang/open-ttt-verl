@@ -61,6 +61,44 @@ def _execution_semaphore_key(config: dict[str, Any]) -> str:
     )
 
 
+def _library_runtime_config(extra_info: dict[str, Any]) -> dict[str, Any]:
+    task_config = extra_info.get("task_config")
+    task_id = (
+        str(task_config.get("id"))
+        if isinstance(task_config, dict) and task_config.get("id")
+        else str(extra_info.get("task") or "")
+    )
+    is_polyomino = task_id == "polyomino_packing"
+    if is_polyomino:
+        expected = {
+            "discover_compat": True,
+            "puct_c": 1.0,
+            "puct_q_mode": "best_child",
+            "max_buffer_size": 1000,
+            "topk_children": 2,
+        }
+        mismatches = [
+            f"{key}={extra_info[key]!r} (expected {expected_value!r})"
+            for key, expected_value in expected.items()
+            if key in extra_info and extra_info[key] != expected_value
+        ]
+        if mismatches:
+            raise ValueError(
+                "Polyomino sampling must use the guidance-ttt Discover-compatible profile: "
+                + "; ".join(mismatches)
+            )
+    return {
+        "rollout_n": int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
+        "puct_c": 1.0 if is_polyomino else float(extra_info.get("puct_c", 1.0)),
+        "puct_q_mode": "best_child" if is_polyomino else str(extra_info.get("puct_q_mode", "best_child")),
+        "max_buffer_size": 1000 if is_polyomino else int(extra_info.get("max_buffer_size", 1000)),
+        "topk_children": 2 if is_polyomino else int(extra_info.get("topk_children", 2)),
+        "discover_compat": True if is_polyomino else bool(extra_info.get("discover_compat", False)),
+        "groups_per_batch": int(extra_info.get("groups_per_batch", 1)),
+        "score_direction": str(extra_info.get("score_direction", "max")),
+    }
+
+
 try:
     from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopMetrics, AgentLoopOutput, register
 except ModuleNotFoundError:
@@ -228,14 +266,17 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         global_step = kwargs.get("global_steps", kwargs.get("global_step", trajectory.get("step", 0)))
         group_uid = f"{global_step}:{uid}"
 
+        library_runtime_config = _library_runtime_config(extra_info)
         library = GuidanceLibrary(
             library_path,
-            rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
-            puct_c=float(extra_info.get("puct_c", 1.0)),
-            max_buffer_size=int(extra_info.get("max_buffer_size", 1000)),
-            topk_children=int(extra_info.get("topk_children", 2)),
+            **library_runtime_config,
         )
-        selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
+        library.assert_runtime_config(**library_runtime_config)
+        selected_node = library.acquire_group(
+            group_uid,
+            visible_timestep_exclusive=int(global_step),
+            require_solution=True,
+        )
         context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
         selected_entry = context["selected_entry"]
         guidance_prompt = build_guidance_prompt(
@@ -358,7 +399,7 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             extra_fields={
                 "group_uid": group_uid,
                 "selected_node_id": selected_node.id,
-                "child_node_id": child.id,
+                "child_node_id": child.id if child is not None else None,
                 "guidance": guidance,
                 "guidance_format_ok": guidance_format_ok,
                 "guidance_generation_attempts": guidance_generation.attempts,
@@ -511,14 +552,17 @@ class PolyominoDiscoverAgentLoop(AgentLoopBase):
         global_step = kwargs.get("global_steps", kwargs.get("global_step", trajectory.get("step", 0)))
         group_uid = f"{global_step}:{uid}"
 
+        library_runtime_config = _library_runtime_config(extra_info)
         library = GuidanceLibrary(
             library_path,
-            rollout_n=int(extra_info.get("rollout_n", extra_info.get("group_size", 1))),
-            puct_c=float(extra_info.get("puct_c", 1.0)),
-            max_buffer_size=int(extra_info.get("max_buffer_size", 1000)),
-            topk_children=int(extra_info.get("topk_children", 2)),
+            **library_runtime_config,
         )
-        selected_node = library.acquire_group(group_uid, visible_timestep_exclusive=int(global_step))
+        library.assert_runtime_config(**library_runtime_config)
+        selected_node = library.acquire_group(
+            group_uid,
+            visible_timestep_exclusive=int(global_step),
+            require_solution=False,
+        )
         context = library.context_for_node(selected_node, visible_timestep_exclusive=int(global_step))
         selected_entry = context["selected_entry"]
         direct_prompt = build_direct_discover_prompt(
@@ -593,7 +637,7 @@ class PolyominoDiscoverAgentLoop(AgentLoopBase):
             extra_fields={
                 "group_uid": group_uid,
                 "selected_node_id": selected_node.id,
-                "child_node_id": child.id,
+                "child_node_id": child.id if child is not None else None,
                 "direct_discover": True,
                 "raw_action_text": action_text,
                 "raw_action_with_specials": generation.raw_text,

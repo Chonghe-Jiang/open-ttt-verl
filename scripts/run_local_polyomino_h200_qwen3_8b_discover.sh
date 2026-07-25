@@ -18,7 +18,7 @@ JUDGE_URL="${JUDGE_URL:-http://127.0.0.1:8081}"
 JUDGE_PORT="${JUDGE_PORT:-8081}"
 JUDGE_WORKERS="${JUDGE_WORKERS:-8}"
 JUDGE_APP_DIR="${JUDGE_APP_DIR:-$PWD/.tmp/frontiercs-polyomino-discover-judge}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_qwen3_8b_discover}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/polyomino_h200_4gpu_qwen3_8b_discover_batch8_group16_aligned}"
 RESET_OUTPUT_DIR="${RESET_OUTPUT_DIR:-0}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -242,7 +242,7 @@ run_config_compose_smoke() {
   "${APPTAINER_EXEC[@]}" "$CONTAINER_PYTHON_BIN" - \
     "$CONFIG" \
     "$OUTPUT_DIR-smoke" \
-    "${EXPECTED_ROLLOUT_N:-32}" \
+    "${EXPECTED_ROLLOUT_N:-16}" \
     "${EXPECTED_H200_COUNT:-4}" \
     "${EXPECTED_TENSOR_MODEL_PARALLEL_SIZE:-4}" \
     "$@" <<'PY'

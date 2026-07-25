@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
 from omegaconf import OmegaConf
 
 from guidance_ttt.library import GuidanceLibrary
+from guidance_ttt.puct import archive_puct_score
 from guidance_ttt.state import LibraryEntry, make_root_node
 
 
@@ -149,6 +151,39 @@ def test_puct_can_prefer_unvisited_child_over_high_value_visited_child(tmp_path)
     assert picked.id == fresh.id
 
 
+def test_archive_puct_score_supports_guidance_blended_and_best_child_modes():
+    node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
+    shared = {
+        "node": node,
+        "visit_count": 1,
+        "best_reachable_value": 50.0,
+        "prior": 0.0,
+        "scale": 1.0,
+        "total_visits": 1,
+        "puct_c": 0.0,
+    }
+
+    assert archive_puct_score(**shared, q_mode="blended") == 90.0
+    assert archive_puct_score(**shared, q_mode="best_child") == 50.0
+
+
+def test_archive_puct_score_uses_own_value_before_first_visit():
+    node = make_root_node(problem_id="polyomino_packing", raw_score=100.0, reward=100.0)
+
+    score = archive_puct_score(
+        node=node,
+        visit_count=0,
+        best_reachable_value=50.0,
+        prior=0.0,
+        scale=1.0,
+        total_visits=1,
+        puct_c=0.0,
+        q_mode="best_child",
+    )
+
+    assert score == 100.0
+
+
 def test_library_restores_puct_config_from_archive_config(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
@@ -167,8 +202,12 @@ def test_library_restores_puct_config_from_archive_config(tmp_path):
     assert restored.snapshot()["config"] == {
         "rollout_n": 4,
         "puct_c": 2.5,
+        "puct_q_mode": "blended",
         "max_buffer_size": 17,
         "topk_children": 3,
+        "discover_compat": False,
+        "groups_per_batch": 1,
+        "score_direction": "max",
     }
 
 
@@ -267,3 +306,198 @@ def test_same_step_batch_blocks_selected_lineages(tmp_path):
     second = library.acquire_group("1:slot-b", visible_timestep_exclusive=1)
 
     assert {first.id, second.id} == {root_a.id, root_b.id}
+
+
+def test_discover_compat_updates_puct_per_rollout_and_excludes_failed_nodes(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=10.0, reward=10.0)
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=[root],
+        rollout_n=2,
+        puct_q_mode="best_child",
+        discover_compat=True,
+        groups_per_batch=1,
+        score_direction="max",
+    )
+    selected = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+
+    valid = _entry(selected.id, reward=20.0, suffix="valid")
+    valid.verifier_raw_score = 20.0
+    valid_child = library.submit_child("1:slot-a", valid)
+    partial = library.snapshot()
+
+    assert valid_child is not None
+    assert partial["puct_T"] == 1
+    assert partial["puct_n"][selected.id] == 1
+    assert partial["puct_m"][selected.id] == 20.0
+
+    failed = _entry(selected.id, reward=0.0, suffix="failed")
+    failed.verifier_status = "execution_error"
+    failed.verifier_raw_score = None
+    failed.failure_mode = "execution_error"
+    failed_child = library.submit_child("1:slot-a", failed)
+    finalized = library.snapshot()
+
+    assert failed_child is None
+    assert finalized["puct_T"] == 2
+    assert finalized["puct_n"][selected.id] == 2
+    assert finalized["puct_m"][selected.id] == 20.0
+    assert "entry-failed" in finalized["entries"]
+    assert all(node["entry_id"] != "entry-failed" for node in finalized["nodes"].values())
+
+
+def test_discover_compat_duplicate_solution_updates_visits_without_archive_node(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=10.0, reward=10.0)
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=[root],
+        rollout_n=2,
+        puct_q_mode="best_child",
+        discover_compat=True,
+        groups_per_batch=1,
+        score_direction="max",
+    )
+    selected = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+    first = _entry(selected.id, reward=20.0, suffix="first")
+    first.solution = "same solution"
+    first.verifier_raw_score = 20.0
+    duplicate = _entry(selected.id, reward=25.0, suffix="duplicate")
+    duplicate.solution = "same solution"
+    duplicate.verifier_raw_score = 25.0
+
+    first_child = library.submit_child("1:slot-a", first)
+    duplicate_child = library.submit_child("1:slot-a", duplicate)
+    snapshot = library.snapshot()
+
+    assert first_child is not None
+    assert duplicate_child is None
+    assert snapshot["puct_T"] == 2
+    assert snapshot["puct_n"][selected.id] == 2
+    assert snapshot["puct_m"][selected.id] == 25.0
+    assert all(node["entry_id"] != "entry-duplicate" for node in snapshot["nodes"].values())
+
+
+def test_discover_compat_filters_only_after_full_batch(tmp_path):
+    path = tmp_path / "library.json"
+    root_a = make_root_node(problem_id="polyomino_packing", raw_score=1.0, reward=1.0)
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=[root_a],
+        rollout_n=1,
+        puct_q_mode="best_child",
+        topk_children=1,
+        discover_compat=True,
+        groups_per_batch=2,
+        score_direction="max",
+    )
+    selected_a = library.acquire_group("1:slot-a", visible_timestep_exclusive=1)
+    low = _entry(selected_a.id, reward=2.0, suffix="low-batch")
+    low.verifier_raw_score = 2.0
+    low_child = library.submit_child("1:slot-a", low)
+
+    assert low_child is not None
+    assert low_child.id in library.snapshot()["nodes"]
+
+    selected_b = library.acquire_group("1:slot-b", visible_timestep_exclusive=1)
+    high = _entry(selected_b.id, reward=3.0, suffix="high-batch")
+    high.verifier_raw_score = 3.0
+    high_child = library.submit_child("1:slot-b", high)
+    finalized = library.snapshot()
+
+    assert high_child is not None
+    assert low_child.id not in finalized["nodes"]
+    assert high_child.id in finalized["nodes"]
+
+
+def test_discover_compat_replicates_seed_roots_with_independent_entries(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=7.0, reward=7.0)
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=[root],
+        rollout_n=1,
+        puct_q_mode="best_child",
+        discover_compat=True,
+        groups_per_batch=4,
+        score_direction="max",
+    )
+    seed_entry = _entry(root.id, reward=7.0, suffix="seed")
+    seed_entry.verifier_raw_score = 7.0
+    seed_entry.timestep = 0
+    seed_entry.metadata = {"bootstrap": True}
+    library.attach_entry_to_root(root.id, seed_entry)
+
+    library.ensure_pristine_root_count(4)
+    snapshot = library.snapshot()
+    roots = [node for node in snapshot["nodes"].values() if node["parent_id"] is None]
+    root_entry_ids = {node["entry_id"] for node in roots}
+
+    assert len(roots) == 4
+    assert len(root_entry_ids) == 4
+    assert all(snapshot["entries"][entry_id]["solution"] == seed_entry.solution for entry_id in root_entry_ids)
+
+
+def test_runtime_validation_rejects_old_group_level_accounting_for_discover(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=1.0, reward=1.0)
+    library = GuidanceLibrary(path, initial_nodes=[root], rollout_n=2)
+    selected = library.acquire_group("1:slot-a")
+    library.submit_child("1:slot-a", _entry(selected.id, reward=2.0, suffix="a"))
+    library.submit_child("1:slot-a", _entry(selected.id, reward=3.0, suffix="b"))
+
+    store = json.loads(path.read_text())
+    store["config"].update(
+        {
+            "puct_q_mode": "best_child",
+            "discover_compat": True,
+            "groups_per_batch": 1,
+            "score_direction": "max",
+        }
+    )
+    path.write_text(json.dumps(store))
+    restored = GuidanceLibrary(path)
+
+    with pytest.raises(ValueError, match="submitted rollout"):
+        restored.assert_runtime_config(
+            rollout_n=2,
+            puct_c=1.0,
+            puct_q_mode="best_child",
+            max_buffer_size=1000,
+            topk_children=2,
+            discover_compat=True,
+            groups_per_batch=1,
+            score_direction="max",
+        )
+
+
+def test_runtime_validation_rejects_archive_without_discover_schema(tmp_path):
+    path = tmp_path / "library.json"
+    root = make_root_node(problem_id="polyomino_packing", raw_score=1.0, reward=1.0)
+    legacy = GuidanceLibrary(path, initial_nodes=[root], rollout_n=1)
+    store = legacy.snapshot()
+    for key in ("puct_q_mode", "discover_compat", "groups_per_batch", "score_direction"):
+        store["config"].pop(key)
+    path.write_text(json.dumps(store))
+
+    restored = GuidanceLibrary(
+        path,
+        rollout_n=1,
+        puct_q_mode="best_child",
+        discover_compat=True,
+        groups_per_batch=1,
+        score_direction="max",
+    )
+
+    with pytest.raises(ValueError, match="archive predates Discover-compatible accounting"):
+        restored.assert_runtime_config(
+            rollout_n=1,
+            puct_c=1.0,
+            puct_q_mode="best_child",
+            max_buffer_size=1000,
+            topk_children=2,
+            discover_compat=True,
+            groups_per_batch=1,
+            score_direction="max",
+        )

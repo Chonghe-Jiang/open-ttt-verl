@@ -11,7 +11,7 @@ HOST_CACHE_DIR="${HOST_CACHE_DIR:-$PWD/.modal_local_cache}"
 HOST_TMP_DIR="${HOST_TMP_DIR:-$PWD/.modal_local_tmp}"
 HOST_TRITON_DIR="${HOST_TRITON_DIR:-$PWD/.modal_local_triton}"
 HOST_FRONTIERCS_DIR="${HOST_FRONTIERCS_DIR:-/home/qua/code/reference/Frontier-CS}"
-REMOTE_OUTPUT_DIR="${REMOTE_OUTPUT_DIR:-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step}"
+REMOTE_OUTPUT_DIR="${REMOTE_OUTPUT_DIR:-/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step}"
 JUDGE_URL="${JUDGE_URL:-http://127.0.0.1:8081}"
 JUDGE_APP_DIR="${JUDGE_APP_DIR:-$HOST_TMP_DIR/frontiercs-local-judge}"
 RESET_OUTPUT_DIR="${RESET_OUTPUT_DIR:-1}"
@@ -343,7 +343,7 @@ ensure_training_packages
 run_prepare_smoke
 
 if [[ "$RESET_OUTPUT_DIR" == "1" ]]; then
-  rm -rf "$HOST_RUNS_DIR/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
+  rm -rf "$HOST_RUNS_DIR/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step"
 fi
 
 if [[ "$START_EXECUTION_SERVER" == "1" ]]; then

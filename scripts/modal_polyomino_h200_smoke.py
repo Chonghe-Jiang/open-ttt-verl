@@ -65,19 +65,19 @@ REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned.yaml"
 )
 REMOTE_GPT_OSS_120B_3GPU_GROUP16_H200_TUNED_OUTPUT_DIR = (
-    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_group16_h200_tuned_50step"
+    "/runs/guidance_ttt/polyomino_modal_h200_3gpu_gpt_oss_120b_discover_batch8_group16_h200_tuned_50step"
 )
 REMOTE_QWEN3_8B_DISCOVER_TINY_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_qwen3_8b_discover_tiny.yaml"
 )
 REMOTE_QWEN3_8B_DISCOVER_TINY_OUTPUT_DIR = (
-    "/runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny"
+    "/runs/guidance_ttt/polyomino_modal_h200_qwen3_8b_discover_tiny_aligned"
 )
 REMOTE_GPT_OSS_120B_INFERENCE_PUCT_CONFIG_PATH = (
     f"{REMOTE_REPO_DIR}/guidance_ttt/config/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct.yaml"
 )
 REMOTE_GPT_OSS_120B_INFERENCE_PUCT_OUTPUT_DIR = (
-    "/runs/guidance_ttt/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct_g16_50step"
+    "/runs/guidance_ttt/polyomino_modal_h200_1gpu_gpt_oss_120b_inference_puct_discover_batch8_group16_50step"
 )
 JUDGE_LOG_PATH = "/tmp/frontier_judge.log"
 GPT_OSS_120B_SERVER_LOG_PATH = "/tmp/gpt_oss_120b_vllm.log"
