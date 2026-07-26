@@ -67,8 +67,10 @@ def _config(tmp_path: Path, *, num_steps: int = 1) -> dict:
             "groups_per_batch": 8,
             "group_size": 16,
             "generation_concurrency": 128,
-            "evaluation_concurrency": 128,
+            "evaluation_concurrency": 8,
             "eval_timeout": 10,
+            "judge_retry_attempts": 2,
+            "judge_retry_backoff_s": 0,
             "puct_c": 1.0,
             "puct_q_mode": "best_child",
             "max_buffer_size": 1000,
@@ -204,7 +206,7 @@ def test_one_step_runs_all_eight_by_sixteen_candidates_concurrently(tmp_path):
         for candidate_index in range(16)
     ]
     assert client.max_active == 128
-    assert verifier.max_active == 128
+    assert verifier.max_active == 8
     assert len(verifier.calls) == 128
     assert len(ablation_entries) == 128
     assert len({entry["parent_id"] for entry in ablation_entries}) == 8
@@ -217,6 +219,39 @@ def test_one_step_runs_all_eight_by_sixteen_candidates_concurrently(tmp_path):
     assert summary["steps"][0]["candidate_count"] == 128
     assert len(summary["steps"][0]["selected_node_ids"]) == 8
     assert (runner.output_dir / "run_summary.md").exists()
+
+
+def test_transient_judge_500_is_retried_without_resampling(tmp_path):
+    client = ConcurrentFakeClient()
+    verifier = ConcurrentVerifier()
+    original_call = verifier.__call__
+    transient_returned = False
+
+    def transient_once(*args, **kwargs):
+        nonlocal transient_returned
+        if not transient_returned:
+            transient_returned = True
+            return VerificationResult(
+                reward=0.0,
+                raw_score=None,
+                valid=False,
+                status="invalid",
+                message="AxiosError: Request failed with status code 500",
+            )
+        return original_call(*args, **kwargs)
+
+    runner = PolyominoInferenceAblationRunner(
+        _config(tmp_path),
+        client=client,
+        verifier=transient_once,
+        prompt_token_counter=lambda _system, _user: 256,
+    )
+
+    summary = asyncio.run(runner.run())
+
+    assert len(client.calls) == 128
+    assert len(verifier.calls) == 128
+    assert summary["steps"][0]["valid_count"] == 128
 
 
 def test_generation_failure_is_written_as_invalid_child_without_cancelling_group(tmp_path):

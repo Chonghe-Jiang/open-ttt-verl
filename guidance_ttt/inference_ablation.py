@@ -70,6 +70,15 @@ def _fallback_summary(thinking: str) -> str:
     return "[Fallback summary: model omitted both <summary> and usable <think> content.]"
 
 
+def _is_transient_judge_failure(verification: VerificationResult) -> bool:
+    message = verification.message.lower()
+    return not verification.valid and (
+        "axioserror: request failed with status code 500" in message
+        or "worker queue is full" in message
+        or "file does not exists with id" in message
+    )
+
+
 def _entry_candidate_index(entry: dict[str, Any], *, group_uid: str) -> int | None:
     metadata = entry.get("metadata") or {}
     if not isinstance(metadata, dict) or metadata.get("group_uid") != group_uid:
@@ -348,18 +357,31 @@ class PolyominoInferenceAblationRunner:
             queued_at = time.perf_counter()
             async with semaphore:
                 started_at = time.perf_counter()
-                try:
-                    verification = await loop.run_in_executor(
-                        executor,
-                        partial(
-                            self.verifier,
-                            candidate.response.text,
-                            timeout_s=int(self.search_config.get("eval_timeout", 340)),
-                            config=_frontier_config(self.task_config),
-                        ),
-                    )
-                except Exception as exc:
-                    verification = VerificationResult.execution_error(str(exc))
+                max_retries = max(0, int(self.search_config.get("judge_retry_attempts", 0)))
+                retry_backoff_s = max(0.0, float(self.search_config.get("judge_retry_backoff_s", 1.0)))
+                attempts = 0
+                while True:
+                    attempts += 1
+                    try:
+                        verification = await loop.run_in_executor(
+                            executor,
+                            partial(
+                                self.verifier,
+                                candidate.response.text,
+                                timeout_s=int(self.search_config.get("eval_timeout", 340)),
+                                config=_frontier_config(self.task_config),
+                            ),
+                        )
+                    except Exception as exc:
+                        verification = VerificationResult.execution_error(str(exc))
+                    if not _is_transient_judge_failure(verification) or attempts > max_retries:
+                        break
+                    await asyncio.sleep(retry_backoff_s * (2 ** (attempts - 1)))
+                verification.artifacts = {
+                    **verification.artifacts,
+                    "judge_attempts": attempts,
+                    "judge_retry_count": attempts - 1,
+                }
                 return EvaluatedCandidate(
                     generation=candidate,
                     verification=verification,
