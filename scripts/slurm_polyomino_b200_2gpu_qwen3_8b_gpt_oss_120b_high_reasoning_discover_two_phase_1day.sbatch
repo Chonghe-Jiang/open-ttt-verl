@@ -33,13 +33,13 @@ grep -Eq '^[[:space:]]+groups_per_batch:[[:space:]]+8[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+group_size:[[:space:]]+16[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+reasoning_effort:[[:space:]]+high[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+prompt_style:[[:space:]]+qwen_native_thinking[[:space:]]*$' "${CONFIG}"
-grep -Eq '^[[:space:]]+phase1_max_tokens:[[:space:]]+22000[[:space:]]*$' "${CONFIG}"
+grep -Eq '^[[:space:]]+phase1_max_tokens:[[:space:]]+16500[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+context_window:[[:space:]]+32768[[:space:]]*$' "${CONFIG}"
 grep -Eq '^[[:space:]]+save_freq:[[:space:]]+-1[[:space:]]*$' "${CONFIG}"
 
 echo "SLURM_JOB_ID=${SLURM_JOB_ID} OUTPUT_DIR=${OUTPUT_DIR}"
 echo "Qwen3-8B guidance: 8 groups x 16 rollouts; GPT-OSS-120B execution: high reasoning"
-echo "Discover two-phase execution: phase1 total context 22000, full context 32768, buffer 50"
+echo "Discover two-phase execution: phase1 total context 16500, full context 32768, buffer 50"
 echo "Discover-compatible search/RL enabled; checkpoint saving disabled"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 

@@ -8,9 +8,12 @@ from guidance_ttt.verl_ext import (
     compute_entropic_adaptive_beta,
     compute_ttt_reinforce_is,
 )
+from verl.protocol import DataProto
+from verl.trainer.ppo.ray_trainer import compute_advantage
+from verl.trainer.ppo.rollout_corr_helper import compute_rollout_corr_metrics_from_logprobs
 
 
-def test_entropic_adaptive_beta_removes_constant_reward_group_from_response_mask():
+def test_entropic_adaptive_beta_removes_constant_reward_group_from_optimization_mask():
     rewards = torch.tensor(
         [
             [1.0, 0.0],
@@ -19,37 +22,77 @@ def test_entropic_adaptive_beta_removes_constant_reward_group_from_response_mask
             [2.0, 0.0],
         ]
     )
-    response_mask = torch.ones_like(rewards)
+    optimization_mask = torch.ones_like(rewards)
     group_ids = np.array(["constant", "constant", "variable", "variable"])
 
     advantages, _ = compute_entropic_adaptive_beta(
         rewards,
-        response_mask,
+        optimization_mask,
         index=group_ids,
         config={"remove_constant_reward_groups": True},
     )
 
-    assert torch.equal(response_mask[:2], torch.zeros_like(response_mask[:2]))
+    assert torch.equal(optimization_mask[:2], torch.zeros_like(optimization_mask[:2]))
     assert torch.equal(advantages[:2], torch.zeros_like(advantages[:2]))
-    assert torch.equal(response_mask[2:], torch.ones_like(response_mask[2:]))
+    assert torch.equal(optimization_mask[2:], torch.ones_like(optimization_mask[2:]))
     assert not torch.equal(advantages[2:], torch.zeros_like(advantages[2:]))
 
 
 def test_entropic_adaptive_beta_keeps_one_group_when_all_rewards_are_constant():
     rewards = torch.ones((4, 2))
-    response_mask = torch.ones_like(rewards)
+    optimization_mask = torch.ones_like(rewards)
     group_ids = np.array(["first", "first", "second", "second"])
 
     advantages, _ = compute_entropic_adaptive_beta(
         rewards,
-        response_mask,
+        optimization_mask,
         index=group_ids,
         config={"remove_constant_reward_groups": True},
     )
 
-    assert torch.equal(response_mask[:2], torch.ones_like(response_mask[:2]))
-    assert torch.equal(response_mask[2:], torch.zeros_like(response_mask[2:]))
+    assert torch.equal(optimization_mask[:2], torch.ones_like(optimization_mask[:2]))
+    assert torch.equal(optimization_mask[2:], torch.zeros_like(optimization_mask[2:]))
     assert torch.equal(advantages, torch.zeros_like(advantages))
+
+
+def test_compute_advantage_separates_response_and_optimization_masks():
+    response_mask = torch.ones((4, 2))
+    rewards = torch.tensor(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+        ]
+    )
+    data = DataProto.from_dict(
+        tensors={
+            "response_mask": response_mask.clone(),
+            "token_level_rewards": rewards,
+        },
+        non_tensors={
+            "uid": np.array(["constant", "constant", "variable", "variable"], dtype=object)
+        },
+    )
+
+    result = compute_advantage(
+        data,
+        adv_estimator="entropic_adaptive_beta",
+        config={"remove_constant_reward_groups": True},
+    )
+
+    assert torch.equal(result.batch["response_mask"], response_mask)
+    assert torch.equal(result.batch["optimization_mask"][:2], torch.zeros((2, 2)))
+    assert torch.equal(result.batch["optimization_mask"][2:], torch.ones((2, 2)))
+
+    # Diagnostics continue to use token validity and therefore remain defined
+    # even when an optimization microbatch is completely excluded.
+    metrics = compute_rollout_corr_metrics_from_logprobs(
+        log_prob=torch.zeros((2, 2)),
+        rollout_log_prob=torch.zeros((2, 2)),
+        response_mask=result.batch["response_mask"][:2],
+    )
+    assert metrics["rollout_corr/training_ppl"] == 1.0
 
 
 def test_discover_centered_kl_matches_official_formula_and_is_zero_mean():
@@ -93,3 +136,22 @@ def test_ttt_reinforce_is_uses_untruncated_rollout_ratio_when_weights_are_not_pr
     expected_loss = (-expected_weights * log_prob * advantages).mean()
     assert torch.allclose(loss, expected_loss)
     assert metrics["policy/ttt_is_max"] > 2.0
+
+
+def test_ttt_reinforce_is_all_zero_optimization_mask_is_finite_and_differentiable():
+    log_prob = torch.tensor([[1.0, -1.0]], requires_grad=True)
+    zero_mask = torch.zeros((1, 2))
+
+    loss, metrics = compute_ttt_reinforce_is(
+        old_log_prob=torch.zeros((1, 2)),
+        log_prob=log_prob,
+        advantages=torch.zeros((1, 2)),
+        response_mask=zero_mask,
+        rollout_log_probs=torch.zeros((1, 2)),
+    )
+
+    assert torch.isfinite(loss)
+    assert loss.item() == 0.0
+    assert metrics["policy/empty_optimization_mask"] == 1.0
+    loss.backward()
+    assert torch.equal(log_prob.grad, torch.zeros_like(log_prob))

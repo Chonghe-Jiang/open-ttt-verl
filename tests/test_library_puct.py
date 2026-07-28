@@ -398,6 +398,45 @@ def test_group_of_sixteen_finalizes_once_and_rejects_extra_child(tmp_path):
     assert library.snapshot() == finalized
 
 
+def test_rollback_incomplete_discover_step_restores_checkpoint_boundary(tmp_path):
+    path = tmp_path / "library.json"
+    roots = [
+        make_root_node(problem_id="polyomino_packing", raw_score=float(index), reward=float(index))
+        for index in range(2)
+    ]
+    library = GuidanceLibrary(
+        path,
+        initial_nodes=roots,
+        rollout_n=2,
+        discover_compat=True,
+        groups_per_batch=2,
+        puct_q_mode="best_child",
+    )
+
+    for slot in ("slot-a", "slot-b"):
+        selected = library.acquire_group(f"1:{slot}", visible_timestep_exclusive=1)
+        for rollout in range(2):
+            entry = _entry(selected.id, reward=float(rollout + 1), suffix=f"{slot}-{rollout}")
+            entry.timestep = 1
+            entry.verifier_raw_score = float(rollout + 1)
+            entry.metadata["group_uid"] = f"1:{slot}"
+            library.submit_child(f"1:{slot}", entry)
+    checkpoint_boundary = library.snapshot()
+
+    selected = library.acquire_group("2:slot-a", visible_timestep_exclusive=2)
+    entry = _entry(selected.id, reward=9.0, suffix="in-flight")
+    entry.timestep = 2
+    entry.verifier_raw_score = 9.0
+    entry.metadata["group_uid"] = "2:slot-a"
+    library.submit_child("2:slot-a", entry)
+    library.acquire_group("2:slot-b", visible_timestep_exclusive=2)
+
+    result = library.rollback_incomplete_steps_after(1)
+
+    assert result == {"groups": 2, "entries": 1, "nodes": 1, "submitted": 1}
+    assert library.snapshot() == checkpoint_boundary
+
+
 def test_pristine_archive_can_adopt_recipe_runtime_config(tmp_path):
     path = tmp_path / "library.json"
     root = make_root_node(problem_id="polyomino_packing", raw_score=27.0, reward=27.0)

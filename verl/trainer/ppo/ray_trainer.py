@@ -156,13 +156,20 @@ def compute_advantage(
     # Back-compatible with trainers that do not compute response mask in fit
     if "response_mask" not in data.batch.keys():
         data.batch["response_mask"] = compute_response_mask(data)
+    # Keep token validity separate from optimization eligibility. Advantage
+    # estimators may intentionally exclude complete samples/groups from the
+    # policy update, but response_mask must continue to describe the actual
+    # non-padding response tokens for log-probability diagnostics.
+    if "optimization_mask" not in data.batch.keys():
+        data.batch["optimization_mask"] = data.batch["response_mask"].clone()
+    optimization_mask = data.batch["optimization_mask"]
     # prepare response group
     if adv_estimator == AdvantageEstimator.GAE:
         # Compute advantages and returns using Generalized Advantage Estimation (GAE)
         advantages, returns = core_algos.compute_gae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
-            response_mask=data.batch["response_mask"],
+            response_mask=optimization_mask,
             gamma=gamma,
             lam=lam,
         )
@@ -176,7 +183,7 @@ def compute_advantage(
             )
     elif adv_estimator == AdvantageEstimator.GRPO:
         # Initialize the mask for GRPO calculation
-        grpo_calculation_mask = data.batch["response_mask"]
+        grpo_calculation_mask = optimization_mask
 
         # Call compute_grpo_outcome_advantage with parameters matching its definition
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
@@ -192,7 +199,7 @@ def compute_advantage(
         adv_estimator_fn = core_algos.get_adv_estimator_fn(adv_estimator)
         adv_kwargs = {
             "token_level_rewards": data.batch["token_level_rewards"],
-            "response_mask": data.batch["response_mask"],
+            "response_mask": optimization_mask,
             "config": config,
         }
         if "uid" in data.non_tensor_batch:  # optional
@@ -1512,7 +1519,9 @@ class RayPPOTrainer:
                                     advantages=batch.batch["advantages"],
                                     rollout_log_probs=batch.batch["rollout_log_probs"],
                                     ref_log_probs=batch.batch["ref_log_prob"],
-                                    response_mask=batch.batch["response_mask"],
+                                    response_mask=batch.batch.get(
+                                        "optimization_mask", batch.batch["response_mask"]
+                                    ),
                                     coef=discover_kl_coef,
                                 )
                             )

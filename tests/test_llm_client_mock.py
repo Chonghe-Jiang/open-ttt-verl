@@ -1,4 +1,6 @@
 import asyncio
+import http.client
+import json
 import os
 
 import pytest
@@ -94,6 +96,7 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
             "top_k": 20,
             "min_p": 0.0,
             "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning": {"effort": "high"},
             "reasoning_effort": "low",
             "verbosity": "low",
         }
@@ -132,10 +135,186 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
     assert captured["payload"]["top_k"] == 20
     assert captured["payload"]["min_p"] == 0.0
     assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert captured["payload"]["reasoning_effort"] == "low"
     assert captured["payload"]["verbosity"] == "low"
     assert response.reasoning == "Consider several skyline mutations."
     assert response.text.startswith("<solution>")
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_client_records_request_metrics_and_upstream_provider(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "capture_request_metrics": True,
+        }
+    )
+
+    def fake_post_json(path, payload):
+        return {
+            "model": "z-ai/glm-5.2",
+            "provider": "Z.AI",
+            "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}],
+            "_client_request_metadata": {
+                "api_attempts": 2,
+                "api_retry_count": 1,
+                "api_elapsed_s": 3.5,
+                "api_http_status": 200,
+            },
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="z-ai/glm-5.2",
+            temperature=1.0,
+            max_tokens=None,
+        )
+    )
+
+    assert response.metadata["api_response_provider"] == "Z.AI"
+    assert response.metadata["api_response_model"] == "z-ai/glm-5.2"
+    assert response.metadata["api_attempts"] == 2
+    assert response.metadata["api_retry_count"] == 1
+    assert response.metadata["api_elapsed_s"] == 3.5
+
+
+class _FakeHTTPResponse:
+    status = 200
+
+    def __init__(self, body: bytes = b"", read_error: Exception | None = None):
+        self.body = body
+        self.read_error = read_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        if self.read_error is not None:
+            raise self.read_error
+        return self.body
+
+
+def _successful_chat_body() -> bytes:
+    return json.dumps(
+        {
+            "model": "z-ai/glm-5.2",
+            "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}],
+        }
+    ).encode()
+
+
+def test_openai_compatible_client_retries_incomplete_read(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "max_retries": 2,
+            "retry_backoff_s": 0,
+            "capture_request_metrics": True,
+        }
+    )
+    responses = iter(
+        [
+            _FakeHTTPResponse(read_error=http.client.IncompleteRead(b'{"partial":', 100)),
+            _FakeHTTPResponse(_successful_chat_body()),
+        ]
+    )
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+
+    data = client._post_json("/chat/completions", {"model": "z-ai/glm-5.2"})
+
+    assert data["choices"][0]["message"]["content"] == "OK"
+    assert data["_client_request_metadata"]["api_attempts"] == 2
+    assert data["_client_request_metadata"]["api_retry_errors"] == ["IncompleteRead"]
+
+
+def test_openai_compatible_client_retries_truncated_json_and_error_finish(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "max_retries": 3,
+            "retry_backoff_s": 0,
+            "capture_request_metrics": True,
+        }
+    )
+    error_finish = json.dumps(
+        {
+            "model": "z-ai/glm-5.2",
+            "choices": [{"message": {"reasoning": "unfinished"}, "finish_reason": "error"}],
+        }
+    ).encode()
+    responses = iter(
+        [
+            _FakeHTTPResponse(b'{"choices": ['),
+            _FakeHTTPResponse(error_finish),
+            _FakeHTTPResponse(_successful_chat_body()),
+        ]
+    )
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+
+    data = client._post_json("/chat/completions", {"model": "z-ai/glm-5.2"})
+
+    assert data["choices"][0]["message"]["content"] == "OK"
+    assert data["_client_request_metadata"]["api_attempts"] == 3
+    assert data["_client_request_metadata"]["api_retry_errors"] == [
+        "JSONDecodeError",
+        "finish_reason_error",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bad_response", "expected_reason"),
+    [
+        ({"model": "z-ai/glm-5.2"}, "missing_choices"),
+        (
+            {
+                "model": "z-ai/glm-5.2",
+                "choices": [{"message": {"reasoning": "unfinished"}, "finish_reason": None}],
+            },
+            "missing_finish_reason",
+        ),
+        (
+            {
+                "model": "z-ai/glm-5.2",
+                "choices": [{"message": {"reasoning": "unfinished"}, "finish_reason": "stop"}],
+            },
+            "missing_final_content",
+        ),
+    ],
+)
+def test_openai_compatible_client_retries_incomplete_chat_response(
+    monkeypatch, bad_response, expected_reason
+):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "max_retries": 1,
+            "retry_backoff_s": 0,
+            "capture_request_metrics": True,
+        }
+    )
+    responses = iter(
+        [
+            _FakeHTTPResponse(json.dumps(bad_response).encode()),
+            _FakeHTTPResponse(_successful_chat_body()),
+        ]
+    )
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+
+    data = client._post_json("/chat/completions", {"model": "z-ai/glm-5.2"})
+
+    assert data["choices"][0]["message"]["content"] == "OK"
+    assert data["_client_request_metadata"]["api_retry_errors"] == [expected_reason]
 
 
 @pytest.mark.anyio

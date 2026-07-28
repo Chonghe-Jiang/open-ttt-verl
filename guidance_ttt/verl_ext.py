@@ -57,6 +57,9 @@ def compute_entropic_adaptive_beta(
     config: Any | None = None,
     **_: Any,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    # ray_trainer passes its optimization_mask clone through the standard
+    # response_mask estimator argument; mutations here must never reach the
+    # original token-validity mask.
     with torch.no_grad():
         scores = token_level_rewards.sum(dim=-1).float()
         advantages = torch.zeros_like(token_level_rewards, dtype=torch.float32)
@@ -139,6 +142,18 @@ def compute_ttt_reinforce_is(
     rollout_log_probs: torch.Tensor | None = None,
     **_: Any,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
+    # A complete constant-reward group is intentionally excluded from the
+    # Discover update. Keep a differentiable zero so distributed workers still
+    # execute the same backward/collective sequence without dividing by zero.
+    if not response_mask.any():
+        loss = log_prob.sum() * 0.0
+        return loss, {
+            "actor/ppo_kl": 0.0,
+            "policy/ttt_is_mean": 0.0,
+            "policy/ttt_is_max": 0.0,
+            "policy/empty_optimization_mask": 1.0,
+        }
+
     if rollout_is_weights is not None:
         is_weights = rollout_is_weights.detach()
     elif rollout_log_probs is not None:
@@ -161,6 +176,7 @@ def compute_ttt_reinforce_is(
         ),
         "policy/ttt_is_mean": float(valid_weights.mean().item()) if valid_weights.numel() else 0.0,
         "policy/ttt_is_max": float(valid_weights.max().item()) if valid_weights.numel() else 0.0,
+        "policy/empty_optimization_mask": 0.0,
     }
     return loss, metrics
 

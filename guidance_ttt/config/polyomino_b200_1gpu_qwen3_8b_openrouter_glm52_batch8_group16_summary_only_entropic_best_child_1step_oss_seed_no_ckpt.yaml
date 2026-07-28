@@ -1,24 +1,24 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
+  output_dir: outputs/guidance_ttt/polyomino_b200_1gpu_qwen3_8b_openrouter_glm52_batch8_group16_summary_only_entropic_best_child_1step_oss_seed_no_ckpt
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen3_8b_actor_gpt_oss_120b_high_reasoning_exec_b200_2gpu_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
+  experiment_name: polyomino_qwen3_8b_actor_openrouter_glm52_exec_b200_1gpu_batch8_group16_summary_only_entropic_best_child_1step_oss_seed_no_ckpt
   model_path: models/Qwen3-8B
   seed: 0
   num_initial_states: 1
-  num_steps: 500
-  total_epochs: 500
+  num_steps: 1
+  total_epochs: 1
   adv_estimator: entropic_adaptive_beta
   max_prompt_length: 4096
   max_response_length: 8192
   filter_overlong_prompts: false
   truncation: middle
   learning_rate: 4.0e-5
-  ppo_mini_batch_size: 8
+  ppo_mini_batch_size: 4
   ppo_micro_batch_size_per_gpu: 2
-  use_kl_loss: false
-  kl_loss_coef: 0.0
+  use_kl_loss: true
+  kl_loss_coef: 0.05
   rollout_engine: vllm
-  temperature: 1.0
+  temperature: 0.9
   tensor_model_parallel_size: 1
   gpu_memory_utilization: 0.7
   n_gpus_per_node: 1
@@ -44,40 +44,36 @@ task:
     total_timeout_s: 340
 
 ttt:
-  discover_compat: true
   prompt_mode: summary_only
   groups_per_batch: 8
   group_size: 16
   eval_timeout: 340
   puct_c: 1.0
   puct_q_mode: best_child
-  max_buffer_size: 1000
-  topk_children: 2
   bootstrap:
-    enabled: true
+    enabled: false
     required: true
-    max_attempts: 2
     overwrite_existing: false
     seed_library_path: guidance_ttt/seeds/polyomino_packing/gpt_oss_120b_bootstrap_library.json
 
 llm:
   execution:
     provider: openai_compatible
-    model: openai/gpt-oss-120b
-    base_url: http://127.0.0.1:8000/v1
-    api_key: local-vllm
-    temperature: 0.0
-    reasoning_effort: high
-    prompt_style: qwen_native_thinking
+    model: z-ai/glm-5.2
+    base_url: https://openrouter.ai/api/v1
+    api_key_file: .secrets/openrouter_api_key
+    prompt_style: gpt_api_brief_thinking
+    reasoning:
+      effort: high
+      exclude: false
+    temperature: 1.0
     max_tokens: null
-    # Keep the 32K model context and reserve roughly 16K tokens for the
-    # forced-final C++ solution. This is a prompt-plus-phase-1 budget, so a
-    # roughly 12K late-stage prompt leaves about 5K native-reasoning tokens.
-    phase1_max_tokens: 16500
-    context_window: 32768
-    context_buffer: 50
+    phase1_max_tokens: null
     timeout_s: 1200
     concurrency: 16
+    max_retries: 6
+    retry_backoff_s: 2.0
+    capture_request_metrics: true
 
 verl_overrides:
   - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
@@ -88,6 +84,10 @@ verl_overrides:
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
   - actor_rollout_ref.rollout.free_cache_engine=True
   - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.rollout.top_p=0.95
+  - actor_rollout_ref.rollout.val_kwargs.do_sample=False
+  - actor_rollout_ref.rollout.val_kwargs.temperature=0
+  - actor_rollout_ref.rollout.val_kwargs.top_p=1.0
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
   - actor_rollout_ref.actor.use_remove_padding=True
   - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
@@ -107,4 +107,5 @@ verl_overrides:
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
   - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - trainer.resume_mode=auto
   - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

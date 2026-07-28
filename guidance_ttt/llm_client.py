@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -107,13 +108,15 @@ class OpenAICompatibleLLMClient:
         self.timeout_s = float(config.get("timeout_s", 120))
         self.max_retries = max(0, int(config.get("max_retries", 0)))
         self.retry_backoff_s = max(0.0, float(config.get("retry_backoff_s", 1.0)))
+        self.capture_request_metrics = bool(config.get("capture_request_metrics", False))
         self.request_options = {
-            key: dict(config[key]) if key == "chat_template_kwargs" else config[key]
+            key: dict(config[key]) if key in {"chat_template_kwargs", "reasoning"} else config[key]
             for key in (
                 "top_p",
                 "top_k",
                 "min_p",
                 "chat_template_kwargs",
+                "reasoning",
                 "reasoning_effort",
                 "verbosity",
             )
@@ -143,16 +146,26 @@ class OpenAICompatibleLLMClient:
             or choice.get("reasoning")
             or ""
         )
+        request_metrics = data.pop("_client_request_metadata", {})
+        response_provider = data.get("provider")
+        response_metadata = {"provider": "openai_compatible", **request_metrics}
+        if data.get("model"):
+            response_metadata["api_response_model"] = data["model"]
+        if response_provider:
+            response_metadata["api_response_provider"] = response_provider
+        response_metadata.update(request.metadata)
         return LLMResponse(
             text=text,
             model=data.get("model") or request.model,
             finish_reason=choice.get("finish_reason", ""),
             reasoning=str(reasoning),
             usage=data.get("usage", {}),
-            metadata={"provider": "openai_compatible", **request.metadata},
+            metadata=response_metadata,
         )
 
     def _post_json(self, path: str, payload: dict) -> dict:
+        started_at = time.monotonic()
+        retry_errors: list[str] = []
         req = urllib.request.Request(
             self.endpoint + path,
             data=json.dumps(payload).encode(),
@@ -164,19 +177,92 @@ class OpenAICompatibleLLMClient:
         for attempt in range(self.max_retries + 1):
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-                    return json.loads(resp.read().decode())
+                    data = json.loads(resp.read().decode())
+                    if not isinstance(data, dict):
+                        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+                    retryable_response_error = self._retryable_response_error(data)
+                    if retryable_response_error:
+                        raise _RetryableLLMResponseError(retryable_response_error)
+                    if self.capture_request_metrics:
+                        data["_client_request_metadata"] = {
+                            "api_attempts": attempt + 1,
+                            "api_retry_count": attempt,
+                            "api_retry_errors": list(retry_errors),
+                            "api_elapsed_s": time.monotonic() - started_at,
+                            "api_http_status": int(getattr(resp, "status", 200)),
+                        }
+                    return data
             except urllib.error.HTTPError as exc:
-                body = exc.read().decode(errors="replace")[:1000]
+                try:
+                    body = exc.read().decode(errors="replace")[:1000]
+                except (http.client.HTTPException, OSError):
+                    body = "<failed to read HTTP error body>"
                 retryable = exc.code == 429 or exc.code in {408, 500, 502, 503, 504}
                 if not retryable or attempt >= self.max_retries:
                     raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+                retry_errors.append(f"HTTP {exc.code}")
                 retry_after = exc.headers.get("Retry-After")
                 try:
                     delay = float(retry_after) if retry_after is not None else self.retry_backoff_s * (2**attempt)
                 except ValueError:
                     delay = self.retry_backoff_s * (2**attempt)
+                print(
+                    f"LLM API HTTP {exc.code}; retrying attempt {attempt + 2}/"
+                    f"{self.max_retries + 1} after {max(0.0, delay):.1f}s",
+                    flush=True,
+                )
                 time.sleep(max(0.0, delay))
+            except (
+                http.client.HTTPException,
+                urllib.error.URLError,
+                OSError,
+                UnicodeError,
+                ValueError,
+                _RetryableLLMResponseError,
+            ) as exc:
+                error_name = (
+                    exc.reason
+                    if isinstance(exc, _RetryableLLMResponseError)
+                    else type(exc).__name__
+                )
+                if attempt >= self.max_retries:
+                    raise RuntimeError(
+                        f"LLM API request failed after {attempt + 1} attempts with "
+                        f"{error_name}: {exc}"
+                    ) from exc
+                retry_errors.append(error_name)
+                delay = self.retry_backoff_s * (2**attempt)
+                print(
+                    f"LLM API {error_name}; retrying attempt {attempt + 2}/"
+                    f"{self.max_retries + 1} after {delay:.1f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _retryable_response_error(data: dict) -> str | None:
+        if data.get("error"):
+            return "api_error_response"
+        choices = data.get("choices") or []
+        if not choices:
+            return "missing_choices"
+        choice = choices[0] or {}
+        finish_reason = str(choice.get("finish_reason") or "").lower()
+        if not finish_reason:
+            return "missing_finish_reason"
+        if finish_reason == "error":
+            return "finish_reason_error"
+        message = choice.get("message") or {}
+        if not (message.get("content") or choice.get("text")):
+            return "missing_final_content"
+        return None
+
+
+class _RetryableLLMResponseError(RuntimeError):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 class GPTOSSTwoPhaseOpenAICompatibleLLMClient(OpenAICompatibleLLMClient):

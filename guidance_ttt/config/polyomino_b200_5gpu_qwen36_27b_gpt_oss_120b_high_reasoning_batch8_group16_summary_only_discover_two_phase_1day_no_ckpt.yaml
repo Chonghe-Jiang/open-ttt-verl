@@ -1,8 +1,8 @@
 run:
-  output_dir: outputs/guidance_ttt/polyomino_b200_2gpu_qwen3_8b_gpt_oss_120b_high_reasoning_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
+  output_dir: outputs/guidance_ttt/polyomino_b200_5gpu_qwen36_27b_gpt_oss_120b_high_reasoning_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
   project_name: guidance_ttt
-  experiment_name: polyomino_qwen3_8b_actor_gpt_oss_120b_high_reasoning_exec_b200_2gpu_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
-  model_path: models/Qwen3-8B
+  experiment_name: polyomino_qwen36_27b_actor_gpt_oss_120b_high_reasoning_exec_b200_5gpu_batch8_group16_summary_only_discover_two_phase_1day_no_ckpt
+  model_path: models/Qwen3.6-27B
   seed: 0
   num_initial_states: 1
   num_steps: 500
@@ -21,7 +21,7 @@ run:
   temperature: 1.0
   tensor_model_parallel_size: 1
   gpu_memory_utilization: 0.7
-  n_gpus_per_node: 1
+  n_gpus_per_node: 4
   nnodes: 1
   save_freq: -1
   test_freq: -1
@@ -70,26 +70,32 @@ llm:
     reasoning_effort: high
     prompt_style: qwen_native_thinking
     max_tokens: null
-    # Keep the 32K model context and reserve roughly 16K tokens for the
-    # forced-final C++ solution. This is a prompt-plus-phase-1 budget, so a
-    # roughly 12K late-stage prompt leaves about 5K native-reasoning tokens.
-    phase1_max_tokens: 16500
-    context_window: 32768
+    # Use a 48K model context with a 30K prompt-plus-phase-1 budget. This
+    # leaves roughly 19K tokens for the forced-final C++ solution while giving
+    # long late-stage parent prompts substantially more native-reasoning room.
+    phase1_max_tokens: 30000
+    context_window: 49152
     context_buffer: 50
     timeout_s: 1200
     concurrency: 16
 
 verl_overrides:
-  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  # Keep GDN trajectories separated in the actor. Packed Qwen3.6 batches do
+  # not currently propagate their sequence boundaries through VERL's actor
+  # path. FlashAttention 2 is still used by Qwen3.6 full-attention layers.
+  - +actor_rollout_ref.model.override_config.attn_implementation=flash_attention_2
+  - actor_rollout_ref.model.use_remove_padding=False
   - actor_rollout_ref.model.lora_rank=32
   - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.model.exclude_modules='.*visual.*'
+  - actor_rollout_ref.actor.freeze_vision_tower=True
   - actor_rollout_ref.rollout.tensor_model_parallel_size=1
   - actor_rollout_ref.rollout.load_format=safetensors
   - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
   - actor_rollout_ref.rollout.free_cache_engine=True
   - actor_rollout_ref.rollout.layered_summon=False
   - actor_rollout_ref.model.enable_gradient_checkpointing=True
-  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.use_remove_padding=False
   - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
   - actor_rollout_ref.actor.fsdp_config.param_offload=False
   - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
@@ -99,12 +105,15 @@ verl_overrides:
   - actor_rollout_ref.rollout.max_model_len=12288
   - actor_rollout_ref.rollout.max_num_seqs=16
   - actor_rollout_ref.rollout.max_num_batched_tokens=32768
-  - actor_rollout_ref.rollout.enforce_eager=False
+  - +actor_rollout_ref.rollout.engine_kwargs.vllm.language_model_only=True
+  - actor_rollout_ref.rollout.enforce_eager=True
   - actor_rollout_ref.actor.use_torch_compile=False
   - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
   - actor_rollout_ref.ref.use_torch_compile=False
   - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
   - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
   - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
-  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  # Qwen3.6-27B's 248320 x 5120 bf16 embedding is ~2.37 GiB, so the
+  # FSDP-to-vLLM weight-transfer bucket must be larger than the 2 GiB default.
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=4096
   - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'
