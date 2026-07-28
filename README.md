@@ -162,6 +162,14 @@ Reproducible commands and operational details are indexed in
 [`scripts/README.md`](scripts/README.md); all active YAML recipes are indexed in
 [`guidance_ttt/config/README.md`](guidance_ttt/config/README.md).
 
+## Experiment History
+
+Meaningful Guidance-TTT run histories are stored separately from the code and
+checkpoints in the private
+[`LeoJiangOR/guidance-ttt-history`](https://huggingface.co/datasets/LeoJiangOR/guidance-ttt-history)
+dataset. See [`docs/guidance_history.md`](docs/guidance_history.md) for the
+selection policy, archive layout, manifest format, and verified snapshot.
+
 ## Install
 
 For local development and tests:
