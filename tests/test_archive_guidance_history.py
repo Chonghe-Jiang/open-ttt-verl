@@ -248,9 +248,11 @@ def test_build_associates_job_logs_and_archives_reproduction_sources(
     configs = tmp_path / "guidance_ttt" / "config"
     configs.mkdir(parents=True)
     (configs / "production_recipe.yaml").write_text("trainer:\n  steps: 50\n")
+    (configs / "smoke_recipe.yaml").write_text("trainer:\n  steps: 1\n")
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     (scripts / "slurm_guidance_production.sbatch").write_text("#!/bin/bash\n")
+    (scripts / "validate_guidance_smoke.py").write_text("print('smoke')\n")
     (scripts / "unrelated_helper.txt").write_text("not archived\n")
 
     result = _build(tmp_path)
@@ -269,6 +271,10 @@ def test_build_associates_job_logs_and_archives_reproduction_sources(
     assert (
         staging / "source" / "scripts" / "slurm_guidance_production.sbatch"
     ).is_file()
+    assert not (staging / "source" / "configs" / "smoke_recipe.yaml").exists()
+    assert not (
+        staging / "source" / "scripts" / "validate_guidance_smoke.py"
+    ).exists()
     assert not (
         staging / "source" / "scripts" / "unrelated_helper.txt"
     ).exists()

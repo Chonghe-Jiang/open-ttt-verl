@@ -30,6 +30,7 @@ SOURCE_SCRIPT_RE = re.compile(
     r"guidance|discover|openrouter|glm|qwen|prepare|validate",
     re.IGNORECASE,
 )
+SMOKE_NAME_RE = re.compile(r"(?:^|[_-])smoke(?:[-_.]|$)", re.IGNORECASE)
 TEXT_SUFFIXES = {
     ".err",
     ".json",
@@ -294,6 +295,8 @@ def build_archive(
     if config_root.is_dir():
         for pattern in ("*.yaml", "*.yml"):
             for source in sorted(config_root.glob(pattern)):
+                if SMOKE_NAME_RE.search(source.name):
+                    continue
                 payload_sources.append(
                     (source, staging / "source" / "configs" / source.name)
                 )
@@ -304,6 +307,7 @@ def build_archive(
                 source.is_file()
                 and source.suffix.lower() in {".py", ".sbatch", ".sh"}
                 and SOURCE_SCRIPT_RE.search(source.name)
+                and not SMOKE_NAME_RE.search(source.name)
             ):
                 payload_sources.append(
                     (source, staging / "source" / "scripts" / source.name)
