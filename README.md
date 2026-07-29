@@ -1,5 +1,61 @@
 # Guidance + Execution TTT
 
+## Blog and Data
+
+The project overview and Polyomino case study are presented in
+[`blog/guidance-ttt.html`](blog/guidance-ttt.html). The blog is a hand-authored
+static technical essay with no build step. It is intentionally distributed as
+one self-contained HTML file: the CSS, JavaScript, packing visualization data,
+full 91.89 C++ solver, and retained placement are embedded in the page. It can
+therefore be opened directly with `file://` after downloading just that file.
+An HTTP server is optional:
+
+```bash
+python -m http.server 8127 --directory blog
+# Open http://127.0.0.1:8127/guidance-ttt.html
+```
+
+The byte-exact artifacts are also kept separately for auditing:
+
+| File | Contents |
+| --- | --- |
+| [`blog/guidance-ttt.html`](blog/guidance-ttt.html) | Standalone essay, interactive packing, and embedded source |
+| [`blog/glm-best-solution.cpp`](blog/glm-best-solution.cpp) | Exact 2,759-line GLM-5.2 candidate, score `91.89074282` |
+| [`blog/glm-best-case20.out`](blog/glm-best-case20.out) | Accepted placement rendered in the blog: 168 pieces, `16 x 107`, density `93.57%` |
+
+The complete experiment histories are data, not source code, and are not
+committed to this repository. They are hosted in the private Hugging Face
+dataset
+[`LeoJiangOR/guidance-ttt-history`](https://huggingface.co/datasets/LeoJiangOR/guidance-ttt-history).
+The blog was built from verified dataset snapshot
+`2c5f9cef4d1159cd497b443b2b218493c5e686c9`, downloaded locally under the
+git-ignored directory:
+
+```text
+.tmp/guidance-ttt-history/
+```
+
+The 91.89 result comes from this archived run:
+
+```text
+.tmp/guidance-ttt-history/
+  experiments/openrouter_glm52/
+    qwen3_8b_openrouter_glm52_g8x16_discover_1day_latest_ckpt_184021/
+      history/library.json
+```
+
+Within that library, entry
+`1d29c6da-8417-4fb6-a1f7-033d99651cc8` is the step-27 GLM-5.2 candidate shown
+in the blog. Its source is stored in
+`entries["1d29c6da-8417-4fb6-a1f7-033d99651cc8"].solution`; its guidance,
+summary, parent linkage, verifier score, and execution metadata are stored
+alongside it. The packing illustration is reconstructed from the external
+FrontierCS input
+`../reference/Frontier-CS/algorithmic/problems/0/testdata/20.in` and the retained
+output `blog/glm-best-case20.out`. See
+[`docs/guidance_history.md`](docs/guidance_history.md) for archive scope,
+selection policy, and snapshot metadata.
+
 This repository implements a self-contained Guidance-TTT prototype on top of
 `open-ttt-verl`. It includes a local `verl/` tree, so the guidance recipe no
 longer depends on `/reference/open-ttt-verl` at runtime.
@@ -124,6 +180,7 @@ practice:
 ```text
 verl/                 # local verl runtime and trainer config
 guidance_ttt/         # Guidance-TTT agent loop, library, prompts, verifier
+blog/                 # standalone technical essay and exact 91.89 artifacts
 docs/                 # prompt architecture and task notes
 scripts/              # convenience launchers
 tests/                # lightweight Guidance-TTT tests
