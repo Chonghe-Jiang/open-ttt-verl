@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guidance-TTT: Learning to Evolve Algorithms in Thought Space</title>
+<meta name="description" content="A small guidance policy learns research moves at test time while a frozen executor grounds each idea in a complete, verified program. One run takes a Polyomino Packing solver from 27.81 to 91.89.">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #faf9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --accent: #2a78d6;
+    --accent-soft: rgba(42, 120, 214, 0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #f5f4f0;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --baseline: #383835;
+      --accent: #3987e5;
+      --accent-soft: rgba(57, 135, 229, 0.16);
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font: 16px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 24px;
+  }
+
+  .col { max-width: 660px; margin: 0 auto; }
+  .col-wide { max-width: 760px; margin: 0 auto; }
+
+  a { color: inherit; text-decoration-color: var(--baseline); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--accent); }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 22px 0 0;
+    font-size: 13px; color: var(--ink-2);
+  }
+  .masthead b { color: var(--ink); font-weight: 600; letter-spacing: 0.01em; }
+
+  /* ---------- title ---------- */
+  header.title { padding: 96px 0 0; }
+  .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  h1 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 500;
+    font-size: clamp(34px, 6vw, 50px);
+    line-height: 1.14;
+    letter-spacing: -0.01em;
+    margin: 18px 0 26px;
+  }
+  .abstract {
+    font-size: 18.5px; line-height: 1.65; color: var(--ink-2);
+    max-width: 620px;
+  }
+  .abstract em { color: var(--ink); font-style: normal; }
+
+  /* ---------- headline stats ---------- */
+  .stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    margin: 56px 0 0;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .stat { padding: 22px 20px 24px 0; }
+  .stat + .stat { border-left: 1px solid var(--hairline); padding-left: 24px; }
+  .stat .value {
+    font-family: Georgia, serif; font-size: 34px; line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+  .stat .label { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: 1fr; }
+    .stat + .stat { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; }
+  }
+
+  /* ---------- sections ---------- */
+  section { padding: 88px 0 0; }
+  h2 {
+    font-family: Georgia, serif; font-weight: 500;
+    font-size: 28px; line-height: 1.25; letter-spacing: -0.005em;
+    margin: 14px 0 22px;
+  }
+  section > .col > p, section > .col > figure + p { margin-bottom: 18px; }
+  p { color: var(--ink-2); }
+  p strong, li strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- figures ---------- */
+  figure { margin: 36px 0; }
+  figcaption {
+    font-size: 13px; color: var(--muted); line-height: 1.55;
+    margin-top: 14px; max-width: 620px;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 26px 26px 22px;
+  }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  /* ---------- score comparison ---------- */
+  .bars { display: grid; gap: 14px; }
+  .bar-row {
+    display: grid; grid-template-columns: 218px 1fr 58px;
+    align-items: center; gap: 14px; font-size: 14px;
+  }
+  .bar-row .name { color: var(--ink-2); line-height: 1.35; }
+  .bar-row .name b { color: var(--ink); font-weight: 600; }
+  .bar-track { height: 10px; border-radius: 4px; background: var(--accent-soft); position: relative; }
+  .bar-fill {
+    position: absolute; inset: 0 auto 0 0;
+    border-radius: 4px 4px 4px 4px;
+    background: var(--baseline);
+  }
+  .bar-fill.ours { background: var(--accent); }
+  .bar-fill.external {
+    background: none; border: 1.5px dashed var(--baseline); border-radius: 4px;
+  }
+  .bar-row .num {
+    text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--ink); font-weight: 600;
+  }
+  .axis-note { font-size: 12px; color: var(--muted); margin-top: 12px; }
+  @media (max-width: 560px) {
+    .bar-row { grid-template-columns: 1fr 60px; }
+    .bar-row .bar-track { grid-column: 1 / -1; grid-row: 2; }
+  }
+
+  /* ---------- chart ---------- */
+  .chart-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .chart-head strong { font-size: 14px; font-weight: 600; }
+  .legend { display: flex; gap: 18px; font-size: 12.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 14px; height: 0; border-top: 2.5px solid var(--accent); border-radius: 2px; }
+  .legend i.dot {
+    width: 7px; height: 7px; border: 0; border-radius: 50%;
+    background: var(--baseline);
+  }
+  #trajectory { display: block; width: 100%; height: auto; touch-action: pan-y; }
+  .tooltip {
+    position: fixed; z-index: 10; pointer-events: none;
+    background: var(--ink); color: var(--page);
+    font-size: 12.5px; line-height: 1.5; padding: 8px 11px; border-radius: 7px;
+    transform: translate(-50%, calc(-100% - 12px));
+    white-space: nowrap; display: none;
+  }
+  .tooltip b { font-weight: 650; }
+  details.data-table { margin-top: 14px; font-size: 13px; color: var(--ink-2); }
+  details.data-table summary { cursor: pointer; color: var(--muted); }
+  details.data-table table { border-collapse: collapse; margin-top: 12px; width: 100%; }
+  details.data-table th, details.data-table td {
+    text-align: right; padding: 4px 10px; font-variant-numeric: tabular-nums;
+    border-bottom: 1px solid var(--hairline);
+  }
+  details.data-table th { color: var(--muted); font-weight: 500; }
+
+  /* ---------- phase list ---------- */
+  .phases { list-style: none; margin: 30px 0 0; }
+  .phases li {
+    display: grid; grid-template-columns: 108px 1fr; gap: 18px;
+    padding: 13px 0; border-top: 1px solid var(--hairline);
+    font-size: 14.5px;
+  }
+  .phases .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .phases .what { color: var(--ink-2); }
+  .phases .what b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- compact table ---------- */
+  table.simple { width: 100%; border-collapse: collapse; margin: 30px 0 10px; font-size: 14.5px; }
+  table.simple th {
+    text-align: left; font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+    padding: 0 12px 10px 0; border-bottom: 1px solid var(--ink);
+  }
+  table.simple td {
+    padding: 11px 12px 11px 0; border-bottom: 1px solid var(--hairline);
+    color: var(--ink-2); vertical-align: top;
+  }
+  table.simple td.num {
+    text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--ink); font-weight: 600; padding-right: 0;
+  }
+  table.simple th.num { text-align: right; padding-right: 0; }
+  table.matrix { margin-top: 36px; }
+  table.matrix td b { color: var(--ink); font-weight: 600; }
+  table.matrix td sup { color: var(--muted); font-size: 10px; }
+  table.matrix td.num { font-size: 16px; }
+  table.matrix td.pending { color: var(--muted); font-weight: 400; font-size: 13px; font-style: italic; }
+  table.matrix td.na { color: var(--baseline); font-weight: 400; }
+  table.matrix td.accent { color: var(--accent); }
+  table.matrix .ours-row td { border-bottom: 1px solid var(--baseline); }
+  table.matrix td:not(:first-child), table.matrix th.num { padding-left: 18px; }
+
+  /* ---------- findings ---------- */
+  .findings { list-style: none; counter-reset: f; margin-top: 26px; }
+  .findings li {
+    counter-increment: f;
+    display: grid; grid-template-columns: 34px 1fr; gap: 14px;
+    padding: 16px 0; border-top: 1px solid var(--hairline);
+  }
+  .findings li::before {
+    content: counter(f, decimal-leading-zero);
+    font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+    padding-top: 3px;
+  }
+  .findings b { display: block; color: var(--ink); font-weight: 600; margin-bottom: 3px; }
+  .findings p { font-size: 14.5px; }
+
+  /* ---------- formula ---------- */
+  .formula {
+    font-family: Georgia, serif; font-size: 17px; text-align: center;
+    padding: 26px 18px; margin: 32px 0;
+    border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline);
+    color: var(--ink); overflow-x: auto; white-space: nowrap;
+  }
+  .formula .op { color: var(--muted); padding: 0 10px; }
+
+  /* ---------- note / caveat ---------- */
+  .note {
+    border-left: 2px solid var(--baseline);
+    padding: 4px 0 4px 20px; margin: 26px 0;
+    font-size: 14.5px; color: var(--ink-2);
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 110px; padding: 26px 0 60px;
+    border-top: 1px solid var(--hairline);
+    font-size: 13px; color: var(--muted);
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  }
+  footer .links { display: flex; gap: 20px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<div class="col masthead">
+  <b>Guidance-TTT</b>
+  <span>Research note · July 2026</span>
+</div>
+
+<header class="title col">
+  <span class="eyebrow">Test-time training</span>
+  <h1>Learning to evolve algorithms in&nbsp;thought&nbsp;space</h1>
+  <p class="abstract">
+    We separate deciding <em>what idea to try</em> from deciding <em>how to
+    implement it</em>. A small guidance policy proposes the next research move;
+    a frozen executor turns it into a complete program; a verifier scores the
+    result. Test-time reinforcement learning then updates only the policy over
+    ideas. One run evolves a Polyomino Packing solver from 27.81 to
+    <em>91.89</em> — above the reported multi-agent and human references on the
+    same evaluator.
+  </p>
+</header>
+
+<div class="col">
+  <div class="stats">
+    <div class="stat">
+      <div class="value">91.89</div>
+      <div class="label">Final score on the 70-case FrontierCS evaluator, from a 27.81 seed</div>
+    </div>
+    <div class="stat">
+      <div class="value">8B</div>
+      <div class="label">Guidance policy trained at test time; the executor stays frozen</div>
+    </div>
+    <div class="stat">
+      <div class="value">27</div>
+      <div class="label">Policy updates to reach the best solver, 128 verified candidates each</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= method ================= -->
+<section id="method">
+  <div class="col">
+    <span class="eyebrow">Method</span>
+    <h2>Two models, two spaces</h2>
+    <p>
+      The guidance model reads a compact summary of the current algorithm and
+      proposes a direction for its evolution — a new mechanism, representation,
+      or search strategy. The execution model receives that guidance together
+      with the complete parent program, realizes the change, and returns a
+      summary of what actually changed. Guidance and summary form an evolving
+      state in <strong>thought space</strong>; the full artifact stays lossless
+      in <strong>execution space</strong>, so abstraction never silently deletes
+      a working mechanism.
+    </p>
+  </div>
+
+  <figure class="col-wide">
+    <div class="panel">
+      <svg viewBox="0 0 720 268" role="img" aria-labelledby="loop-t loop-d">
+        <title id="loop-t">The Guidance-TTT loop</title>
+        <desc id="loop-d">The guidance policy sends guidance to a frozen executor, which returns a summary. The executor emits a complete program, the verifier scores it, and the reward updates only the guidance policy.</desc>
+        <defs>
+          <marker id="m-ink" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"></path>
+          </marker>
+          <marker id="m-acc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"></path>
+          </marker>
+        </defs>
+
+        <!-- thought space -->
+        <rect x="10" y="14" width="700" height="118" rx="10" fill="none" stroke="var(--hairline)" stroke-dasharray="5 5"></rect>
+        <text x="28" y="40" font-size="10.5" font-weight="600" letter-spacing="1.6" fill="var(--muted)">THOUGHT SPACE</text>
+
+        <rect x="46" y="56" width="192" height="54" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"></rect>
+        <text x="142" y="79" text-anchor="middle" font-size="14" font-weight="600" fill="var(--ink)">Guidance policy</text>
+        <text x="142" y="97" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">Qwen3-8B · trained</text>
+
+        <rect x="482" y="56" width="192" height="54" rx="8" fill="none" stroke="var(--baseline)"></rect>
+        <text x="578" y="79" text-anchor="middle" font-size="14" font-weight="600" fill="var(--ink)">Executor</text>
+        <text x="578" y="97" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">GLM-5.2 · frozen</text>
+
+        <line x1="238" y1="70" x2="474" y2="70" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#m-ink)"></line>
+        <text x="358" y="62" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">guidance g<tspan baseline-shift="sub" font-size="8.5">t</tspan> — direction for evolution</text>
+        <line x1="474" y1="98" x2="246" y2="98" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#m-ink)"></line>
+        <text x="358" y="118" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">summary S<tspan baseline-shift="sub" font-size="8.5">t+1</tspan> — what changed, and why</text>
+
+        <!-- execution space -->
+        <line x1="578" y1="110" x2="578" y2="164" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#m-ink)"></line>
+
+        <rect x="482" y="172" width="192" height="50" rx="8" fill="none" stroke="var(--baseline)"></rect>
+        <text x="578" y="193" text-anchor="middle" font-size="13.5" font-weight="600" fill="var(--ink)">Complete program</text>
+        <text x="578" y="210" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">C++ · execution space</text>
+
+        <line x1="482" y1="197" x2="360" y2="197" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#m-ink)"></line>
+
+        <rect x="160" y="172" width="192" height="50" rx="8" fill="none" stroke="var(--baseline)"></rect>
+        <text x="256" y="193" text-anchor="middle" font-size="13.5" font-weight="600" fill="var(--ink)">Verifier</text>
+        <text x="256" y="210" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">70 cases · exact score</text>
+
+        <path d="M 160 197 C 96 197, 96 160, 118 118" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#m-acc)"></path>
+        <text x="52" y="166" font-size="11.5" font-weight="600" fill="var(--accent)">TTT-RL</text>
+        <text x="52" y="182" font-size="10.5" fill="var(--ink-2)">reward updates</text>
+        <text x="52" y="196" font-size="10.5" fill="var(--ink-2)">only the policy</text>
+      </svg>
+    </div>
+    <figcaption>
+      Guidance specifies a transition in thought space; the summary reports the
+      realized implementation delta and becomes the next state. Only guidance
+      tokens receive gradients — the executor and verifier are treated as an
+      expensive, frozen environment.
+    </figcaption>
+  </figure>
+
+  <div class="col">
+    <p>
+      The trained guidance model behaves like a <strong>world model for
+      algorithm evolution</strong>: it treats each returned summary as a state,
+      proposes a plausible transition, and learns from the verifier's
+      consequence. Cumulative progress requires all three links to hold at once
+      — the guidance must be novel enough to change behavior, the
+      implementation complete enough to preserve the parent's strengths, and
+      the summary clear enough to serve as the next state.
+    </p>
+  </div>
+</section>
+
+<!-- ================= results ================= -->
+<section id="results">
+  <div class="col">
+    <span class="eyebrow">Results</span>
+    <h2>One trajectory, from seed to frontier</h2>
+    <p>
+      Polyomino Packing (FrontierCS problem 0) asks a single program to pack
+      irregular pieces into a minimal rectangle across 70 hidden cases. Every
+      idea must survive as one complete solver; every solver receives an exact
+      score. The final Guidance-TTT artifact — a 2,759-line C++ solver
+      discovered at step 27 — scores 91.89, above the reported CORAL
+      four-agent system and the released human reference on the same evaluator.
+    </p>
+  </div>
+
+  <figure class="col-wide">
+    <div class="panel">
+      <div class="bars" role="img" aria-label="Final scores: Guidance-TTT 91.89, CORAL four agents 89.40, released human artifact 89.10, OpenFrontierCS listed best 93.36 on a different evaluator.">
+        <div class="bar-row">
+          <span class="name"><b>Guidance-TTT</b> (ours)</span>
+          <span class="bar-track"><span class="bar-fill ours" style="width:91.89%"></span></span>
+          <span class="num">91.89</span>
+        </div>
+        <div class="bar-row">
+          <span class="name">CORAL · 4 agents + web</span>
+          <span class="bar-track"><span class="bar-fill" style="width:89.40%"></span></span>
+          <span class="num">89.40</span>
+        </div>
+        <div class="bar-row">
+          <span class="name">Released human artifact</span>
+          <span class="bar-track"><span class="bar-fill" style="width:89.10%"></span></span>
+          <span class="num">89.10</span>
+        </div>
+        <div class="bar-row">
+          <span class="name">CORAL · 1 agent · GLM-5.2, local</span>
+          <span class="bar-track"><span class="bar-fill" style="width:80.67%"></span></span>
+          <span class="num">80.67</span>
+        </div>
+        <div class="bar-row">
+          <span class="name">OpenFrontierCS listed best*</span>
+          <span class="bar-track"><span class="bar-fill external" style="width:93.36%"></span></span>
+          <span class="num">93.36</span>
+        </div>
+      </div>
+      <p class="axis-note">
+        Score / 100, shared 70-case evaluator. The local CORAL run uses the
+        same executor as ours, one Codex-CLI coding agent, web research
+        disabled. *Separate 67-case portal — no public solver, trace, or
+        matched budget; context, not a ranking.
+      </p>
+    </div>
+  </figure>
+
+  <figure class="col-wide">
+    <div class="panel">
+      <div class="chart-head">
+        <strong>Verified score by actor update</strong>
+        <div class="legend">
+          <span><i></i>Cumulative best</span>
+          <span><i class="dot"></i>Step best</span>
+        </div>
+      </div>
+      <svg id="trajectory" viewBox="0 0 720 320" role="img" aria-labelledby="traj-t traj-d">
+        <title id="traj-t">Polyomino score trajectory</title>
+        <desc id="traj-d">The cumulative best rises from 27.81 at step 0 to 87.56 by step 3, then climbs gradually to 91.89 at step 27 and plateaus through step 31.</desc>
+      </svg>
+      <details class="data-table">
+        <summary>Data table</summary>
+        <table id="traj-table" aria-label="Step best and cumulative best score per update"></table>
+      </details>
+    </div>
+    <figcaption>
+      Each update evaluates 128 guidance–execution candidates. Step best may
+      regress; the library retains the cumulative best. Three updates rebuild
+      the search topology; the remaining twenty-four refine it.
+    </figcaption>
+  </figure>
+
+  <div class="col">
+    <ul class="phases">
+      <li><span class="when">Steps 0–3</span><span class="what"><b>Discover the topology.</b> Row packing becomes symmetry-aware skyline search with annealing — 27.81 → 87.56.</span></li>
+      <li><span class="when">Steps 4–12</span><span class="what"><b>Adapt the search.</b> Width priors, conflict prediction, and multi-modal restarts — to 90.84.</span></li>
+      <li><span class="when">Steps 13–20</span><span class="what"><b>Close the feedback loop.</b> Aspect, density, and fragmentation become live control signals — to 91.76.</span></li>
+      <li><span class="when">Steps 21–27</span><span class="what"><b>Predict residual space.</b> Gap depth becomes shape compatibility, then multi-step look-ahead — to 91.89.</span></li>
+      <li><span class="when">Steps 28–31</span><span class="what"><b>Saturate.</b> 445 further valid programs, no frontier gain.</span></li>
+    </ul>
+    <p style="margin-top: 26px;">
+      The kind of improvement shifts over the run: first a new representation,
+      then operationalized diagnostics, then a mechanism that exploits them.
+      The winning step-27 mutation came from one sentence of guidance —
+      <em>"simulate placing multiple pieces sequentially in predicted optimal
+      positions"</em> — realized as a cheap three-step residual-rectangle
+      forecast inside the placement score.
+    </p>
+  </div>
+</section>
+
+<!-- ================= evidence ================= -->
+<section id="evidence">
+  <div class="col">
+    <span class="eyebrow">Evidence</span>
+    <h2>One matrix of controls</h2>
+    <p>
+      Every baseline and ablation varies one of two things: the
+      <strong>strategic layer</strong> above the executor, or the
+      <strong>executor</strong> itself. Arranged on those two axes, the runs
+      stop being scattered experiments. Reading down a column asks what the
+      thought-space channel adds under a fixed executor; reading across the
+      bottom row asks what executor capability is worth under a fixed,
+      trained strategist.
+    </p>
+  </div>
+
+  <div class="col-wide">
+    <table class="simple matrix">
+      <thead>
+        <tr>
+          <th>Strategic layer</th>
+          <th class="num">GPT-OSS-120B</th>
+          <th class="num">GPT-5.4</th>
+          <th class="num">GLM-5.2</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Direct evolution</b> — OpenEvolve-style code mutation<sup>a</sup></td>
+          <td class="num">69.92</td>
+          <td class="num na">—</td>
+          <td class="num pending">pending</td>
+        </tr>
+        <tr>
+          <td><b>Coding agent</b> — CORAL, one autonomous agent<sup>b</sup></td>
+          <td class="num na">—</td>
+          <td class="num">80.36</td>
+          <td class="num">80.67</td>
+        </tr>
+        <tr>
+          <td><b>Frozen 8B guidance</b> — thought space, inference only</td>
+          <td class="num">80.87</td>
+          <td class="num na">—</td>
+          <td class="num pending">pending</td>
+        </tr>
+        <tr class="ours-row">
+          <td><b>Trained 8B guidance</b> — Guidance-TTT</td>
+          <td class="num">83.19</td>
+          <td class="num">85.32</td>
+          <td class="num accent">91.89</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="axis-note">
+      <sup>a</sup> The GPT-OSS-120B cell is direct PUCT code mutation in our
+      harness — the executor proposes and implements each mutation in one
+      completion, no guidance channel.
+      <sup>b</sup> Local CORAL Codex-CLI agent, web research disabled,
+      isolated; two GPT-5.4 agents reach 83.80. <i>Pending</i> marks the
+      matched GLM-5.2 controls currently being run; — marks cells with no run.
+      Seeds, sample counts, and horizons are not matched across cells — read
+      the matrix as a ladder of claims, not an exact decomposition.
+    </p>
+  </div>
+
+  <div class="col">
+    <ol class="findings">
+      <li><div><b>The thought-space channel does real work before any learning.</b><p>Under GPT-OSS-120B, adding a frozen strategist moves 69.92 to 80.87 — factorization, executor prior, and best-of-N selection alone.</p></div></li>
+      <li><div><b>Learning the strategist is consistent with a further gain.</b><p>80.87 to 83.19 under the same executor, though budgets are not matched. The pending GLM-5.2 cells — OpenEvolve and frozen guidance on the executor that produced 91.89 — are the controls that would make this causal.</p></div></li>
+      <li><div><b>Executor capability is multiplicative, not additive.</b><p>Without a strategist, stronger executors stall near 80 (top two rows). With the same trained 8B strategist, they reach 85.32 and 91.89 (bottom row) — the gain from the strategic layer grows with the executor that realizes it.</p></div></li>
+      <li><div><b>Actor scale is conditional.</b><p>Tripling the strategist to 27B changes nothing (80.18 vs 80.20 under GPT-OSS-120B), and neither does a longer reasoning window (32K vs 48K context). Once a small actor can name the useful mechanisms, the bottleneck sits downstream, in execution fidelity.</p></div></li>
+    </ol>
+
+    <div class="note">
+      <b>What 91.89 does not prove.</b> The frontier score validates the
+      complete system — learned actor, PUCT selection over the archive,
+      best-of-16 execution sampling, and the executor's own priors — not the
+      isolated effect of actor learning. The pending GLM-5.2 column —
+      OpenEvolve, then frozen-vs-trained guidance, all under the executor that
+      produced 91.89 — is the outstanding experiment.
+    </div>
+  </div>
+</section>
+
+<!-- ================= learning rule ================= -->
+<section id="update">
+  <div class="col">
+    <span class="eyebrow">Optimization</span>
+    <h2>A max-seeking update over ideas</h2>
+    <p>
+      Executor calls and verifier runs are expensive; the learned object is a
+      small policy over guidance messages. Each update selects eight archived
+      states by PUCT, samples sixteen guidance messages per state, executes and
+      verifies all 128 candidates, and applies a critic-free REINFORCE step to
+      guidance tokens only.
+    </p>
+
+    <div class="formula">
+      x<sub>i</sub> = exp[β(r<sub>i</sub> − r<sub>max</sub>)]
+      <span class="op">→</span>
+      A<sub>i</sub> = x<sub>i</sub> / mean<sub>j≠i</sub>(x<sub>j</sub>) − 1
+      <span class="op">→</span>
+      L = −mean(ρ<sub>i,t</sub> A<sub>i</sub> log π<sub>θ</sub>)
+    </div>
+
+    <p>
+      Average-reward objectives underweight the event that matters most in
+      discovery: one candidate breaking the frontier. The entropic advantage
+      re-weights each group exponentially, with β chosen per group so that
+      D<sub>KL</sub>(q<sub>β</sub> ‖ Uniform) = log 2 — flat groups get β = 0
+      and exert no pressure. Leave-one-out baselines prevent a strong sample
+      from softening its own comparison; importance ratios ρ and a KL penalty
+      to the reference policy keep off-policy credit usable and drift bounded.
+    </p>
+  </div>
+</section>
+
+<!-- ================= limits ================= -->
+<section id="limits">
+  <div class="col">
+    <span class="eyebrow">Limitations</span>
+    <h2>Why the search digs in one direction</h2>
+    <p>
+      The plateau after step 27 is not a failure of execution — post-best step
+      means stay between 88.26 and 90.80. It is an on-policy feedback loop:
+      reward promotes a lineage into the archive, PUCT concentrates rollouts on
+      its descendants, and the policy is updated on that increasingly local
+      distribution. Each successful local update makes a jump to a different
+      algorithmic world less likely. The policy doesn't just learn which action
+      worked; it reshapes the future data it will learn from.
+    </p>
+    <p>
+      A genuinely different lineage may need to begin by breaking something
+      that works — accepting a temporary score debt while a new representation
+      assembles its own mechanisms. That points at <strong>agentic
+      test-time training</strong>: a system that learns not only the next
+      research move but when to stop exploiting, launch a speculative branch,
+      protect it through early losses, and judge it on multi-step return. The
+      learned object stops being a guidance message and becomes a policy over
+      research programs.
+    </p>
+
+    <div class="note">
+      <b>Reproducibility.</b> Qwen3-8B LoRA guidance, GLM-5.2 executor via
+      OpenRouter, summary-only state, best-child PUCT, adaptive entropic
+      objective, 8 × 16 candidates per update, 70-case FrontierCS problem-0
+      verifier. Best artifact at step 27; library and step-31 checkpoint
+      retained.
+    </div>
+  </div>
+</section>
+
+<footer class="col">
+  <div class="links">
+    <a href="guidance-ttt.html">Full essay</a>
+    <a href="glm-best-solution.cpp" download>91.89 solver (C++)</a>
+    <a href="https://github.com/FrontierCS/Frontier-CS">FrontierCS</a>
+    <a href="https://arxiv.org/html/2604.01658v1">CORAL</a>
+  </div>
+  <span>Guidance-TTT · 2026</span>
+</footer>
+
+<div class="tooltip" id="tooltip" role="status"></div>
+
+<script>
+(() => {
+  const stepBest = [
+    27.8105, 79.7368, 81.3078, 87.5584, 87.3806, 87.6531, 87.7126, 88.1511,
+    89.0715, 89.3166, 89.3456, 89.4705, 90.8431, 91.0742, 91.1549, 91.1999,
+    91.2281, 91.3227, 91.3537, 91.3759, 91.7598, 91.8187, 91.8024, 91.8348,
+    91.8561, 91.8631, 91.8366, 91.8907, 91.8846, 91.8624, 91.8285, 91.8384
+  ];
+  const cumulative = [];
+  stepBest.forEach((v, i) => cumulative.push(i === 0 ? v : Math.max(v, cumulative[i - 1])));
+
+  const svg = document.getElementById("trajectory");
+  const NS = "http://www.w3.org/2000/svg";
+  const W = 720, H = 320, L = 46, R = 14, T = 16, B = 34;
+  const n = stepBest.length;
+  const yMin = 20, yMax = 100;
+  const x = (i) => L + (i / (n - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - yMin) / (yMax - yMin)) * (H - T - B);
+  const el = (tag, attrs) => {
+    const node = document.createElementNS(NS, tag);
+    for (const k in attrs) node.setAttribute(k, attrs[k]);
+    svg.appendChild(node);
+    return node;
+  };
+
+  for (const v of [20, 40, 60, 80, 100]) {
+    el("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--hairline)", "stroke-width": 1 });
+    const t = el("text", { x: L - 9, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" });
+    t.textContent = v;
+  }
+  el("line", { x1: L, x2: W - R, y1: y(yMin), y2: y(yMin), stroke: "var(--baseline)", "stroke-width": 1 });
+  for (const s of [0, 5, 10, 15, 20, 25, 30]) {
+    const t = el("text", { x: x(s), y: H - B + 20, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" });
+    t.textContent = s;
+  }
+  const xl = el("text", { x: (L + W - R) / 2, y: H - 1, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" });
+  xl.textContent = "actor update";
+
+  stepBest.forEach((v, i) => el("circle", { cx: x(i), cy: y(v), r: 2.4, fill: "var(--baseline)" }));
+  el("path", {
+    d: cumulative.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" "),
+    fill: "none", stroke: "var(--accent)", "stroke-width": 2.5,
+    "stroke-linejoin": "round", "stroke-linecap": "round"
+  });
+
+  const peak = el("circle", { cx: x(27), cy: y(cumulative[27]), r: 4.5, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 2 });
+  const lbl = el("text", { x: x(27), y: y(cumulative[27]) - 12, "text-anchor": "middle", "font-size": 12, "font-weight": 600, fill: "var(--ink)" });
+  lbl.textContent = "91.89 · step 27";
+
+  // hover layer
+  const cross = el("line", { y1: T, y2: H - B, stroke: "var(--baseline)", "stroke-width": 1, "stroke-dasharray": "3 3", visibility: "hidden" });
+  const dot = el("circle", { r: 4, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" });
+  const tip = document.getElementById("tooltip");
+  const show = (clientX, clientY) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((clientX - rect.left) / rect.width) * W;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((px - L) / (W - L - R)) * (n - 1))));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+    cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(cumulative[i]));
+    dot.setAttribute("visibility", "visible");
+    tip.innerHTML = "<b>Step " + i + "</b><br>cumulative best " + cumulative[i].toFixed(2) + "<br>step best " + stepBest[i].toFixed(2);
+    tip.style.display = "block";
+    tip.style.left = (rect.left + (x(i) / W) * rect.width) + "px";
+    tip.style.top = (rect.top + (y(cumulative[i]) / H) * rect.height) + "px";
+  };
+  const hide = () => {
+    cross.setAttribute("visibility", "hidden");
+    dot.setAttribute("visibility", "hidden");
+    tip.style.display = "none";
+  };
+  svg.addEventListener("pointermove", (e) => show(e.clientX, e.clientY));
+  svg.addEventListener("pointerleave", hide);
+
+  // data table
+  const table = document.getElementById("traj-table");
+  table.innerHTML =
+    "<thead><tr><th>Step</th><th>Step best</th><th>Cumulative best</th></tr></thead><tbody>" +
+    stepBest.map((v, i) =>
+      "<tr><td>" + i + "</td><td>" + v.toFixed(2) + "</td><td>" + cumulative[i].toFixed(2) + "</td></tr>"
+    ).join("") + "</tbody>";
+})();
+</script>
+
+</body>
+</html>
