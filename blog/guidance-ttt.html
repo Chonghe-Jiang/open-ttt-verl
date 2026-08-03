@@ -2702,9 +2702,10 @@
           The observed frontier combines a learned actor, PUCT archive
           selection, best-of-16 execution sampling, GLM-5.2’s implementation
           prior, and verifier selection. It proves that the hierarchy can
-          produce and explain a strong solver. A matched frozen-actor GLM run is
-          still required to measure how much of the gain came specifically from
-          the parameter update.
+          produce and explain a strong solver. The matched-budget frozen-actor
+          GLM run reaches 84.85 versus 91.89 with training, providing direct
+          evidence consistent with a learning benefit; repeated seeds are still
+          required to estimate that benefit causally.
         </p>
       </div>
     </section>
@@ -2763,9 +2764,10 @@
 
       <h3>What the existing ablations actually establish</h3>
       <p>
-        The cleanest available controls all use GPT-OSS-120B execution, but they
-        differ in seed, sample shape, and horizon. They form an
-        <em>ablation ladder</em>, not an exact decomposition of score points.
+        The earlier three-run ladder uses GPT-OSS-120B execution, but its runs
+        differ in seed, sample shape, and horizon. It therefore provides an
+        <em>ablation ladder</em>, not an exact decomposition of score points. The
+        matched-budget GLM-5.2 pair below removes the sample-count confound.
       </p>
 
       <div class="ablation-ladder">
@@ -2812,23 +2814,25 @@
         sampled.
       </p>
       <p>
-        But the score gaps cannot be subtracted as “communication gain” and
-        “learning gain.” The no-guidance run starts from a different seed and
-        uses 16 candidates per step; the frozen run uses 64; the learned run uses
-        128. The scientifically correct next step is to match the seed, number
-        of complete updates, verifier calls, and execution sampling.
+        Those GPT-OSS score gaps cannot be subtracted as “communication gain”
+        and “learning gain.” The no-guidance run starts from a different seed
+        and uses 16 candidates per step; the frozen run uses 64; the learned run
+        uses 128. The new GLM-5.2 frozen-versus-trained comparison holds the
+        3,840-candidate sampling budget fixed, but repeated seeds are still
+        needed to quantify trajectory variance.
       </p>
 
       <div class="evidence-box caution">
-        <span class="eyebrow">The missing control</span>
-        <strong>The local GLM-5.2 CORAL run is informative, but it is not the matched control.</strong>
+        <span class="eyebrow">The matched GLM-5.2 control</span>
+        <strong>Frozen guidance reaches 84.85; trained guidance reaches 91.89 at the same sample count.</strong>
         <p>
-          The one-agent GLM-5.2 CORAL run reaches 80.67 without a learned
-          strategist, but it also changes the search topology, state
-          representation, and execution process relative to Guidance-TTT. We
-          therefore do not attribute the entire 91.89 result to RL. A controlled
-          trained-versus-frozen × GPT-OSS-versus-GLM factorial study is still
-          needed to connect the communication and frontier claims causally.
+          The frozen Qwen3-8B + GLM-5.2 run improves from 27.81 to 84.85 over 30
+          inference-only search steps with 128 rollouts per step (3,840
+          candidates), exactly matching the corresponding Guidance-TTT sampling
+          budget while applying no parameter updates. The 7.04-point gap is
+          evidence consistent with test-time learning, but one trajectory per
+          condition cannot separate a stable training effect from stochastic
+          search variance. Repeated seeds remain necessary.
         </p>
       </div>
 
@@ -2916,6 +2920,20 @@
               <td>13 complete updates + partial step 14</td>
             </tr>
             <tr>
+              <td>None (OpenEvolve)</td>
+              <td>GLM-5.2 API</td>
+              <td>Direct code evolution; 300 search steps</td>
+              <td class="score-cell">78.3591</td>
+              <td>No trainable guidance model</td>
+            </tr>
+            <tr>
+              <td>Qwen3-8B (frozen)</td>
+              <td>GLM-5.2 API</td>
+              <td>Inference only; 128 rollouts per step</td>
+              <td class="score-cell">84.85</td>
+              <td>27.81 → 84.85; 30 steps; 3,840 rollouts</td>
+            </tr>
+            <tr>
               <td>Qwen3-8B</td>
               <td>GLM-5.2 API</td>
               <td>Summary-only; high reasoning</td>
@@ -2987,13 +3005,12 @@
         the late frontier.
       </p>
       <p>
-        The local CORAL controls sharpen this interpretation without isolating
-        it. A single direct coding agent reaches 80.36 with GPT-5.4 and 80.67
-        with GLM-5.2; two GPT-5.4 agents reach 83.80.
-        Agent topology, accumulated verifier feedback, and executor choice all
-        matter. The substantially higher 91.89 Guidance-TTT frontier cannot be
-        assigned to any one of them without the matched factorial control
-        described above.
+        The new GLM-5.2 ladder sharpens this interpretation: direct OpenEvolve
+        reaches 78.3591 after 300 steps, frozen Qwen3-8B guidance reaches 84.85,
+        and trained guidance reaches 91.89. The frozen and trained runs use the
+        same 30-step, 128-rollout-per-step candidate budget. Local CORAL remains
+        a complementary topology control: one coding agent reaches 80.36 with
+        GPT-5.4 and 80.67 with GLM-5.2, while two GPT-5.4 agents reach 83.80.
       </p>
 
       <h3>Law 3: more context is not more causal state</h3>
@@ -3252,7 +3269,7 @@
           <tbody>
             <tr>
               <td>Actor learning improves research moves</td>
-              <td>Trained vs. frozen guidance × GPT-OSS-120B vs. GLM-5.2, with matched seed and verifier budget</td>
+              <td>Repeat matched trained-vs-frozen guidance across seeds under GPT-OSS-120B and GLM-5.2</td>
               <td>Higher parent-improvement rate and cumulative-best area for trained guidance under both executors</td>
               <td>Frozen guidance matches trained guidance across repeated seeds</td>
             </tr>

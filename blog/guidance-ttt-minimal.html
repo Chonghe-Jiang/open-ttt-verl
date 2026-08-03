@@ -513,7 +513,7 @@
           <td><b>Direct evolution</b> — OpenEvolve-style code mutation<sup>a</sup></td>
           <td class="num">69.92</td>
           <td class="num na">—</td>
-          <td class="num pending">pending</td>
+          <td class="num" title="Exact score: 78.3591">78.36</td>
         </tr>
         <tr>
           <td><b>Coding agent</b> — CORAL, one autonomous agent<sup>b</sup></td>
@@ -522,10 +522,10 @@
           <td class="num">80.67</td>
         </tr>
         <tr>
-          <td><b>Frozen 8B guidance</b> — thought space, inference only</td>
+          <td><b>Frozen 8B guidance</b> — thought space, inference only<sup>c</sup></td>
           <td class="num">80.87</td>
           <td class="num na">—</td>
-          <td class="num pending">pending</td>
+          <td class="num">84.85</td>
         </tr>
         <tr class="ours-row">
           <td><b>Trained 8B guidance</b> — Guidance-TTT</td>
@@ -537,31 +537,33 @@
     </table>
     <p class="axis-note">
       <sup>a</sup> The GPT-OSS-120B cell is direct PUCT code mutation in our
-      harness — the executor proposes and implements each mutation in one
-      completion, no guidance channel.
+      harness; the GLM-5.2 cell is a 300-step OpenEvolve run with an exact score
+      of 78.3591. Both omit the guidance channel.
       <sup>b</sup> Local CORAL Codex-CLI agent, web research disabled,
-      isolated; two GPT-5.4 agents reach 83.80. <i>Pending</i> marks the
-      matched GLM-5.2 controls currently being run; — marks cells with no run.
-      Seeds, sample counts, and horizons are not matched across cells — read
-      the matrix as a ladder of claims, not an exact decomposition.
+      isolated; two GPT-5.4 agents reach 83.80.
+      <sup>c</sup> The GLM-5.2 frozen-guidance run improves from 27.81 to 84.85
+      over 30 inference-only search steps with 128 rollouts per step (3,840
+      total), matching the candidate budget of the corresponding Guidance-TTT
+      run; the Qwen3-8B weights remain fixed and no RL update is applied. —
+      marks cells with no run. The OpenEvolve horizon and other cells are not
+      budget-matched.
     </p>
   </div>
 
   <div class="col">
     <ol class="findings">
-      <li><div><b>The thought-space channel does real work before any learning.</b><p>Under GPT-OSS-120B, adding a frozen strategist moves 69.92 to 80.87 — factorization, executor prior, and best-of-N selection alone.</p></div></li>
-      <li><div><b>Learning the strategist is consistent with a further gain.</b><p>80.87 to 83.19 under the same executor, though budgets are not matched. The pending GLM-5.2 cells — OpenEvolve and frozen guidance on the executor that produced 91.89 — are the controls that would make this causal.</p></div></li>
+      <li><div><b>The thought-space channel does real work before any learning.</b><p>Under GPT-OSS-120B, adding a frozen strategist moves 69.92 to 80.87. Under GLM-5.2, frozen guidance reaches 84.85 versus 78.36 for direct OpenEvolve. Separating strategy from implementation helps even when the strategist never updates.</p></div></li>
+      <li><div><b>Learning the strategist is consistent with a further gain.</b><p>With GLM-5.2 execution and the same 3,840-candidate search budget, frozen Qwen3-8B guidance reaches 84.85 while Guidance-TTT reaches 91.89. This matched-budget pair is substantially stronger evidence than the earlier cross-budget comparison, although repeated seeds are still needed for a causal estimate.</p></div></li>
       <li><div><b>Executor capability is multiplicative, not additive.</b><p>Without a strategist, stronger executors stall near 80 (top two rows). With the same trained 8B strategist, they reach 85.32 and 91.89 (bottom row) — the gain from the strategic layer grows with the executor that realizes it.</p></div></li>
       <li><div><b>Actor scale is conditional.</b><p>Tripling the strategist to 27B changes nothing (80.18 vs 80.20 under GPT-OSS-120B), and neither does a longer reasoning window (32K vs 48K context). Once a small actor can name the useful mechanisms, the bottleneck sits downstream, in execution fidelity.</p></div></li>
     </ol>
 
     <div class="note">
-      <b>What 91.89 does not prove.</b> The frontier score validates the
-      complete system — learned actor, PUCT selection over the archive,
-      best-of-16 execution sampling, and the executor's own priors — not the
-      isolated effect of actor learning. The pending GLM-5.2 column —
-      OpenEvolve, then frozen-vs-trained guidance, all under the executor that
-      produced 91.89 — is the outstanding experiment.
+      <b>What 91.89 does not prove.</b> The matched GLM-5.2 comparison now
+      separates frozen guidance (84.85) from trained guidance (91.89) at the
+      same sample count. It remains a single-run comparison: repeated seeds
+      are needed to distinguish a stable learning effect from trajectory-level
+      search variance, and the 300-step OpenEvolve run is not budget-matched.
     </div>
   </div>
 </section>
