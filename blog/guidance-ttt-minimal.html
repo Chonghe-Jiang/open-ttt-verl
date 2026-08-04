@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guidance-TTT: Learning to Evolve Algorithms in Thought Space</title>
-<meta name="description" content="A small guidance policy learns research moves at test time while a frozen executor grounds each idea in a complete, verified program. One run takes a Polyomino Packing solver from 27.81 to 91.89.">
+<meta name="description" content="A small guidance policy writes proposals, a large frozen executor implements them as complete programs, and every program receives an exact score. Test-time RL updates only the small policy. One run takes a Polyomino Packing solver from 27.81 to 91.89.">
 <style>
   :root {
     color-scheme: light;
@@ -270,13 +270,13 @@
   <span class="eyebrow">Test-time training</span>
   <h1>Learning to evolve algorithms in&nbsp;thought&nbsp;space</h1>
   <p class="abstract">
-    We separate deciding <em>what idea to try</em> from deciding <em>how to
-    implement it</em>. A small guidance policy writes the next research
-    proposal; a large frozen executor implements it as a complete program;
-    every program earns one exact score. Test-time reinforcement learning then
-    updates only the small policy over ideas. One run evolves a Polyomino
-    Packing solver from 27.81 to <em>91.89</em> — above the reported
-    multi-agent and human references on the same evaluator.
+    We separate deciding <em>what to try</em> from deciding <em>how to
+    implement it</em>. A small guidance policy writes the next proposal; a
+    large frozen executor implements it as a complete program; every program
+    receives one exact score. Test-time reinforcement learning then updates
+    only the small policy. One run takes a Polyomino Packing solver from
+    27.81 to <em>91.89</em> — above the reported multi-agent and human
+    references on the same evaluator.
   </p>
 </header>
 
@@ -292,7 +292,7 @@
     </div>
     <div class="stat">
       <div class="value">27</div>
-      <div class="label">Policy updates to reach the best solver, 128 verified candidates each</div>
+      <div class="label">Policy updates to reach the best solver, 128 scored candidates each</div>
     </div>
   </div>
 </div>
@@ -303,14 +303,14 @@
     <span class="eyebrow">Method</span>
     <h2>Two models, two spaces</h2>
     <p>
-      The guidance model reads a compact summary of the current algorithm and
-      proposes a direction for its evolution — a new mechanism, representation,
-      or search strategy. The execution model receives that guidance together
-      with the complete parent program, realizes the change, and returns a
-      summary of what actually changed. Guidance and summary form an evolving
-      state in <strong>thought space</strong>; the full artifact stays lossless
-      in <strong>execution space</strong>, so abstraction never silently deletes
-      a working mechanism.
+      The guidance policy reads a compact summary of the current solver and
+      proposes how it should change — a new mechanism, representation, or
+      search strategy. The executor receives that proposal together with the
+      complete parent program, implements the change, and writes a summary of
+      what actually changed. Proposal and summary form the evolving state in
+      <strong>thought space</strong>; the complete program stays lossless in
+      <strong>execution space</strong>, so a lossy summary can never silently
+      delete a working mechanism.
     </p>
   </div>
 
@@ -387,24 +387,23 @@
     </div>
     <figcaption>
       Every proposal is grounded in history. PUCT selects a parent from the
-      library of scored attempts; the small model reads only that parent's
+      history of scored attempts; the guidance policy reads only that parent's
       compact summary — its mechanisms, measured results, and open bottleneck
-      — while the large frozen model rewrites the parent's exact code. The
-      child program earns one exact score and joins the history with its own
+      — while the executor rewrites the parent's exact code. The child
+      program receives one exact score and joins the history with its own
       summary. The score is the only training signal, and it updates the
-      small model only.
+      guidance policy only.
     </figcaption>
   </figure>
 
   <div class="col">
     <p>
-      The trained guidance model behaves like a <strong>world model for
-      algorithm evolution</strong>: it treats each returned summary as a state,
-      proposes a plausible transition, and learns from the score that comes
-      back. Cumulative progress requires all three links to hold at once
-      — the guidance must be novel enough to change behavior, the
-      implementation complete enough to preserve the parent's strengths, and
-      the summary clear enough to serve as the next state.
+      Over a run, the guidance policy learns which kinds of changes tend to
+      pay off: it treats each summary as a state, proposes a transition, and
+      is updated by the score that comes back. Progress accumulates only when
+      all three links hold — the proposal actually changes behavior, the
+      implementation preserves what the parent already does well, and the
+      summary is clear enough to serve as the next state.
     </p>
   </div>
 </section>
@@ -413,13 +412,13 @@
 <section id="results">
   <div class="col">
     <span class="eyebrow">Results</span>
-    <h2>One trajectory, from seed to frontier</h2>
+    <h2>A single run, from 27.81 to 91.89</h2>
     <p>
       Polyomino Packing (FrontierCS problem 0) asks a single program to pack
       irregular pieces into a minimal rectangle across 70 hidden cases. Every
-      idea must survive as one complete solver; every solver receives an exact
-      score. The final Guidance-TTT artifact — a 2,759-line C++ solver
-      discovered at step 27 — scores 91.89, above the reported CORAL
+      proposal must become one complete solver; every solver receives an exact
+      score. The best Guidance-TTT solver — 2,759 lines of C++,
+      found at step 27 — scores 91.89, above the reported CORAL
       four-agent system and the released human reference on the same evaluator.
     </p>
   </div>
@@ -465,7 +464,7 @@
   <figure class="col-wide">
     <div class="panel">
       <div class="chart-head">
-        <strong>Verified score by actor update</strong>
+        <strong>Score by policy update</strong>
         <div class="legend">
           <span><i></i>Cumulative best</span>
           <span><i class="dot"></i>Step best</span>
@@ -481,8 +480,8 @@
       </details>
     </div>
     <figcaption>
-      Each update evaluates 128 guidance–execution candidates. Step best may
-      regress; the library retains the cumulative best. Three updates rebuild
+      Each update executes and scores 128 proposals. The step best may
+      regress; the history keeps the cumulative best. The first three updates rebuild
       the search topology; the remaining twenty-four refine it.
     </figcaption>
   </figure>
@@ -493,14 +492,14 @@
       <li><span class="when">Steps 4–12</span><span class="what"><b>Adapt the search.</b> Width priors, conflict prediction, and multi-modal restarts — to 90.84.</span></li>
       <li><span class="when">Steps 13–20</span><span class="what"><b>Close the feedback loop.</b> Aspect, density, and fragmentation become live control signals — to 91.76.</span></li>
       <li><span class="when">Steps 21–27</span><span class="what"><b>Predict residual space.</b> Gap depth becomes shape compatibility, then multi-step look-ahead — to 91.89.</span></li>
-      <li><span class="when">Steps 28–31</span><span class="what"><b>Saturate.</b> 445 further valid programs, no frontier gain.</span></li>
+      <li><span class="when">Steps 28–31</span><span class="what"><b>Saturate.</b> 445 more valid programs, no further gain.</span></li>
     </ul>
     <p style="margin-top: 26px;">
       The kind of improvement shifts over the run: first a new representation,
-      then operationalized diagnostics, then a mechanism that exploits them.
-      The winning step-27 mutation came from one sentence of guidance —
+      then live feedback signals, then a mechanism that exploits them.
+      The final improvement, at step 27, came from a one-sentence proposal —
       <em>"simulate placing multiple pieces sequentially in predicted optimal
-      positions"</em> — realized as a cheap three-step residual-rectangle
+      positions"</em> — implemented as a cheap three-step residual-rectangle
       forecast inside the placement score.
     </p>
   </div>
@@ -510,15 +509,13 @@
 <section id="evidence">
   <div class="col">
     <span class="eyebrow">Evidence</span>
-    <h2>One matrix of controls</h2>
+    <h2>Baselines and ablations</h2>
     <p>
-      Every baseline and ablation varies one of two things: the
-      <strong>strategic layer</strong> above the executor, or the
-      <strong>executor</strong> itself. Arranged on those two axes, the runs
-      stop being scattered experiments. Reading down a column asks what the
-      thought-space channel adds under a fixed executor; reading across the
-      bottom row asks what executor capability is worth under a fixed,
-      trained strategist.
+      Every baseline and ablation varies one of two things: the strategic
+      layer above the executor, or the executor itself. Reading down a column
+      shows what that layer adds under a fixed executor; reading across the
+      bottom row shows what a stronger executor is worth under the same
+      trained policy.
     </p>
   </div>
 
@@ -562,7 +559,7 @@
     <p class="axis-note">
       <sup>a</sup> The GPT-OSS-120B cell is direct PUCT code mutation in our
       harness; the GLM-5.2 cell is a 300-step OpenEvolve run with an exact score
-      of 78.3591. Both omit the guidance channel.
+      of 78.3591. Neither uses a guidance model.
       <sup>b</sup> Local CORAL Codex-CLI agent, web research disabled,
       isolated; two GPT-5.4 agents reach 83.80.
       <sup>c</sup> The GLM-5.2 frozen-guidance run improves from 27.81 to 84.85
@@ -576,14 +573,14 @@
 
   <div class="col">
     <ol class="findings">
-      <li><div><b>The thought-space channel does real work before any learning.</b><p>Under GPT-OSS-120B, adding a frozen strategist moves 69.92 to 80.87. Under GLM-5.2, frozen guidance reaches 84.85 versus 78.36 for direct OpenEvolve. Separating strategy from implementation helps even when the strategist never updates.</p></div></li>
-      <li><div><b>Learning the strategist is consistent with a further gain.</b><p>With GLM-5.2 execution and the same 3,840-candidate search budget, frozen Qwen3-8B guidance reaches 84.85 while Guidance-TTT reaches 91.89. This matched-budget pair is substantially stronger evidence than the earlier cross-budget comparison, although repeated seeds are still needed for a causal estimate.</p></div></li>
-      <li><div><b>Executor capability is multiplicative, not additive.</b><p>Without a strategist, stronger executors stall near 80 (top two rows). With the same trained 8B strategist, they reach 85.32 and 91.89 (bottom row) — the gain from the strategic layer grows with the executor that realizes it.</p></div></li>
-      <li><div><b>Actor scale is conditional.</b><p>Tripling the strategist to 27B changes nothing (80.18 vs 80.20 under GPT-OSS-120B), and neither does a longer reasoning window (32K vs 48K context). Once a small actor can name the useful mechanisms, the bottleneck sits downstream, in execution fidelity.</p></div></li>
+      <li><div><b>Separate guidance helps before any learning.</b><p>Under GPT-OSS-120B, adding frozen 8B guidance moves 69.92 to 80.87. Under GLM-5.2, it reaches 84.85 versus 78.36 for direct OpenEvolve. Splitting proposal from implementation helps even while the guidance weights stay fixed.</p></div></li>
+      <li><div><b>Training the policy adds a further gain.</b><p>With GLM-5.2 execution and the same 3,840-candidate budget, frozen guidance reaches 84.85 and trained guidance 91.89. The budget is matched, but this is one run of each; repeated seeds are needed before the gap can be read as a causal effect.</p></div></li>
+      <li><div><b>Executor capability multiplies the value of guidance.</b><p>Without guidance, stronger executors stall near 80 (top two rows). With the same trained 8B policy, they reach 85.32 and 91.89 (bottom row): the better the executor, the more each proposal is worth.</p></div></li>
+      <li><div><b>Guidance-model scale matters less.</b><p>Replacing the 8B policy with a 27B one changes nothing (80.18 vs 80.20 under GPT-OSS-120B), and neither does a longer reasoning window (32K vs 48K context). Once the policy can name the useful mechanisms, the bottleneck is execution.</p></div></li>
     </ol>
 
     <div class="note">
-      <b>What 91.89 does not prove.</b> The matched GLM-5.2 comparison now
+      <b>What 91.89 does not prove.</b> The matched GLM-5.2 comparison
       separates frozen guidance (84.85) from trained guidance (91.89) at the
       same sample count. It remains a single-run comparison: repeated seeds
       are needed to distinguish a stable learning effect from trajectory-level
@@ -596,13 +593,13 @@
 <section id="update">
   <div class="col">
     <span class="eyebrow">Optimization</span>
-    <h2>A max-seeking update over ideas</h2>
+    <h2>A max-seeking update over proposals</h2>
     <p>
-      Executor calls and verifier runs are expensive; the learned object is a
-      small policy over guidance messages. Each update selects eight archived
-      states by PUCT, samples sixteen guidance messages per state, executes and
-      verifies all 128 candidates, and applies a critic-free REINFORCE step to
-      guidance tokens only.
+      Execution and scoring are expensive; the learned object is a small
+      policy over proposals. Each update selects eight parent states from the
+      history by PUCT, samples sixteen proposals per state, executes and
+      scores all 128 candidates, and applies a critic-free REINFORCE step to
+      proposal tokens only.
     </p>
 
     <div class="formula">
@@ -615,7 +612,7 @@
 
     <p>
       Average-reward objectives underweight the event that matters most in
-      discovery: one candidate breaking the frontier. The entropic advantage
+      discovery: a single candidate beating the current best. The entropic advantage
       re-weights each group exponentially, with β chosen per group so that
       D<sub>KL</sub>(q<sub>β</sub> ‖ Uniform) = log 2 — flat groups get β = 0
       and exert no pressure. Leave-one-out baselines prevent a strong sample
@@ -633,10 +630,10 @@
     <p>
       The plateau after step 27 is not a failure of execution — post-best step
       means stay between 88.26 and 90.80. It is an on-policy feedback loop:
-      reward promotes a lineage into the archive, PUCT concentrates rollouts on
+      a high score promotes a lineage into the history, PUCT concentrates rollouts on
       its descendants, and the policy is updated on that increasingly local
       distribution. Each successful local update makes a jump to a different
-      algorithmic world less likely. The policy doesn't just learn which action
+      family of algorithms less likely. The policy doesn't just learn which action
       worked; it reshapes the future data it will learn from.
     </p>
     <p>
@@ -646,7 +643,7 @@
       test-time training</strong>: a system that learns not only the next
       research move but when to stop exploiting, launch a speculative branch,
       protect it through early losses, and judge it on multi-step return. The
-      learned object stops being a guidance message and becomes a policy over
+      learned object is then not a single proposal but a policy over multi-step
       research programs.
     </p>
 
@@ -654,7 +651,7 @@
       <b>Reproducibility.</b> Qwen3-8B LoRA guidance, GLM-5.2 executor via
       OpenRouter, summary-only state, best-child PUCT, adaptive entropic
       objective, 8 × 16 candidates per update, 70-case FrontierCS problem-0
-      verifier. Best artifact at step 27; library and step-31 checkpoint
+      evaluator. Best solver at step 27; history and step-31 checkpoint
       retained.
     </div>
   </div>
@@ -708,7 +705,7 @@
     t.textContent = s;
   }
   const xl = el("text", { x: (L + W - R) / 2, y: H - 1, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" });
-  xl.textContent = "actor update";
+  xl.textContent = "policy update";
 
   stepBest.forEach((v, i) => el("circle", { cx: x(i), cy: y(v), r: 2.4, fill: "var(--baseline)" }));
   el("path", {
