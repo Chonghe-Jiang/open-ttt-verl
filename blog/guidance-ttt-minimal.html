@@ -533,19 +533,19 @@
         <tr>
           <td><b>Direct evolution</b> — OpenEvolve-style code mutation<sup>a</sup></td>
           <td class="num">69.92</td>
-          <td class="num na">—</td>
+          <td class="num" title="Exact score: 69.3852">69.39</td>
           <td class="num" title="Exact score: 78.3591">78.36</td>
         </tr>
         <tr>
           <td><b>Coding agent</b> — CORAL, one autonomous agent<sup>b</sup></td>
-          <td class="num na">—</td>
+          <td class="num" title="Snapshot exact score: 45.2260200271">45.23</td>
           <td class="num">80.36</td>
           <td class="num">80.67</td>
         </tr>
         <tr>
           <td><b>Frozen 8B guidance</b> — thought space, inference only<sup>c</sup></td>
           <td class="num">80.87</td>
-          <td class="num na">—</td>
+          <td class="num" title="Step-30 exact score: 77.1575">77.16</td>
           <td class="num">84.85</td>
         </tr>
         <tr class="ours-row">
@@ -558,24 +558,27 @@
     </table>
     <p class="axis-note">
       <sup>a</sup> The GPT-OSS-120B cell is direct PUCT code mutation in our
-      harness; the GLM-5.2 cell is a 300-step OpenEvolve run with an exact score
-      of 78.3591. Neither uses a guidance model.
-      <sup>b</sup> Local CORAL Codex-CLI agent, web research disabled,
-      isolated; two GPT-5.4 agents reach 83.80.
-      <sup>c</sup> The GLM-5.2 frozen-guidance run improves from 27.81 to 84.85
-      over 30 inference-only search steps with 128 rollouts per step (3,840
-      total), matching the candidate budget of the corresponding Guidance-TTT
-      run; the Qwen3-8B weights remain fixed and no RL update is applied. —
-      marks cells with no run. The OpenEvolve horizon and other cells are not
-      budget-matched.
+      harness; the GPT-5.4 direct-evolution run scores 69.3852; the GLM-5.2
+      cell is a completed 500-iteration OpenEvolve run with an exact score of
+      78.3591. None uses a guidance model.
+      <sup>b</sup> Local CORAL Codex-CLI agents, web research disabled and
+      isolated. At the snapshot reported here, the GPT-OSS-120B run has
+      completed 54 real FrontierCS evaluations and peaks at 45.2260; two
+      GPT-5.4 agents reach 83.80.
+      <sup>c</sup> Frozen Qwen3-8B guidance with GPT-5.4-low reaches 77.1575 at
+      its step-30 snapshot. The GLM-5.2 frozen-guidance run improves from 27.81
+      to 84.85 over 30 inference-only search steps with 128 rollouts per step
+      (3,840 total), matching the candidate budget of the corresponding
+      Guidance-TTT run; the Qwen3-8B weights remain fixed and no RL update is
+      applied. The OpenEvolve horizon and other cells are not budget-matched.
     </p>
   </div>
 
   <div class="col">
     <ol class="findings">
-      <li><div><b>Separate guidance helps before any learning.</b><p>Under GPT-OSS-120B, adding frozen 8B guidance moves 69.92 to 80.87. Under GLM-5.2, it reaches 84.85 versus 78.36 for direct OpenEvolve. Splitting proposal from implementation helps even while the guidance weights stay fixed.</p></div></li>
+      <li><div><b>Separate guidance helps before any learning.</b><p>Under GPT-OSS-120B, adding frozen 8B guidance moves 69.92 to 80.87. Under GPT-5.4-low, it reaches 77.16 versus 69.39 for direct evolution. Under GLM-5.2, it reaches 84.85 versus 78.36 for direct OpenEvolve. Splitting proposal from implementation helps even while the guidance weights stay fixed.</p></div></li>
       <li><div><b>Training the policy adds a further gain.</b><p>With GLM-5.2 execution and the same 3,840-candidate budget, frozen guidance reaches 84.85 and trained guidance 91.89. The budget is matched, but this is one run of each; repeated seeds are needed before the gap can be read as a causal effect.</p></div></li>
-      <li><div><b>Executor capability multiplies the value of guidance.</b><p>Without guidance, stronger executors stall near 80 (top two rows). With the same trained 8B policy, they reach 85.32 and 91.89 (bottom row): the better the executor, the more each proposal is worth.</p></div></li>
+      <li><div><b>Search procedure matters alongside executor capability.</b><p>Under GPT-OSS-120B, the one-agent CORAL snapshot reaches 45.23 after 54 evaluations, direct mutation reaches 69.92, and frozen guidance reaches 80.87. These runs are not budget-matched, but they show that model scale alone does not determine search quality.</p></div></li>
       <li><div><b>Guidance-model scale matters less.</b><p>Replacing the 8B policy with a 27B one changes nothing (80.18 vs 80.20 under GPT-OSS-120B), and neither does a longer reasoning window (32K vs 48K context). Once the policy can name the useful mechanisms, the bottleneck is execution.</p></div></li>
     </ol>
 
@@ -584,7 +587,7 @@
       separates frozen guidance (84.85) from trained guidance (91.89) at the
       same sample count. It remains a single-run comparison: repeated seeds
       are needed to distinguish a stable learning effect from trajectory-level
-      search variance, and the 300-step OpenEvolve run is not budget-matched.
+      search variance, and the 500-iteration OpenEvolve run is not budget-matched.
     </div>
   </div>
 </section>
