@@ -1,0 +1,113 @@
+run:
+  output_dir: /runs/guidance_ttt/vliw_kernel_modal_h200_2gpu_glm52_batch8_group16_1step
+  project_name: guidance_ttt
+  experiment_name: vliw_kernel_qwen3_8b_guidance_glm52_execution_h200_2gpu_batch8_group16_1step
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  num_steps: 1
+  total_epochs: 1
+  max_prompt_length: 8192
+  max_response_length: 8192
+  filter_overlong_prompts: false
+  truncation: error
+  learning_rate: 4.0e-5
+  ppo_mini_batch_size: 4
+  ppo_micro_batch_size_per_gpu: 2
+  use_kl_loss: true
+  kl_loss_coef: 0.05
+  rollout_engine: vllm
+  temperature: 0.9
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.7
+  n_gpus_per_node: 2
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: /cache/huggingface
+  ray_temp_dir: /tmp/ray
+  tmp_dir: /tmp/guidance-ttt-tmp
+  triton_cache_dir: /cache/triton
+
+task:
+  id: vliw_kernel_optimization
+  edgebench:
+    provider: modal_http
+    endpoint_env: VLIW_JUDGE_URL
+    api_key_env: VLIW_JUDGE_TOKEN
+    concurrency: 16
+    runner_timeout_s: 60
+    request_timeout_s: 90
+    max_retries: 3
+    retry_backoff_s: 2
+    reward_mode: inverse_cycles
+    reward_scale: 1000000.0
+
+ttt:
+  prompt_mode: code_delta
+  groups_per_batch: 8
+  group_size: 16
+  eval_timeout: 120
+  puct_c: 1.0
+  bootstrap:
+    enabled: true
+    required: true
+    max_attempts: 8
+    overwrite_existing: false
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: glm-5.2
+    base_url: http://llmapi.evolventapi.com/v1
+    api_key_env: EVOLVENT_API_KEY
+    prompt_style: gpt_api_brief_thinking
+    # DashScope GLM can spend the entire completion budget on hidden reasoning.
+    # The guidance actor still uses native thinking; execution must reliably emit solution.py.
+    enable_thinking: false
+    temperature: 0.0
+    # GLM-5.2 uses this shared budget for reasoning plus the final full solution.py.
+    # Leaving it unset can keep reasoning open until the upstream gateway resets.
+    max_tokens: 8192
+    timeout_s: 1200
+    max_retries: 3
+    retry_backoff_s: 2
+    capture_request_metrics: true
+    concurrency: 16
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.load_format=safetensors
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
+  - actor_rollout_ref.rollout.free_cache_engine=True
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.rollout.top_p=0.95
+  - actor_rollout_ref.rollout.val_kwargs.do_sample=False
+  - actor_rollout_ref.rollout.val_kwargs.temperature=0
+  - actor_rollout_ref.rollout.val_kwargs.top_p=1.0
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  # Keep one agent worker so both concurrency limits remain global and equal to 16.
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=16384
+  - actor_rollout_ref.rollout.max_num_seqs=16
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'

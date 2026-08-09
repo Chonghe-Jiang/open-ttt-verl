@@ -349,6 +349,7 @@ def main() -> None:
             max_attempts=int(bootstrap_cfg.get("max_attempts", 2)),
             overwrite_existing=bool(bootstrap_cfg.get("overwrite_existing", False)),
             prompt_mode=normalize_prompt_mode((config.get("ttt") or {}).get("prompt_mode")),
+            bootstrap_source=str(bootstrap_cfg.get("source", "task_baseline")),
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return
@@ -357,10 +358,11 @@ def main() -> None:
         return
     validate_bootstrap_requirement(config, prepared)
 
-    import guidance_ttt.verl_ext  # noqa: F401
     import ray
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
+
+    import guidance_ttt.verl_ext  # noqa: F401
     from verl.trainer.main_ppo import run_ppo
 
     config_dir = str(Path(config["run"].get("verl_config_dir", _default_verl_config_dir())).resolve())

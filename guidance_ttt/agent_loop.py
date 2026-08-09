@@ -22,7 +22,7 @@ from guidance_ttt.prompts import (
     normalize_prompt_mode,
     validate_entry_prompt_mode,
 )
-from guidance_ttt.state import LLMRequest, LibraryEntry, VerificationResult, _jsonable
+from guidance_ttt.state import LibraryEntry, LLMRequest, VerificationResult, _jsonable
 from guidance_ttt.tasks import TaskSpec, get_task_spec
 
 
@@ -51,6 +51,8 @@ class ExecutionVerification:
 
 _EXECUTION_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
 _EXECUTION_SEMAPHORES_LOCK = threading.Lock()
+_VERIFIER_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
+_VERIFIER_SEMAPHORES_LOCK = threading.Lock()
 _GUIDANCE_LIBRARIES: dict[str, GuidanceLibrary] = {}
 _GUIDANCE_LIBRARIES_LOCK = threading.Lock()
 
@@ -198,7 +200,11 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         if not agent_loop_config_path:
             return None
         default_agent_loop = _config_get(agent_config, "default_agent_loop") or "guidance_execution_task"
-        candidate_names = list(dict.fromkeys([default_agent_loop, "guidance_execution_task", "guidance_execution_erdos"]))
+        candidate_names = list(
+            dict.fromkeys(
+                [default_agent_loop, "guidance_execution_task", "guidance_execution_erdos"]
+            )
+        )
         try:
             from omegaconf import OmegaConf
 
@@ -347,14 +353,13 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             execution_error = (
                 "guidance_format_error: no complete terminal <guidance> block after two generation attempts"
             )
-        execution_result = _verify_execution_without_fallback(
+        verifier_config = _verifier_config_from_task_config(task_config)
+        execution_result = await self._verify_execution(
             execution_text=execution_text,
             guidance=guidance,
-            timeout_s=self.verifier_timeout_s,
             task_spec=task_spec,
-            verifier_config=_verifier_config_from_task_config(task_config),
+            verifier_config=verifier_config,
             initial_error=execution_error,
-            prompt_mode=self.prompt_mode,
             execution_reasoning=execution_reasoning,
         )
         execution_text = execution_result.execution_text
@@ -455,6 +460,45 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         async with self._execution_semaphore():
             return await self.execution_client.complete(request)
 
+    def _verifier_semaphore(self, task_spec: TaskSpec, verifier_config: dict[str, Any]) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        concurrency = max(1, int(verifier_config.get("concurrency", 1)))
+        key_payload = {
+            "task": task_spec.task_id,
+            "provider": verifier_config.get("provider", "local"),
+            "endpoint": verifier_config.get("endpoint") or verifier_config.get("endpoint_env"),
+        }
+        key = (id(loop), json.dumps(key_payload, sort_keys=True, default=str), concurrency)
+        with _VERIFIER_SEMAPHORES_LOCK:
+            semaphore = _VERIFIER_SEMAPHORES.get(key)
+            if semaphore is None:
+                semaphore = asyncio.Semaphore(concurrency)
+                _VERIFIER_SEMAPHORES[key] = semaphore
+            return semaphore
+
+    async def _verify_execution(
+        self,
+        *,
+        execution_text: str,
+        guidance: str,
+        task_spec: TaskSpec,
+        verifier_config: dict[str, Any],
+        initial_error: str | None,
+        execution_reasoning: str,
+    ) -> ExecutionVerification:
+        async with self._verifier_semaphore(task_spec, verifier_config):
+            return await asyncio.to_thread(
+                _verify_execution_without_fallback,
+                execution_text=execution_text,
+                guidance=guidance,
+                timeout_s=self.verifier_timeout_s,
+                task_spec=task_spec,
+                verifier_config=verifier_config,
+                initial_error=initial_error,
+                prompt_mode=self.prompt_mode,
+                execution_reasoning=execution_reasoning,
+            )
+
     def _task_spec_for_extra_info(self, extra_info: dict[str, Any]) -> TaskSpec:
         task_id = str(extra_info.get("task") or self.task_config.get("id") or self.task_spec.task_id)
         if task_id == self.task_spec.task_id:
@@ -466,7 +510,11 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
         task_config.setdefault("id", task_spec.task_id)
         return task_config
 
-    async def _generate_guidance_response(self, prompt_ids: list[int], sampling_params: dict[str, Any]) -> GuidanceGeneration:
+    async def _generate_guidance_response(
+        self,
+        prompt_ids: list[int],
+        sampling_params: dict[str, Any],
+    ) -> GuidanceGeneration:
         first = await self.server_manager.generate(
             request_id=uuid4().hex,
             prompt_ids=prompt_ids,
@@ -487,7 +535,12 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             )
 
         retry_sampling_params = dict(sampling_params)
-        retry_max_tokens = int(retry_sampling_params.get("max_tokens", retry_sampling_params.get("max_new_tokens", self.response_length)))
+        retry_max_tokens = int(
+            retry_sampling_params.get(
+                "max_tokens",
+                retry_sampling_params.get("max_new_tokens", self.response_length),
+            )
+        )
         retry_max_tokens = max(1, min(int(self.response_length), retry_max_tokens))
         retry_sampling_params["max_tokens"] = retry_max_tokens
         retry_sampling_params.pop("max_new_tokens", None)
@@ -691,10 +744,16 @@ def _normalize_task_config(task: dict[str, Any] | str | None) -> dict[str, Any]:
 
 
 def _verifier_config_from_task_config(task_config: dict[str, Any]) -> dict[str, Any]:
-    frontiercs = _jsonable(task_config.get("frontiercs") or {})
-    if not isinstance(frontiercs, dict):
-        raise TypeError(f"task.frontiercs must normalize to a dict, got {type(frontiercs).__name__}")
-    return frontiercs
+    for key in ("verifier", "edgebench", "frontiercs"):
+        if key not in task_config:
+            continue
+        verifier_config = _jsonable(task_config.get(key) or {})
+        if not isinstance(verifier_config, dict):
+            raise TypeError(
+                f"task.{key} must normalize to a dict, got {type(verifier_config).__name__}"
+            )
+        return verifier_config
+    return {}
 
 
 def _extract_solution_code(execution_text: str, *, task_spec: TaskSpec | None = None) -> str:

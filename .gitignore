@@ -9,6 +9,8 @@ __pycache__/
 .apptainer_tmp/
 .apptainer_home/
 outputs/
+results/
+build/
 models/
 reference/
 external/discover/

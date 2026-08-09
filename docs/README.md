@@ -6,6 +6,10 @@
 - `guidance_ttt_prompts.md`: guidance and execution prompt contracts.
 - `model_prompt_summary.md`: model-facing prompt overview.
 - `polyomino_packing.md`: FrontierCS Polyomino Packing task integration.
+- `vliw_kernel_optimization.md`: EdgeBench VLIW task, official verifier,
+  reward semantics, and Modal 2xH200 smoke workflow.
+- `trimul.md`: TTT-Discover TriMul prompt/evaluator provenance, H100 metric,
+  reward mapping, Modal setup, and one-step acceptance workflow.
 
 ## B200 experiments
 

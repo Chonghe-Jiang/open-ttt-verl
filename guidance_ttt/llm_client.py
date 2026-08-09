@@ -7,11 +7,11 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
-import urllib.error
-import urllib.request
 
 from guidance_ttt.state import LLMRequest, LLMResponse
 
@@ -95,7 +95,11 @@ class UnconfiguredLLMClient:
 
 class OpenAICompatibleLLMClient:
     def __init__(self, config: dict):
-        self.endpoint = str(config.get("endpoint") or config.get("base_url") or os.environ.get("ENDPOINT", "")).rstrip("/")
+        self.endpoint = str(
+            config.get("endpoint")
+            or config.get("base_url")
+            or os.environ.get("ENDPOINT", "")
+        ).rstrip("/")
         api_key_env = str(config.get("api_key_env") or "").strip()
         env_api_key = os.environ.get(api_key_env, "") if api_key_env else ""
         api_key_file = str(config.get("api_key_file") or "").strip()
@@ -103,7 +107,8 @@ class OpenAICompatibleLLMClient:
         self.api_key = str(config.get("api_key") or env_api_key or file_api_key or os.environ.get("API_KEY", ""))
         if not self.endpoint or not self.api_key:
             raise ValueError(
-                "OpenAI-compatible executor requires endpoint/base_url and api_key, api_key_env, or ENDPOINT/API_KEY env vars"
+                "OpenAI-compatible executor requires endpoint/base_url and api_key, "
+                "api_key_env, or ENDPOINT/API_KEY env vars"
             )
         self.timeout_s = float(config.get("timeout_s", 120))
         self.max_retries = max(0, int(config.get("max_retries", 0)))
@@ -119,6 +124,7 @@ class OpenAICompatibleLLMClient:
                 "reasoning",
                 "reasoning_effort",
                 "verbosity",
+                "enable_thinking",
             )
             if key in config
         }
@@ -602,7 +608,7 @@ _LOCAL_PIPELINE_CACHE: dict[str, Callable] = {}
 _LOCAL_PIPELINE_CACHE_LOCK = threading.Lock()
 _LOCAL_VLLM_CACHE: dict[str, Any] = {}
 _LOCAL_VLLM_GENERATE_LOCKS: dict[str, threading.Lock] = {}
-_LOCAL_VLLM_BATCHERS: dict[str, "_LocalVLLMBatcher"] = {}
+_LOCAL_VLLM_BATCHERS: dict[str, _LocalVLLMBatcher] = {}
 _LOCAL_VLLM_CACHE_LOCK = threading.Lock()
 
 
@@ -870,7 +876,7 @@ class LocalVLLMLLMClient:
                 _LOCAL_VLLM_GENERATE_LOCKS[self._cache_key] = lock
             return lock
 
-    def _get_batcher(self) -> "_LocalVLLMBatcher":
+    def _get_batcher(self) -> _LocalVLLMBatcher:
         with _LOCAL_VLLM_CACHE_LOCK:
             batcher = _LOCAL_VLLM_BATCHERS.get(self._cache_key)
             if batcher is None:
@@ -975,7 +981,11 @@ def _extract_local_generated_text(result) -> str:
         for message in reversed(generated):
             if isinstance(message, dict) and message.get("role") == "assistant":
                 return _strip_harmony_to_final(str(message.get("content", "")))
-        text = str(generated[-1].get("content", "")) if generated and isinstance(generated[-1], dict) else str(generated)
+        text = (
+            str(generated[-1].get("content", ""))
+            if generated and isinstance(generated[-1], dict)
+            else str(generated)
+        )
         return _strip_harmony_to_final(text)
     return _strip_harmony_to_final(str(generated or ""))
 

@@ -1,4 +1,4 @@
-# B200 launcher index
+# Launcher index
 
 The cluster workflow separates reusable runners from Slurm allocation files:
 
@@ -12,9 +12,51 @@ The cluster workflow separates reusable runners from Slurm allocation files:
   PUCT accounting, and real verifier outcomes.
 - `validate_qwen_shared_smoke.py` adds Qwen native-reasoning checks.
 
-All generated models, caches, logs, checkpoints, and libraries are ignored by
-Git under `models/`, `.hf_cache/`, `.runtime/`, and `outputs/`. API credentials
-belong under ignored `.secrets/`; never put them in YAML or submit scripts.
+All generated models, caches, logs, checkpoints, libraries, and downloaded run
+artifacts are ignored by Git under `models/`, `.hf_cache/`, `.runtime/`,
+`outputs/`, and `results/`. API credentials belong under ignored `.secrets/`;
+never put them in YAML or submit scripts.
+
+## Modal systems-task launchers
+
+Two self-contained Modal launchers cover the new systems tasks:
+
+| Task | Launcher | Training allocation | Verifier |
+| --- | --- | --- | --- |
+| EdgeBench VLIW | `scripts/modal_vliw_kernel_h200_smoke.py` | 2xH200 | Up to 16 pinned CPU judge containers |
+| TriMul | `scripts/modal_trimul_h200_smoke.py` | 1xH200 | Up to 2 isolated H100 evaluator containers |
+
+Install the launcher dependencies once:
+
+```bash
+python -m pip install -r requirements-modal.txt
+modal token new
+```
+
+VLIW verifies the checked-in official starter, generates a run-specific seed,
+and then runs one 8x16 training step:
+
+```bash
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action judge_probe
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action runtime_probe
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action smoke
+```
+
+TriMul copies the fixed GLM-5.2 scratch library and supports matched
+`code_delta` and `summary_only` acceptance runs:
+
+```bash
+modal run scripts/modal_trimul_h200_smoke.py --action judge_probe
+modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode code_delta
+modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode summary_only
+```
+
+The split `bootstrap` and `train` actions are available for debugging. TriMul's
+separate `generate_scratch_seed` action reproduces seed provenance into the
+Modal run volume and never overwrites the checked-in seed. Secret setup,
+metrics, reward mappings, image pins, and persistent output paths are documented
+in [`docs/vliw_kernel_optimization.md`](../docs/vliw_kernel_optimization.md) and
+[`docs/trimul.md`](../docs/trimul.md).
 
 ## One-GPU Qwen3-8B with Evolvent GPT-5.4
 

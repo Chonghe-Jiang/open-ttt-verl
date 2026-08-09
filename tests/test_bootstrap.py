@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from guidance_ttt.bootstrap import build_bootstrap_execution_prompt, bootstrap_library_entries
+from guidance_ttt.bootstrap import (
+    bootstrap_library_entries,
+    build_bootstrap_execution_prompt,
+    normalize_bootstrap_source,
+)
 from guidance_ttt.library import GuidanceLibrary
 from guidance_ttt.state import LLMResponse, make_root_node
 from guidance_ttt.tasks import get_task_spec
@@ -39,7 +43,7 @@ def test_bootstrap_prompt_has_no_guidance_or_library_context():
     assert "<selected_summary>" not in prompt.user
     assert "<guidance>" not in prompt.user
     assert "<local_failures>" not in prompt.user
-    assert "initial bootstrap candidate" in prompt.user
+    assert "scratch seed candidate" in prompt.user
     assert "exactly three top-level XML blocks" in prompt.user
     assert "You must output all three XML blocks exactly as shown below" in prompt.user
     assert "The <summary>...</summary> block is mandatory and must be closed" in prompt.user
@@ -50,7 +54,7 @@ def test_bootstrap_prompt_has_no_guidance_or_library_context():
     assert "```cpp" in prompt.user
     assert "complete self-contained C++17 program" in prompt.user
     assert "<summary>" in prompt.user
-    assert "future guidance could improve" in prompt.user
+    assert "complete algorithm implemented by this scratch candidate" in prompt.user
 
 
 def test_qwen_native_bootstrap_prompt_requires_only_solution_and_summary():
@@ -73,7 +77,7 @@ def test_gpt_api_brief_thinking_bootstrap_prompt_requires_two_final_blocks():
         execution_prompt_style="gpt_api_brief_thinking",
     )
 
-    think = "Think carefully about the problem before producing the baseline program."
+    think = "Think carefully about the public problem specification before producing the scratch seed."
     contract = "Your final answer must contain exactly two top-level XML blocks"
     assert think in prompt.user
     assert prompt.user.index(think) < prompt.user.index(contract)
@@ -81,6 +85,13 @@ def test_gpt_api_brief_thinking_bootstrap_prompt_requires_two_final_blocks():
     assert "<execution_thinking>\n" not in prompt.user
     assert "<solution>" in prompt.user
     assert "<summary>" in prompt.user
+
+
+def test_bootstrap_source_validation_is_strict():
+    assert normalize_bootstrap_source("scratch") == "scratch"
+    assert normalize_bootstrap_source("task_baseline") == "task_baseline"
+    with pytest.raises(ValueError, match="Unsupported bootstrap source"):
+        normalize_bootstrap_source("auto")
 
 
 def test_bootstrap_entry_attaches_to_root_and_becomes_selected_summary(tmp_path):
@@ -107,10 +118,11 @@ def test_bootstrap_entry_attaches_to_root_and_becomes_selected_summary(tmp_path)
     assert root_store["value"] == snapshot["entries"][entry_id]["verifier_reward"]
     assert context["selected_entry"].id == entry_id
     assert context["selected_entry"].metadata["bootstrap"] is True
+    assert context["selected_entry"].metadata["bootstrap_source"] == "scratch"
     assert context["selected_entry"].metadata["raw_model_summary"]
 
 
-def test_code_delta_bootstrap_stores_raw_baseline_summary(tmp_path):
+def test_code_delta_scratch_bootstrap_stores_raw_full_candidate_summary(tmp_path):
     library_path = tmp_path / "library.json"
     root = make_root_node(problem_id="erdos", raw_score=0.5, reward=2.0)
     library = GuidanceLibrary(library_path, initial_nodes=[root], rollout_n=1)
@@ -126,7 +138,7 @@ def test_code_delta_bootstrap_stores_raw_baseline_summary(tmp_path):
     entry = library.context_for_node(root)["selected_entry"]
 
     assert entry.metadata["prompt_mode"] == "code_delta"
-    assert entry.metadata["summary_semantics"] == "baseline"
+    assert entry.metadata["summary_semantics"] == "canonical_full_candidate"
     assert entry.summary == entry.metadata["raw_model_summary"]
     assert "Implemented Algorithm\n```python" not in entry.summary
 
@@ -149,3 +161,8 @@ def test_bootstrap_rejects_missing_summary_close_without_writing_entry(tmp_path)
     data = json.loads(Path(library_path).read_text())
     assert data["entries"] == {}
     assert data["nodes"][root.id]["entry_id"] is None
+    attempt_log = json.loads((tmp_path / "bootstrap_attempts.json").read_text())
+    assert attempt_log["bootstrap_source"] == "scratch"
+    assert len(attempt_log["attempts"]) == 1
+    assert "closing tag" in attempt_log["attempts"][0]["execution_text"]
+    assert attempt_log["attempts"][0]["accepted"] is False

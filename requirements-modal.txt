@@ -1,12 +1,13 @@
-# Local dependencies for launching the Modal Polyomino recipes.
+# Local dependencies for launching the Modal recipes.
 #
 # Usage:
 #   pip install -r requirements-modal.txt
 #
-# The remote Modal image installs FrontierCS, go-judge, vLLM, torch, and the
-# H200-compatible flash-attn wheel inside scripts/modal_polyomino_h200_smoke.py.
-# Keep those GPU-runtime pins in the Modal script so local CPU environments do
-# not try to install CUDA-specific wheels.
+# The remote scripts install task-specific judges, vLLM, torch, and the
+# H200-compatible flash-attn wheel in their Modal images. Keep those GPU-runtime
+# pins in the launchers so local CPU environments do not install CUDA wheels.
 modal
 requests
+fastapi
+PyYAML
 git+https://github.com/FrontierCS/Frontier-CS.git

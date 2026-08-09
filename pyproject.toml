@@ -118,6 +118,15 @@ verl = [
 ]
 guidance_ttt = [
   "config/*.yaml",
+  "seeds/trimul/*.json",
+  "seeds/trimul/*.md",
+  "tasks/assets/trimul/*.py",
+  "tasks/assets/trimul/*.md",
+  "tasks/assets/trimul_evaluator/*.py",
+  "tasks/assets/trimul_evaluator/*.yml",
+  "tasks/assets/trimul_evaluator/*.md",
+  "tasks/assets/vliw_kernel_optimization/*.py",
+  "tasks/assets/vliw_kernel_optimization/*.md",
 ]
 
 [tool.pytest.ini_options]

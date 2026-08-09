@@ -75,11 +75,12 @@ PUCT library node
 
 Supported tasks:
 
-- `erdos_min_overlap`: execution returns a Python `run()` candidate; lower raw
-  C5 is better.
-- `polyomino_packing`: execution returns a complete C++17 program; scoring is
-  delegated to the external FrontierCS/go-judge/Docker evaluator; higher
-  FrontierCS score is better.
+| `task.id` | Candidate artifact | Raw objective | Authoritative verifier |
+| --- | --- | --- | --- |
+| `erdos_min_overlap` | Python `run()` candidate | Minimize raw C5 | In-process Erdos evaluator |
+| `polyomino_packing` | Complete C++17 solver | Maximize FrontierCS score | FrontierCS/go-judge/Docker |
+| [`vliw_kernel_optimization`](docs/vliw_kernel_optimization.md) | Complete Python `solution.py` with `KernelBuilder` | Minimize simulator cycles | Pinned EdgeBench hidden-case judge |
+| [`trimul`](docs/trimul.md) | Complete Triton/Python `submission.py` | Minimize H100 geometric-mean runtime | Vendored TTT-Discover evaluator on Modal H100 |
 
 Execution uses `MockLLMClient` by default so the package can be tested without a
 real API. Real execution can use either an OpenAI-compatible endpoint or a local
@@ -91,7 +92,8 @@ The current Guidance-TTT design trains only the guidance actor. The execution
 model is treated as a frozen solver that applies a high-level guidance idea to
 the selected library node's runnable parent code.
 
-Polyomino recipes support two communication modes:
+Code-evolution tasks, including Polyomino, VLIW, and TriMul, support two
+communication modes:
 
 - `code_delta` gives guidance the parent solution plus its delta summary. The
   execution model receives that parent solution and returns an updated complete
@@ -157,6 +159,102 @@ instead of spending an execution call on a fresh bootstrap candidate.
 | Execution/verifier concurrency | `16` / `16` |
 | PPO mini/micro batch | `4` / `2` per GPU |
 | Checkpoint frequency | every `5` steps |
+
+## New Task Quick Starts
+
+The two systems tasks share the Guidance-TTT library and RL loop but deliberately
+use different bootstrap policies:
+
+| Property | EdgeBench VLIW | TriMul |
+| --- | --- | --- |
+| Checked-in starting artifact | Byte-exact official `solution.py` starter | Fixed GLM-5.2 scratch `library.json` |
+| Normal bootstrap | Verify the official starter, then let GLM-5.2 create one run-specific valid root | Copy and audit the fixed valid root; no bootstrap LLM call |
+| Execution output | Complete replacement `solution.py` | Complete replacement `submission.py` |
+| Evaluation | Pinned CPU judge image with hidden cases | Pinned public evaluator on isolated H100 |
+| Active acceptance shape | 8 groups x 16 rollouts, one step | 1 group x 2 rollouts, one step |
+| Detailed contract | [`docs/vliw_kernel_optimization.md`](docs/vliw_kernel_optimization.md) | [`docs/trimul.md`](docs/trimul.md) |
+
+The checked-in artifacts are immutable inputs to a fresh run. A run writes its
+own `library.json` under the configured output directory and evolves that copy;
+it never mutates the official VLIW starter or the fixed TriMul seed.
+
+### EdgeBench VLIW
+
+The VLIW integration uses the exact official starter and pinned EdgeBench judge
+image. Local verification can use Docker directly. On Modal, an authenticated
+CPU verifier service runs the official hidden-case runner, while two H200s host
+Qwen3-8B guidance rollout and GRPO training. GLM-5.2 execution is called through
+the Evolvent OpenAI-compatible API. Unlike TriMul, VLIW does not check in a
+generated library root: every fresh smoke first verifies the fixed starter and
+then generates and verifies one conservative seed candidate for that run.
+
+The acceptance recipe uses 8 groups x 16 rollouts for one training step:
+
+```bash
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action judge_probe
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action runtime_probe
+modal run scripts/modal_vliw_kernel_h200_smoke.py --action smoke
+```
+
+Credentials are supplied only through the Modal secret
+`guidance-ttt-vliw-secrets`; no API or verifier token belongs in the repository.
+See [`docs/vliw_kernel_optimization.md`](docs/vliw_kernel_optimization.md) for
+secret creation, metric/reward semantics, split bootstrap/train actions, and
+the persistent Volume path.
+
+### TriMul
+
+The TriMul integration keeps the TTT-Discover public problem statement,
+correctness reference, test cases, benchmark cases, H100 hardware, and Triton
+3.3.1 runtime contract. Guidance-TTT changes only the search architecture: a
+Qwen3-8B guidance actor selects refinements, while Evolvent GLM-5.2 rewrites the
+selected complete `submission.py`. Both current smoke modes start from the same
+tracked GLM-5.2 scratch seed at
+`guidance_ttt/seeds/trimul/glm52_scratch_bootstrap_library.json`; this seed was
+generated from the public task description without parent code, Discover code,
+history, guidance, or a prior score.
+
+The task text in `<problem>` and the trailing runtime rules are copied verbatim
+from TTT-Discover. Guidance-TTT adds its own communication envelope around that
+unchanged specification: guidance receives the selected code/summary and score,
+and execution receives the selected parent code plus guidance and the strict
+`<solution>`/`<summary>` response contract. The additional correctness-first
+`einsum` and single-kernel instructions belong only to the one-off scratch-seed
+generation prompt; they are not attached to normal guidance or execution
+rollouts.
+
+The one-step acceptance recipe uses one H200 for Qwen3-8B rollout/training and
+up to two isolated H100 evaluator containers. It runs one group with two
+rollouts, enough to exercise generation, execution, official verification,
+library insertion, group-wise reward assignment, and one optimizer step:
+
+```bash
+pip install -r requirements-modal.txt
+modal run scripts/modal_trimul_h200_smoke.py --action judge_probe
+modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode code_delta
+modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode summary_only
+```
+
+The normal `bootstrap` stage copies the frozen library and makes no bootstrap
+LLM request. To reproduce the one-off scratch-generation workflow separately:
+
+```bash
+modal run scripts/modal_trimul_h200_smoke.py \
+  --action generate_scratch_seed \
+  --prompt-mode summary_only
+```
+
+The tracked seed passed all 18 correctness cases and all seven H100 leaderboard
+cases, with a geometric-mean runtime of `10177.396849 us`. The published
+TTT-Discover result remains archived under `guidance_ttt/tasks/assets/trimul/`
+for provenance and optional warm-start comparisons, but it is not used by the
+default seed path or scratch-generation prompt.
+
+Use a Modal secret containing `EVOLVENT_API_KEY` and
+`TRIMUL_JUDGE_TOKEN`. Set `GUIDANCE_TTT_TRIMUL_SECRET=<name>` when its name is
+not the compatibility default. No local or reduced evaluator is available by
+design. See [`docs/trimul.md`](docs/trimul.md) for the complete contract and
+artifact locations.
 
 ### Library Settings
 
@@ -236,17 +334,19 @@ python -m pip install -r requirements-ttt.txt
 python -m pip install -r requirements-test.txt
 ```
 
-For launching Modal Polyomino runs from your local machine:
+For launching Modal Polyomino, EdgeBench VLIW, or TriMul runs from your local
+machine:
 
 ```bash
 python -m pip install -r requirements-modal.txt
 modal token new
 ```
 
-The Modal script builds the GPU runtime remotely. It installs FrontierCS,
-go-judge, vLLM, PyTorch dependencies, and the H200-compatible `flash_attn`
-wheel inside the Modal image. Local CUDA-specific packages are therefore not
-required just to submit the job.
+Each Modal launcher builds its task-specific runtime remotely. Polyomino installs
+FrontierCS/go-judge, VLIW starts the pinned EdgeBench CPU judge image, and TriMul
+builds the pinned Triton 3.3.1 H100 evaluator. The training images install vLLM,
+PyTorch, and the matching `flash_attn` wheel remotely, so local CUDA packages are
+not required just to submit a job.
 
 ## Prepare a Smoke Run
 

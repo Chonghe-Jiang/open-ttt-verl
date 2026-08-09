@@ -1,0 +1,3 @@
+# These files are vendored byte-for-byte and protected by provenance hash tests.
+guidance_ttt/tasks/trimul_prompt.py -whitespace
+guidance_ttt/tasks/assets/trimul_evaluator/* -whitespace

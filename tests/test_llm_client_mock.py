@@ -2,9 +2,9 @@ import asyncio
 import http.client
 import json
 import os
+import time
 
 import pytest
-import time
 
 import guidance_ttt.llm_client as llm_client_module
 from guidance_ttt.llm_client import (
@@ -14,8 +14,8 @@ from guidance_ttt.llm_client import (
     LocalVLLMLLMClient,
     MockLLMClient,
     OpenAICompatibleLLMClient,
-    _load_local_text_generation_pipeline,
     _extract_local_generated_text,
+    _load_local_text_generation_pipeline,
     make_llm_client,
 )
 
@@ -552,6 +552,42 @@ def test_openai_compatible_client_accepts_request_timeout(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_openai_compatible_client_forwards_enable_thinking(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "enable_thinking": False,
+        }
+    )
+    captured = {}
+
+    def fake_post_json(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "model": "glm-5.2",
+            "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
+            "usage": {},
+        }
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="glm-5.2",
+            temperature=0.0,
+            max_tokens=8192,
+        )
+    )
+
+    assert captured["path"] == "/chat/completions"
+    assert captured["payload"]["enable_thinking"] is False
+    assert captured["payload"]["max_tokens"] == 8192
+
+
+@pytest.mark.anyio
 async def test_local_transformers_client_loads_model_lazily_and_uses_chat_messages(monkeypatch):
     captured = {}
 
@@ -747,7 +783,10 @@ async def test_local_vllm_client_uses_remaining_context_when_max_tokens_is_none(
             return [FakeRequestOutput()]
 
     monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
-    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs))
+    monkeypatch.setattr(
+        "guidance_ttt.llm_client._call_vllm_sampling_params",
+        lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs),
+    )
 
     client = make_llm_client(
         {
@@ -800,7 +839,10 @@ async def test_local_vllm_client_passes_qwen_thinking_chat_template_kwargs(monke
             return [FakeRequestOutput()]
 
     monkeypatch.setattr("guidance_ttt.llm_client._load_local_vllm", lambda config: FakeLLM())
-    monkeypatch.setattr("guidance_ttt.llm_client._call_vllm_sampling_params", lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs))
+    monkeypatch.setattr(
+        "guidance_ttt.llm_client._call_vllm_sampling_params",
+        lambda **kwargs: captured.setdefault("sampling_kwargs", kwargs),
+    )
 
     client = make_llm_client(
         {

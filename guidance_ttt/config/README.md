@@ -1,9 +1,9 @@
 # Guidance-TTT recipe index
 
-The top-level directory contains active Polyomino Packing recipes. Historical
-Modal, Erdos, smoke, and debugging recipes live in `backup/`. Recipe filenames
-encode the platform, allocation, actor/execution models, batch/group shape,
-prompt mode, and run length.
+The top-level directory contains active Polyomino Packing, EdgeBench VLIW, and
+TriMul recipes. Historical Modal, Erdos, smoke, and debugging recipes live in
+`backup/`. Recipe filenames encode the task, platform, allocation,
+actor/execution models, batch/group shape, prompt mode, and run length.
 
 ## Established B200 long runs
 
@@ -171,6 +171,38 @@ The active Modal/H200 family remains at the top level for compatibility with
 
 - `polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_smoke.yaml`
 - `polyomino_modal_h200_3gpu_gpt_oss_120b_batch8_group16_code_delta_8192_50step.yaml`
+
+The EdgeBench VLIW acceptance recipe is:
+
+- `vliw_kernel_modal_h200_2gpu_glm52_batch8_group16_1step.yaml`
+
+It runs one 8x16 step with Qwen3-8B guidance on two H200s, GLM-5.2 execution
+through Evolvent, and up to 16 official EdgeBench CPU judges through an
+authenticated Modal endpoint. Raw cycles are minimize-oriented; the recipe
+uses `1,000,000 / cycles` as a dense maximize-oriented training reward. Launch
+it through `scripts/modal_vliw_kernel_h200_smoke.py`, which validates the judge
+and runtime, builds a valid root on CPU, and checks all final library invariants.
+
+The matched TriMul acceptance recipes are:
+
+- `trimul_modal_h200_1gpu_evolvent_glm52_group2_1step.yaml`
+- `trimul_modal_h200_1gpu_evolvent_glm52_group2_summary_only_1step.yaml`
+
+They differ only in prompt mode and output naming. `code_delta` gives the
+guidance actor full parent Triton/Python code plus its change summary;
+`summary_only` gives it only a self-contained raw model summary and score. The
+execution model receives full parent code in both modes. Both use Qwen3-8B
+guidance on one H200, Evolvent GLM-5.2 execution, and the official TTT-Discover
+evaluator on H100. The raw metric is the geometric mean of seven benchmark
+runtimes in microseconds (lower is better), and RL receives the original
+Discover reward `1500 / runtime_us`. Launch either mode through
+`scripts/modal_trimul_h200_smoke.py`; there is intentionally no local smoke
+verifier. Both recipes copy the same fixed scratch-generated root from
+`guidance_ttt/seeds/trimul/glm52_scratch_bootstrap_library.json`, so their
+normal bootstrap phase makes no LLM call and does not use the archived Discover
+solution. `trimul_modal_glm52_scratch_seed.yaml` is the separate provenance
+recipe that asks GLM-5.2 to generate a candidate from the public task statement
+without any prior candidate context.
 
 Older recipes referenced by legacy launch modes are preserved under `backup/`.
 

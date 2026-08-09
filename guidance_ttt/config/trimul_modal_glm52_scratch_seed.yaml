@@ -1,0 +1,111 @@
+run:
+  output_dir: /runs/guidance_ttt/trimul_modal_glm52_scratch_seed
+  project_name: guidance_ttt
+  experiment_name: trimul_glm52_scratch_seed
+  model_path: Qwen/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  num_steps: 1
+  total_epochs: 1
+  max_prompt_length: 16384
+  max_response_length: 8192
+  filter_overlong_prompts: false
+  truncation: error
+  learning_rate: 4.0e-5
+  ppo_mini_batch_size: 1
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0.05
+  rollout_engine: vllm
+  temperature: 0.9
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.5
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: /cache/huggingface
+  ray_temp_dir: /tmp/ray
+  tmp_dir: /tmp/guidance-ttt-tmp
+  triton_cache_dir: /cache/triton
+
+task:
+  id: trimul
+  verifier:
+    provider: modal_http
+    endpoint_env: TRIMUL_JUDGE_URL
+    api_key_env: TRIMUL_JUDGE_TOKEN
+    concurrency: 1
+    runner_timeout_s: 520
+    request_timeout_s: 1150
+    max_retries: 2
+    retry_backoff_s: 2
+    reward_scale: 1500.0
+
+ttt:
+  prompt_mode: summary_only
+  groups_per_batch: 1
+  group_size: 2
+  eval_timeout: 1160
+  puct_c: 1.0
+  bootstrap:
+    enabled: true
+    required: true
+    source: scratch
+    # GLM-5.2 uses greedy decoding, so identical automatic retries add cost
+    # without adding diversity. Revise the public scratch prompt explicitly if
+    # this single candidate fails, and record each revision as a new attempt.
+    max_attempts: 1
+    overwrite_existing: false
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: glm-5.2
+    base_url: http://llmapi.evolventapi.com/v1
+    api_key_env: EVOLVENT_API_KEY
+    prompt_style: gpt_api_brief_thinking
+    enable_thinking: false
+    temperature: 0.0
+    max_tokens: 16384
+    timeout_s: 1200
+    max_retries: 3
+    retry_backoff_s: 2
+    capture_request_metrics: true
+    concurrency: 1
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.load_format=safetensors
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.5
+  - actor_rollout_ref.rollout.free_cache_engine=True
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.rollout.top_p=0.95
+  - actor_rollout_ref.rollout.val_kwargs.do_sample=False
+  - actor_rollout_ref.rollout.val_kwargs.temperature=0
+  - actor_rollout_ref.rollout.val_kwargs.top_p=1.0
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=24576
+  - actor_rollout_ref.rollout.max_num_seqs=2
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'
