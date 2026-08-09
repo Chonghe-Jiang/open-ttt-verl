@@ -24,7 +24,7 @@ Two self-contained Modal launchers cover the new systems tasks:
 | Task | Launcher | Training allocation | Verifier |
 | --- | --- | --- | --- |
 | EdgeBench VLIW | `scripts/modal_vliw_kernel_h200_smoke.py` | 2xH200 | Up to 16 pinned CPU judge containers |
-| TriMul | `scripts/modal_trimul_h200_smoke.py` | 1xH200 | Up to 2 isolated H100 evaluator containers |
+| TriMul | `scripts/modal_trimul_h200_smoke.py` | 1xH200 | Configurable isolated H100 evaluator containers (default 4) |
 
 Install the launcher dependencies once:
 
@@ -50,6 +50,18 @@ modal run scripts/modal_trimul_h200_smoke.py --action judge_probe
 modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode code_delta
 modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode summary_only
 ```
+
+The local-B200 smoke keeps GLM-5.2 thinking enabled, streams long responses,
+and uses a one-output-token high-thinking primer before releasing all four
+full-budget execution requests:
+
+```bash
+TRIMUL_JUDGE_MAX_CONTAINERS=4 modal deploy scripts/modal_trimul_h200_smoke.py
+sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_group4_smoke.sbatch
+```
+
+Use `scripts/probe_trimul_judge_concurrency.py` to test a higher H100 evaluator
+cap against the fixed valid seed before increasing `task.verifier.concurrency`.
 
 The split `bootstrap` and `train` actions are available for debugging. TriMul's
 separate `generate_scratch_seed` action reproduces seed provenance into the

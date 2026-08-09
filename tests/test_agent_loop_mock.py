@@ -9,7 +9,9 @@ from guidance_ttt.agent_loop import (
     EXECUTION_SUMMARY_SECTIONS,
     AgentLoopBase,
     GuidanceExecutionAgentLoop,
+    _EXECUTION_CACHE_WARM_STATES,
     _GUIDANCE_LIBRARIES,
+    _execution_cache_warm_key,
     _shared_guidance_library,
     _normalize_task_config,
     _verifier_config_from_task_config,
@@ -84,6 +86,251 @@ def test_agent_loop_output_trains_only_guidance_tokens():
     assert output.response_mask == [1, 1]
     assert output.reward_score == 3.0
     assert output.extra_fields["solution"] == "def run(): pass"
+
+
+def test_execution_cache_warm_key_ignores_guidance_suffix_only():
+    first = _execution_cache_warm_key(
+        system="system",
+        user="<problem>same</problem>\n<selected_parent>code</selected_parent>\n<guidance>first</guidance>",
+    )
+    second = _execution_cache_warm_key(
+        system="system",
+        user="<problem>same</problem>\n<selected_parent>code</selected_parent>\n<guidance>second</guidance>",
+    )
+    different_parent = _execution_cache_warm_key(
+        system="system",
+        user="<problem>same</problem>\n<selected_parent>other</selected_parent>\n<guidance>first</guidance>",
+    )
+
+    assert first == second
+    assert first != different_parent
+
+
+@pytest.mark.anyio
+async def test_cache_warm_first_holds_followers_until_leader_finishes():
+    leader_started = asyncio.Event()
+    release_leader = asyncio.Event()
+    calls = []
+
+    class ControlledClient:
+        async def complete(self, request):
+            calls.append(dict(request.metadata))
+            if request.metadata["cache_warm_role"] == "leader":
+                leader_started.set()
+                await release_leader.wait()
+            return LLMResponse(text="ok", model="test", finish_reason="stop")
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.execution_llm_config = {
+        "provider": "test",
+        "model": "test",
+        "concurrency": 4,
+        "cache_warm_first": True,
+    }
+    loop.execution_concurrency = 4
+    loop.execution_client = ControlledClient()
+    _EXECUTION_CACHE_WARM_STATES.clear()
+
+    leader_request = LLMRequest("s", "u1", "test", 0, None, {"cache_warm_key": "shared"})
+    follower_request = LLMRequest("s", "u2", "test", 0, None, {"cache_warm_key": "shared"})
+    leader = asyncio.create_task(loop._complete_execution(leader_request))
+    await leader_started.wait()
+    follower = asyncio.create_task(loop._complete_execution(follower_request))
+    await asyncio.sleep(0.01)
+
+    assert [call["cache_warm_role"] for call in calls] == ["leader"]
+
+    release_leader.set()
+    await asyncio.gather(leader, follower)
+
+    assert [call["cache_warm_role"] for call in calls] == ["leader", "follower"]
+    assert calls[1]["cache_warm_leader_succeeded"] is True
+    assert calls[1]["cache_warm_wait_s"] >= 0
+
+
+@pytest.mark.anyio
+async def test_cache_warm_first_waits_for_configured_propagation_delay():
+    leader_started = asyncio.Event()
+    release_leader = asyncio.Event()
+    calls = []
+
+    class ControlledClient:
+        async def complete(self, request):
+            calls.append(dict(request.metadata))
+            if request.metadata["cache_warm_role"] == "leader":
+                leader_started.set()
+                await release_leader.wait()
+            return LLMResponse(text="ok", model="test", finish_reason="stop")
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.execution_llm_config = {
+        "provider": "test",
+        "model": "test",
+        "concurrency": 4,
+        "cache_warm_first": True,
+        "cache_warm_delay_s": 0.05,
+    }
+    loop.execution_concurrency = 4
+    loop.execution_client = ControlledClient()
+    _EXECUTION_CACHE_WARM_STATES.clear()
+
+    leader_request = LLMRequest("s", "u1", "test", 0, None, {"cache_warm_key": "shared"})
+    follower_request = LLMRequest("s", "u2", "test", 0, None, {"cache_warm_key": "shared"})
+    leader = asyncio.create_task(loop._complete_execution(leader_request))
+    await leader_started.wait()
+    follower = asyncio.create_task(loop._complete_execution(follower_request))
+    release_leader.set()
+    await leader
+    await asyncio.sleep(0.01)
+
+    assert [call["cache_warm_role"] for call in calls] == ["leader"]
+
+    await asyncio.wait_for(follower, timeout=1)
+
+    assert [call["cache_warm_role"] for call in calls] == ["leader", "follower"]
+    assert follower_request.metadata["cache_warm_propagation_wait_s"] >= 0.03
+
+
+@pytest.mark.anyio
+async def test_cache_warm_first_allows_different_prefix_leaders_to_run_concurrently():
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    started_keys = set()
+
+    class ControlledClient:
+        async def complete(self, request):
+            started_keys.add(request.metadata["cache_warm_key"])
+            if len(started_keys) == 2:
+                both_started.set()
+            await release.wait()
+            return LLMResponse(text="ok", model="test", finish_reason="stop")
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.execution_llm_config = {
+        "provider": "test",
+        "model": "test",
+        "concurrency": 4,
+        "cache_warm_first": True,
+    }
+    loop.execution_concurrency = 4
+    loop.execution_client = ControlledClient()
+    _EXECUTION_CACHE_WARM_STATES.clear()
+
+    first = asyncio.create_task(
+        loop._complete_execution(LLMRequest("s", "u1", "test", 0, None, {"cache_warm_key": "first"}))
+    )
+    second = asyncio.create_task(
+        loop._complete_execution(LLMRequest("s", "u2", "test", 0, None, {"cache_warm_key": "second"}))
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert started_keys == {"first", "second"}
+
+
+@pytest.mark.anyio
+async def test_cache_warm_first_releases_follower_when_leader_fails():
+    leader_started = asyncio.Event()
+    release_leader = asyncio.Event()
+
+    class FailingLeaderClient:
+        async def complete(self, request):
+            if request.metadata["cache_warm_role"] == "leader":
+                leader_started.set()
+                await release_leader.wait()
+                raise RuntimeError("leader failed")
+            return LLMResponse(text="ok", model="test", finish_reason="stop")
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.execution_llm_config = {
+        "provider": "test",
+        "model": "test",
+        "concurrency": 4,
+        "cache_warm_first": True,
+    }
+    loop.execution_concurrency = 4
+    loop.execution_client = FailingLeaderClient()
+    _EXECUTION_CACHE_WARM_STATES.clear()
+
+    leader_request = LLMRequest("s", "u1", "test", 0, None, {"cache_warm_key": "shared"})
+    follower_request = LLMRequest("s", "u2", "test", 0, None, {"cache_warm_key": "shared"})
+    leader = asyncio.create_task(loop._complete_execution(leader_request))
+    await leader_started.wait()
+    follower = asyncio.create_task(loop._complete_execution(follower_request))
+    release_leader.set()
+
+    with pytest.raises(RuntimeError, match="leader failed"):
+        await leader
+    response = await asyncio.wait_for(follower, timeout=1)
+
+    assert response.text == "ok"
+    assert follower_request.metadata["cache_warm_leader_succeeded"] is False
+
+
+@pytest.mark.anyio
+async def test_cache_prime_releases_all_full_quality_candidates_after_short_primer():
+    primer_started = asyncio.Event()
+    release_primer = asyncio.Event()
+    actual_started = asyncio.Event()
+    calls = []
+
+    class ControlledClient:
+        async def complete(self, request):
+            calls.append(request)
+            if request.metadata["cache_warm_role"] == "primer":
+                primer_started.set()
+                await release_primer.wait()
+                return LLMResponse(
+                    text="",
+                    reasoning="p",
+                    model="test",
+                    finish_reason="length",
+                    usage={"prompt_tokens": 100, "completion_tokens": 1},
+                    metadata={"api_stream_partial_accepted": True},
+                )
+            if sum(call.metadata["cache_warm_role"] != "primer" for call in calls) == 2:
+                actual_started.set()
+            return LLMResponse(text="ok", model="test", finish_reason="stop")
+
+    loop = GuidanceExecutionAgentLoop.__new__(GuidanceExecutionAgentLoop)
+    loop.execution_llm_config = {
+        "provider": "test",
+        "model": "test",
+        "concurrency": 4,
+        "cache_prime_first": True,
+        "cache_prime_max_tokens": 1,
+    }
+    loop.execution_concurrency = 4
+    loop.execution_client = ControlledClient()
+    _EXECUTION_CACHE_WARM_STATES.clear()
+
+    owner_request = LLMRequest("s", "u1", "test", 1.0, 131072, {"cache_warm_key": "shared"})
+    follower_request = LLMRequest("s", "u2", "test", 1.0, 131072, {"cache_warm_key": "shared"})
+    owner = asyncio.create_task(loop._complete_execution(owner_request))
+    await primer_started.wait()
+    follower = asyncio.create_task(loop._complete_execution(follower_request))
+    await asyncio.sleep(0.01)
+
+    assert len(calls) == 1
+    assert calls[0].max_tokens == 1
+    assert calls[0].metadata["accept_partial_stream"] is True
+
+    release_primer.set()
+    await asyncio.wait_for(actual_started.wait(), timeout=1)
+    responses = await asyncio.gather(owner, follower)
+
+    assert [response.text for response in responses] == ["ok", "ok"]
+    assert [call.max_tokens for call in calls[1:]] == [131072, 131072]
+    assert {call.metadata["cache_warm_role"] for call in calls[1:]} == {
+        "primer_owner",
+        "follower",
+    }
+    assert owner_request.metadata["cache_prime_usage"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 1,
+    }
+    assert follower_request.metadata["cache_prime_succeeded"] is True
 
 
 def test_shared_guidance_library_reuses_one_archive_instance(tmp_path):

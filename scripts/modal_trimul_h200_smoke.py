@@ -22,6 +22,9 @@ AUTH_TOKEN_ENV = "TRIMUL_JUDGE_TOKEN"
 LEGACY_AUTH_TOKEN_ENV = "VLIW_JUDGE_TOKEN"
 TRAIN_GPU_CONFIG = "H200:1"
 EVALUATION_GPU_CONFIG = "H100!"
+EVALUATION_MAX_CONTAINERS = max(
+    1, int(os.environ.get("TRIMUL_JUDGE_MAX_CONTAINERS", "4"))
+)
 REMOTE_REPO_DIR = "/root/guidance"
 DEFAULT_PROMPT_MODE = "code_delta"
 REMOTE_CONFIG_PATHS = {
@@ -208,7 +211,7 @@ train_image = (
     timeout=1200,
     cpu=8,
     memory=131072,
-    max_containers=2,
+    max_containers=EVALUATION_MAX_CONTAINERS,
     buffer_containers=1,
     scaledown_window=300,
     block_network=True,

@@ -22,6 +22,9 @@ SCRATCH_SEED_CONFIG_PATH = Path("guidance_ttt/config/trimul_modal_glm52_scratch_
 FROZEN_SCRATCH_SEED_PATH = Path(
     "guidance_ttt/seeds/trimul/glm52_scratch_bootstrap_library.json"
 )
+B200_CACHE_CONFIG_PATH = Path(
+    "guidance_ttt/config/trimul_b200_1gpu_qwen3_8b_evolvent_glm52_thinking_cache_group4_1step.yaml"
+)
 SCRIPT_PATH = Path("scripts/modal_trimul_h200_smoke.py")
 
 
@@ -83,6 +86,37 @@ def test_trimul_scratch_seed_config_uses_no_prior_library_or_task_baseline():
     assert config["task"]["verifier"]["provider"] == "modal_http"
 
 
+def test_trimul_b200_cache_smoke_preserves_high_reasoning_sampling():
+    config = yaml.safe_load(B200_CACHE_CONFIG_PATH.read_text())
+
+    assert config["run"]["model_path"] == "models/Qwen3-8B"
+    assert config["run"]["n_gpus_per_node"] == 1
+    assert config["run"]["adv_estimator"] == "entropic_adaptive_beta"
+    assert config["run"]["learning_rate"] == 4.0e-5
+    assert config["run"]["temperature"] == 1.0
+    assert config["run"]["use_kl_loss"] is False
+    assert config["ttt"]["prompt_mode"] == "summary_only"
+    assert config["ttt"]["groups_per_batch"] == 1
+    assert config["ttt"]["group_size"] == 4
+    assert config["ttt"]["puct_q_mode"] == "best_child"
+    assert config["task"]["verifier"]["concurrency"] == 4
+    execution = config["llm"]["execution"]
+    assert execution["model"] == "glm-5.2"
+    assert execution["enable_thinking"] is True
+    assert execution["temperature"] == 1.0
+    assert execution["max_tokens"] == 131072
+    assert execution["stream"] is True
+    assert execution["stream_recover_final"] is True
+    assert execution["stream_recovery_max_tokens"] == 65536
+    assert execution["stream_recovery_request_options"] == {"enable_thinking": False}
+    assert execution["concurrency"] == 4
+    assert execution["cache_prime_first"] is True
+    assert execution["cache_prime_max_tokens"] == 1
+    assert execution["cache_warm_first"] is False
+    assert execution["cache_warm_delay_s"] == 4.0
+    assert execution["cache_warm_ttl_s"] == 300
+
+
 def test_trimul_smoke_prepare_copies_the_frozen_seed(tmp_path):
     config = yaml.safe_load(CODE_DELTA_CONFIG_PATH.read_text())
     config["run"]["output_dir"] = str(tmp_path / "run")
@@ -116,7 +150,8 @@ def test_trimul_modal_script_pins_h100_eval_and_contains_no_credentials():
     assert "torch>=2.7.0,<2.8.0" in source
     assert "triton==3.3.1" in source
     assert "run_official_trimul_evaluation" in source
-    assert "max_containers=2" in source
+    assert module.EVALUATION_MAX_CONTAINERS == 4
+    assert "max_containers=EVALUATION_MAX_CONTAINERS" in source
     assert re.search(r"\bsk-[A-Za-z0-9_-]{20,}\b", source) is None
     assert re.search(r"\bak-[A-Za-z0-9_-]{20,}\b", source) is None
     assert re.search(r"\bas-[A-Za-z0-9_-]{20,}\b", source) is None

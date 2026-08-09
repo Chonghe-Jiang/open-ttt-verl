@@ -116,8 +116,10 @@ omits them. This avoids depending on mutable auxiliary wheels while preserving
 the CUDA, compiler, Python, PyTorch, Triton, reference, tolerances, cases, and
 timing environment that can affect TriMul correctness or score.
 
-Each endpoint container accepts one request at a time. The smoke app permits at
-most two evaluator containers, matching `task.verifier.concurrency: 2`.
+Each endpoint container accepts one request at a time so correctness and timing
+measurements never share a GPU. `TRIMUL_JUDGE_MAX_CONTAINERS` sets the Modal
+autoscaling cap at deployment time and defaults to four; individual recipes
+must keep `task.verifier.concurrency` at or below that cap.
 Transient HTTP 408/429/5xx and network failures are retried at the transport
 layer; evaluator-produced correctness failures are never retried or converted
 into valid results.
@@ -177,6 +179,61 @@ modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode summar
 Omit `--prompt-mode` or set it to `code_delta` to run the original matched
 recipe. The two modes use separate run directories, so one smoke cannot
 overwrite the other.
+
+### Local B200 high-thinking cache smoke
+
+For the local-B200, high-thinking cache smoke, deploy the evaluator with four
+containers and submit the dedicated Slurm recipe:
+
+```bash
+TRIMUL_JUDGE_MAX_CONTAINERS=4 modal deploy scripts/modal_trimul_h200_smoke.py
+sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_group4_smoke.sbatch
+```
+
+This path enables GLM-5.2 thinking without changing its prompt or temperature.
+It requests the model's maximum 131072-token output budget instead of the
+65536-token default, preventing the default limit from consuming the final
+answer after a long reasoning trace. Execution responses use SSE streaming so
+long reasoning runs do not leave an idle HTTP connection, while final
+reasoning, content, usage, and cached-token accounting are reconstructed
+exactly. If the upstream stream boundary arrives before a final answer, the
+client preserves the exact reasoning trace as assistant `reasoning_content`
+and makes a thinking-disabled final-only continuation instead of discarding
+the reasoning and resampling. Before the four requested samples, it sends one
+high-thinking request capped at one output token, waits four seconds for
+gateway cache propagation, and then releases all four full-budget requests.
+The primer is not treated as a candidate; every candidate retains the same
+prompt, sampling settings, and 131072-token budget. This avoids waiting for a
+full high-thinking response long enough for the prefix cache to expire.
+
+The 2026-08-09 acceptance run (`SLURM_JOB_ID=330467`) completed in 19m23s.
+All four full-budget candidates retained non-empty reasoning and parsed final
+answers; three passed the official H100 evaluator. The three uninterrupted
+responses cached 12032 of 12752 prompt tokens (94.35%), while one incomplete
+upstream stream required final-only recovery and did not expose its initial
+cache usage. Including that recovery prompt, the conservative validator total
+was 12032 of 32156 tokens (37.42%). The best child ran in 9084.976 us versus
+the 10177.397 us frozen root. The one-step actor update completed without OOM
+or checkpoint output.
+
+The evaluator cap can be raised independently of the training recipe. On
+2026-08-09, the fixed valid seed passed concurrent probes at 1, 2, 4, and 8
+isolated H100 requests; wall times were 25.861 s, 17.631 s, 19.387 s, and
+25.977 s respectively. Eight is therefore a tested lower bound for this Modal
+workspace, not a claim about its maximum quota. The smoke keeps concurrency at
+four to limit cost.
+
+TTT-Discover's default configuration creates eight groups of 64 rollouts (512
+solutions per step). It starts all groups concurrently in
+[`train.py`](https://github.com/test-time-training/discover/blob/6c40e82dab9d5de7416ac873ad5cd3106084aaed/ttt_discover/rl/train.py)
+and all rollouts inside each group concurrently in
+[`rollouts.py`](https://github.com/test-time-training/discover/blob/6c40e82dab9d5de7416ac873ad5cd3106084aaed/ttt_discover/rl/rollouts.py).
+Its GPU Mode Modal functions do not set `max_containers`, so actual evaluator
+fan-out is bounded by Modal autoscaling and workspace quota rather than by an
+application-side semaphore. Our explicit cap makes cost and failure behavior
+predictable while retaining the same asynchronous evaluation structure.
+
+### Existing Modal H200 acceptance smoke
 
 The smoke recipe uses one H200 for Qwen3-8B, deterministic GLM-5.2 execution,
 and one group of two guidance rollouts. It accepts the run only when bootstrap

@@ -49,8 +49,20 @@ class ExecutionVerification:
     original_execution_text: str
 
 
+@dataclass
+class _ExecutionCacheWarmState:
+    event: asyncio.Event
+    succeeded: bool = False
+    completed_at: float | None = None
+    primer_usage: dict[str, Any] = field(default_factory=dict)
+    primer_metadata: dict[str, Any] = field(default_factory=dict)
+    primer_error: str | None = None
+
+
 _EXECUTION_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
 _EXECUTION_SEMAPHORES_LOCK = threading.Lock()
+_EXECUTION_CACHE_WARM_STATES: dict[tuple[int, str, str], _ExecutionCacheWarmState] = {}
+_EXECUTION_CACHE_WARM_STATES_LOCK = threading.Lock()
 _VERIFIER_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
 _VERIFIER_SEMAPHORES_LOCK = threading.Lock()
 _GUIDANCE_LIBRARIES: dict[str, GuidanceLibrary] = {}
@@ -67,6 +79,14 @@ def _execution_semaphore_key(config: dict[str, Any]) -> str:
         sort_keys=True,
         default=str,
     )
+
+
+def _execution_cache_warm_key(*, system: str, user: str) -> str:
+    """Hash the exact prompt prefix shared by sibling execution requests."""
+    guidance_marker = "<guidance>"
+    shared_user_prefix = user.split(guidance_marker, 1)[0]
+    shared_prefix = f"{system}\0{shared_user_prefix}"
+    return hashlib.sha256(shared_prefix.encode("utf-8")).hexdigest()
 
 
 def _shared_guidance_library(path: str | Path, runtime_config: dict[str, Any]) -> GuidanceLibrary:
@@ -333,7 +353,13 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
                         model=self.execution_llm_config.get("model", "mock-exec"),
                         temperature=float(self.execution_llm_config.get("temperature", 0.2)),
                         max_tokens=_execution_max_tokens(self.execution_llm_config),
-                        metadata={"purpose": "execution"},
+                        metadata={
+                            "purpose": "execution",
+                            "cache_warm_key": _execution_cache_warm_key(
+                                system=execution_prompt.system,
+                                user=execution_prompt.user,
+                            ),
+                        },
                     )
                 )
                 execution_text = execution_response.text
@@ -457,8 +483,121 @@ class GuidanceExecutionAgentLoop(AgentLoopBase):
             return semaphore
 
     async def _complete_execution(self, request: LLMRequest):
-        async with self._execution_semaphore():
-            return await self.execution_client.complete(request)
+        async def complete_with_limit(target_request: LLMRequest = request):
+            async with self._execution_semaphore():
+                return await self.execution_client.complete(target_request)
+
+        cache_prime_first = bool(self.execution_llm_config.get("cache_prime_first", False))
+        cache_warm_first = bool(self.execution_llm_config.get("cache_warm_first", False))
+        if not cache_prime_first and not cache_warm_first:
+            return await complete_with_limit()
+
+        warm_key = str(request.metadata.get("cache_warm_key") or "").strip()
+        if not warm_key:
+            return await complete_with_limit()
+
+        loop = asyncio.get_running_loop()
+        state_key = (id(loop), _execution_semaphore_key(self.execution_llm_config), warm_key)
+        warm_ttl_s = max(0.0, float(self.execution_llm_config.get("cache_warm_ttl_s", 300.0)))
+        with _EXECUTION_CACHE_WARM_STATES_LOCK:
+            state = _EXECUTION_CACHE_WARM_STATES.get(state_key)
+            if (
+                state is not None
+                and state.completed_at is not None
+                and loop.time() - state.completed_at >= warm_ttl_s
+            ):
+                state = None
+            is_leader = state is None
+            if state is None:
+                state = _ExecutionCacheWarmState(event=asyncio.Event())
+                _EXECUTION_CACHE_WARM_STATES[state_key] = state
+
+        if cache_prime_first:
+            wait_started = loop.time()
+            if is_leader:
+                primer_request = LLMRequest(
+                    system=request.system,
+                    user=request.user,
+                    model=request.model,
+                    temperature=request.temperature,
+                    max_tokens=max(
+                        1,
+                        int(self.execution_llm_config.get("cache_prime_max_tokens", 1)),
+                    ),
+                    metadata={
+                        **request.metadata,
+                        "purpose": "execution_cache_prime",
+                        "cache_warm_role": "primer",
+                        "accept_partial_stream": True,
+                    },
+                )
+                try:
+                    primer_response = await complete_with_limit(primer_request)
+                    state.succeeded = True
+                    state.primer_usage = dict(primer_response.usage)
+                    state.primer_metadata = dict(primer_response.metadata)
+                except Exception as exc:
+                    state.primer_error = f"{type(exc).__name__}: {exc}"
+                finally:
+                    state.completed_at = loop.time()
+                    state.event.set()
+            else:
+                await state.event.wait()
+
+            event_wait_s = loop.time() - wait_started
+            propagation_wait_s = 0.0
+            propagation_delay_s = max(
+                0.0,
+                float(self.execution_llm_config.get("cache_warm_delay_s", 0.0)),
+            )
+            if state.succeeded and state.completed_at is not None and propagation_delay_s > 0:
+                elapsed_since_primer = max(0.0, loop.time() - state.completed_at)
+                remaining_delay_s = max(0.0, propagation_delay_s - elapsed_since_primer)
+                if remaining_delay_s > 0:
+                    delay_started = loop.time()
+                    await asyncio.sleep(remaining_delay_s)
+                    propagation_wait_s = loop.time() - delay_started
+
+            request.metadata["cache_warm_role"] = "primer_owner" if is_leader else "follower"
+            request.metadata["cache_warm_wait_s"] = event_wait_s
+            request.metadata["cache_warm_propagation_wait_s"] = propagation_wait_s
+            request.metadata["cache_prime_succeeded"] = state.succeeded
+            if is_leader:
+                request.metadata["cache_prime_usage"] = state.primer_usage
+                request.metadata["cache_prime_response_metadata"] = state.primer_metadata
+                request.metadata["cache_prime_error"] = state.primer_error
+            return await complete_with_limit()
+
+        if is_leader:
+            request.metadata["cache_warm_role"] = "leader"
+            try:
+                response = await complete_with_limit()
+                state.succeeded = True
+                return response
+            finally:
+                state.completed_at = loop.time()
+                state.event.set()
+
+        wait_started = loop.time()
+        await state.event.wait()
+        event_wait_s = loop.time() - wait_started
+        propagation_wait_s = 0.0
+        propagation_delay_s = max(
+            0.0,
+            float(self.execution_llm_config.get("cache_warm_delay_s", 0.0)),
+        )
+        if state.succeeded and state.completed_at is not None and propagation_delay_s > 0:
+            elapsed_since_leader = max(0.0, loop.time() - state.completed_at)
+            remaining_delay_s = max(0.0, propagation_delay_s - elapsed_since_leader)
+            if remaining_delay_s > 0:
+                delay_started = loop.time()
+                await asyncio.sleep(remaining_delay_s)
+                propagation_wait_s = loop.time() - delay_started
+        request.metadata["cache_warm_role"] = "follower"
+        request.metadata["cache_warm_wait_s"] = event_wait_s
+        request.metadata["cache_warm_propagation_wait_s"] = propagation_wait_s
+        request.metadata["cache_warm_leader_succeeded"] = state.succeeded
+        return await complete_with_limit()
 
     def _verifier_semaphore(self, task_spec: TaskSpec, verifier_config: dict[str, Any]) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()

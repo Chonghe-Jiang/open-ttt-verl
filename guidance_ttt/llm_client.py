@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -114,6 +114,22 @@ class OpenAICompatibleLLMClient:
         self.max_retries = max(0, int(config.get("max_retries", 0)))
         self.retry_backoff_s = max(0.0, float(config.get("retry_backoff_s", 1.0)))
         self.capture_request_metrics = bool(config.get("capture_request_metrics", False))
+        self.stream = bool(config.get("stream", False))
+        configured_stream_options = config.get("stream_options") or {}
+        if not isinstance(configured_stream_options, Mapping):
+            raise ValueError("stream_options must be a mapping")
+        self.stream_options = {"include_usage": True, **configured_stream_options}
+        self.stream_recover_final = bool(config.get("stream_recover_final", False))
+        self.stream_recovery_max_tokens = max(
+            1,
+            int(config.get("stream_recovery_max_tokens", 65536)),
+        )
+        configured_recovery_options = config.get("stream_recovery_request_options") or {
+            "enable_thinking": False
+        }
+        if not isinstance(configured_recovery_options, Mapping):
+            raise ValueError("stream_recovery_request_options must be a mapping")
+        self.stream_recovery_request_options = dict(configured_recovery_options)
         self.request_options = {
             key: dict(config[key]) if key in {"chat_template_kwargs", "reasoning"} else config[key]
             for key in (
@@ -141,7 +157,37 @@ class OpenAICompatibleLLMClient:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         payload.update(self.request_options)
-        data = await asyncio.to_thread(self._post_json, "/chat/completions", payload)
+        if self.stream:
+            payload["stream"] = True
+            payload["stream_options"] = dict(self.stream_options)
+            data = await asyncio.to_thread(self._post_sse, "/chat/completions", payload)
+            partial_reason = str(data.pop("_client_partial_stream_reason", "") or "")
+            if partial_reason:
+                if bool(request.metadata.get("accept_partial_stream", False)):
+                    choice = (data.get("choices") or [{}])[0] or {}
+                    message = choice.get("message") or {}
+                    request_metrics = data.setdefault("_client_request_metadata", {})
+                    request_metrics.update(
+                        {
+                            "api_stream_partial_accepted": True,
+                            "api_stream_partial_reason": partial_reason,
+                            "api_stream_partial_reasoning_chars": len(
+                                str(message.get("reasoning_content") or message.get("reasoning") or "")
+                            ),
+                            "api_stream_partial_content_chars": len(
+                                str(message.get("content") or "")
+                            ),
+                        }
+                    )
+                else:
+                    data = await asyncio.to_thread(
+                        self._recover_stream_final,
+                        request,
+                        data,
+                        partial_reason,
+                    )
+        else:
+            data = await asyncio.to_thread(self._post_json, "/chat/completions", payload)
         choice = data.get("choices", [{}])[0]
         message = choice.get("message") or {}
         text = message.get("content") or choice.get("text") or ""
@@ -170,33 +216,58 @@ class OpenAICompatibleLLMClient:
         )
 
     def _post_json(self, path: str, payload: dict) -> dict:
+        return self._post_with_retries(path, payload, streaming=False)
+
+    def _post_sse(self, path: str, payload: dict) -> dict:
+        return self._post_with_retries(path, payload, streaming=True)
+
+    def _post_with_retries(self, path: str, payload: dict, *, streaming: bool) -> dict:
         started_at = time.monotonic()
         retry_errors: list[str] = []
-        req = urllib.request.Request(
-            self.endpoint + path,
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-        )
         for attempt in range(self.max_retries + 1):
+            req = urllib.request.Request(
+                self.endpoint + path,
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-                    data = json.loads(resp.read().decode())
+                    data = self._read_sse_response(resp) if streaming else json.loads(resp.read().decode())
                     if not isinstance(data, dict):
                         raise ValueError(f"expected a JSON object, got {type(data).__name__}")
-                    retryable_response_error = self._retryable_response_error(data)
+                    retryable_response_error = (
+                        self._stream_response_error(data)
+                        if streaming
+                        else self._retryable_response_error(data)
+                    )
                     if retryable_response_error:
+                        if (
+                            streaming
+                            and self.stream_recover_final
+                            and self._has_partial_stream_output(data)
+                        ):
+                            data["_client_partial_stream_reason"] = retryable_response_error
+                            self._record_request_metadata(
+                                data,
+                                attempt=attempt,
+                                retry_errors=retry_errors,
+                                started_at=started_at,
+                                http_status=int(getattr(resp, "status", 200)),
+                                streaming=True,
+                            )
+                            return data
                         raise _RetryableLLMResponseError(retryable_response_error)
-                    if self.capture_request_metrics:
-                        data["_client_request_metadata"] = {
-                            "api_attempts": attempt + 1,
-                            "api_retry_count": attempt,
-                            "api_retry_errors": list(retry_errors),
-                            "api_elapsed_s": time.monotonic() - started_at,
-                            "api_http_status": int(getattr(resp, "status", 200)),
-                        }
+                    self._record_request_metadata(
+                        data,
+                        attempt=attempt,
+                        retry_errors=retry_errors,
+                        started_at=started_at,
+                        http_status=int(getattr(resp, "status", 200)),
+                        streaming=streaming,
+                    )
                     return data
             except urllib.error.HTTPError as exc:
                 try:
@@ -245,6 +316,223 @@ class OpenAICompatibleLLMClient:
                 )
                 time.sleep(delay)
         raise AssertionError("unreachable")
+
+    def _record_request_metadata(
+        self,
+        data: dict,
+        *,
+        attempt: int,
+        retry_errors: list[str],
+        started_at: float,
+        http_status: int,
+        streaming: bool,
+    ) -> None:
+        if not self.capture_request_metrics:
+            return
+        metadata = {
+            "api_attempts": attempt + 1,
+            "api_retry_count": attempt,
+            "api_retry_errors": list(retry_errors),
+            "api_elapsed_s": time.monotonic() - started_at,
+            "api_http_status": http_status,
+            "api_streaming": streaming,
+        }
+        if streaming:
+            metadata["api_stream_event_count"] = int(data.get("_stream_event_count") or 0)
+        data["_client_request_metadata"] = metadata
+
+    def _recover_stream_final(
+        self,
+        request: LLMRequest,
+        partial_data: dict,
+        partial_reason: str,
+    ) -> dict:
+        partial_choice = (partial_data.get("choices") or [{}])[0] or {}
+        partial_message = partial_choice.get("message") or {}
+        partial_content = str(partial_message.get("content") or "")
+        partial_reasoning = str(
+            partial_message.get("reasoning_content")
+            or partial_message.get("reasoning")
+            or ""
+        )
+        if not (partial_content or partial_reasoning):
+            raise RuntimeError(
+                f"Cannot recover incomplete streaming response without partial output: {partial_reason}"
+            )
+
+        recovery_payload = {
+            "model": request.model,
+            "messages": [
+                {"role": "system", "content": request.system},
+                {"role": "user", "content": request.user},
+                {
+                    "role": "assistant",
+                    "content": partial_content,
+                    "reasoning_content": partial_reasoning,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "The previous response was interrupted before a complete final answer. "
+                        "Do not restart or extend the analysis. Using the preserved reasoning above, "
+                        "emit the complete final answer requested by the original user now. Follow "
+                        "every original output-format constraint exactly and include no extra text."
+                    ),
+                },
+            ],
+            "temperature": request.temperature,
+            "max_tokens": self.stream_recovery_max_tokens,
+            "stream": True,
+            "stream_options": dict(self.stream_options),
+        }
+        recovery_payload.update(self.request_options)
+        for thinking_key in ("enable_thinking", "thinking", "reasoning", "reasoning_effort"):
+            recovery_payload.pop(thinking_key, None)
+        recovery_payload.update(self.stream_recovery_request_options)
+
+        initial_metrics = dict(partial_data.get("_client_request_metadata") or {})
+        recovery_data = self._post_sse("/chat/completions", recovery_payload)
+        repeated_partial_reason = str(
+            recovery_data.pop("_client_partial_stream_reason", "") or ""
+        )
+        if repeated_partial_reason:
+            raise RuntimeError(
+                "Final-only recovery stream was also incomplete: "
+                f"{repeated_partial_reason}"
+            )
+
+        recovery_choice = (recovery_data.get("choices") or [{}])[0] or {}
+        recovery_message = recovery_choice.get("message") or {}
+        recovery_reasoning = str(
+            recovery_message.get("reasoning_content")
+            or recovery_message.get("reasoning")
+            or ""
+        )
+        recovery_message["reasoning_content"] = partial_reasoning + recovery_reasoning
+        recovery_choice["message"] = recovery_message
+
+        recovery_metrics = dict(recovery_data.get("_client_request_metadata") or {})
+        initial_attempts = int(initial_metrics.get("api_attempts") or 1)
+        recovery_attempts = int(recovery_metrics.get("api_attempts") or 1)
+        recovery_metrics.update(
+            {
+                "api_attempts": initial_attempts + recovery_attempts,
+                "api_retry_count": int(initial_metrics.get("api_retry_count") or 0)
+                + int(recovery_metrics.get("api_retry_count") or 0),
+                "api_retry_errors": list(initial_metrics.get("api_retry_errors") or [])
+                + list(recovery_metrics.get("api_retry_errors") or []),
+                "api_elapsed_s": float(initial_metrics.get("api_elapsed_s") or 0.0)
+                + float(recovery_metrics.get("api_elapsed_s") or 0.0),
+                "api_streaming": True,
+                "api_stream_recovered": True,
+                "api_stream_partial_reason": partial_reason,
+                "api_stream_partial_reasoning_chars": len(partial_reasoning),
+                "api_stream_partial_content_chars": len(partial_content),
+                "api_initial_attempts": initial_attempts,
+                "api_recovery_attempts": recovery_attempts,
+                "api_initial_stream_event_count": int(
+                    initial_metrics.get("api_stream_event_count")
+                    or partial_data.get("_stream_event_count")
+                    or 0
+                ),
+                "api_recovery_stream_event_count": int(
+                    recovery_metrics.get("api_stream_event_count")
+                    or recovery_data.get("_stream_event_count")
+                    or 0
+                ),
+            }
+        )
+        recovery_data["_client_request_metadata"] = recovery_metrics
+        return recovery_data
+
+    @staticmethod
+    def _read_sse_response(response) -> dict:
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        finish_reason = ""
+        model = ""
+        provider = ""
+        usage: dict[str, Any] = {}
+        event_count = 0
+        transport_error = ""
+
+        try:
+            for raw_line in response:
+                line = raw_line.decode(errors="replace").strip()
+                if not line or line.startswith(":") or not line.startswith("data:"):
+                    continue
+                event_data = line[5:].strip()
+                if event_data == "[DONE]":
+                    break
+                event = json.loads(event_data)
+                if not isinstance(event, dict):
+                    raise ValueError(f"expected an SSE JSON object, got {type(event).__name__}")
+                event_count += 1
+                model = str(event.get("model") or model)
+                provider = str(event.get("provider") or provider)
+                if isinstance(event.get("usage"), dict):
+                    usage = event["usage"]
+                for choice in event.get("choices") or []:
+                    if not isinstance(choice, dict):
+                        continue
+                    finish_reason = str(choice.get("finish_reason") or finish_reason)
+                    delta = choice.get("delta") or choice.get("message") or {}
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content")
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(content, str):
+                        content_parts.append(content)
+                    if isinstance(reasoning, str):
+                        reasoning_parts.append(reasoning)
+        except (
+            http.client.HTTPException,
+            OSError,
+            UnicodeError,
+            ValueError,
+        ) as exc:
+            transport_error = type(exc).__name__
+
+        data: dict[str, Any] = {
+            "model": model,
+            "choices": [
+                {
+                    "message": {
+                        "content": "".join(content_parts),
+                        "reasoning_content": "".join(reasoning_parts),
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": usage,
+            "_stream_event_count": event_count,
+        }
+        if provider:
+            data["provider"] = provider
+        if transport_error:
+            data["_stream_transport_error"] = transport_error
+        return data
+
+    @staticmethod
+    def _has_partial_stream_output(data: dict) -> bool:
+        choice = (data.get("choices") or [{}])[0] or {}
+        message = choice.get("message") or {}
+        return bool(
+            message.get("content")
+            or message.get("reasoning_content")
+            or message.get("reasoning")
+        )
+
+    @classmethod
+    def _stream_response_error(cls, data: dict) -> str | None:
+        transport_error = str(data.get("_stream_transport_error") or "")
+        if transport_error:
+            return transport_error
+        choice = (data.get("choices") or [{}])[0] or {}
+        finish_reason = str(choice.get("finish_reason") or "").lower()
+        if finish_reason in {"length", "network_error", "model_context_window_exceeded"}:
+            return f"finish_reason_{finish_reason}"
+        return cls._retryable_response_error(data)
 
     @staticmethod
     def _retryable_response_error(data: dict) -> str | None:

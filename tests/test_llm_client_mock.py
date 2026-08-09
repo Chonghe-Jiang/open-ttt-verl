@@ -5,6 +5,7 @@ import os
 import time
 
 import pytest
+from omegaconf import OmegaConf
 
 import guidance_ttt.llm_client as llm_client_module
 from guidance_ttt.llm_client import (
@@ -186,9 +187,17 @@ async def test_openai_compatible_client_records_request_metrics_and_upstream_pro
 class _FakeHTTPResponse:
     status = 200
 
-    def __init__(self, body: bytes = b"", read_error: Exception | None = None):
+    def __init__(
+        self,
+        body: bytes = b"",
+        read_error: Exception | None = None,
+        lines: list[bytes] | None = None,
+        iter_error: Exception | None = None,
+    ):
         self.body = body
         self.read_error = read_error
+        self.lines = lines or []
+        self.iter_error = iter_error
 
     def __enter__(self):
         return self
@@ -200,6 +209,11 @@ class _FakeHTTPResponse:
         if self.read_error is not None:
             raise self.read_error
         return self.body
+
+    def __iter__(self):
+        yield from self.lines
+        if self.iter_error is not None:
+            raise self.iter_error
 
 
 def _successful_chat_body() -> bytes:
@@ -234,6 +248,341 @@ def test_openai_compatible_client_retries_incomplete_read(monkeypatch):
     assert data["choices"][0]["message"]["content"] == "OK"
     assert data["_client_request_metadata"]["api_attempts"] == 2
     assert data["_client_request_metadata"]["api_retry_errors"] == ["IncompleteRead"]
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_client_streams_reasoning_content_and_usage(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "stream": True,
+            "capture_request_metrics": True,
+        }
+    )
+    captured = {}
+
+    def fake_post_sse(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "model": "glm-5.2",
+            "provider": "Evolvent",
+            "choices": [
+                {
+                    "message": {
+                        "reasoning_content": "reason carefully",
+                        "content": "<solution>done</solution><summary>ok</summary>",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 64},
+            },
+            "_client_request_metadata": {"api_streaming": True},
+        }
+
+    monkeypatch.setattr(client, "_post_sse", fake_post_sse)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="user",
+            model="glm-5.2",
+            temperature=1.0,
+            max_tokens=None,
+        )
+    )
+
+    assert captured["path"] == "/chat/completions"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["stream_options"] == {"include_usage": True}
+    assert "max_tokens" not in captured["payload"]
+    assert response.reasoning == "reason carefully"
+    assert response.text.startswith("<solution>")
+    assert response.usage["prompt_tokens_details"]["cached_tokens"] == 64
+    assert response.metadata["api_streaming"] is True
+
+
+def test_openai_compatible_stream_retries_reset_and_aggregates_sse(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "max_retries": 1,
+            "retry_backoff_s": 0,
+            "capture_request_metrics": True,
+        }
+    )
+
+    def event(payload):
+        return f"data: {json.dumps(payload)}\n".encode()
+
+    responses = iter(
+        [
+            _FakeHTTPResponse(
+                lines=[event({"choices": [{"delta": {"reasoning_content": "partial"}}]})],
+                iter_error=ConnectionResetError("upstream reset"),
+            ),
+            _FakeHTTPResponse(
+                lines=[
+                    event(
+                        {
+                            "model": "glm-5.2",
+                            "provider": "Evolvent",
+                            "choices": [{"delta": {"reasoning_content": "think "}}],
+                        }
+                    ),
+                    event({"choices": [{"delta": {"reasoning_content": "hard"}}]}),
+                    event({"choices": [{"delta": {"content": "final "}}]}),
+                    event(
+                        {
+                            "choices": [
+                                {"delta": {"content": "answer"}, "finish_reason": "stop"}
+                            ]
+                        }
+                    ),
+                    event(
+                        {
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": 100,
+                                "completion_tokens": 20,
+                                "prompt_tokens_details": {"cached_tokens": 64},
+                            },
+                        }
+                    ),
+                    b"data: [DONE]\n",
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", lambda *args, **kwargs: next(responses))
+
+    data = client._post_sse("/chat/completions", {"model": "glm-5.2", "stream": True})
+
+    assert data["choices"][0]["message"]["reasoning_content"] == "think hard"
+    assert data["choices"][0]["message"]["content"] == "final answer"
+    assert data["choices"][0]["finish_reason"] == "stop"
+    assert data["usage"]["prompt_tokens_details"]["cached_tokens"] == 64
+    assert data["provider"] == "Evolvent"
+    assert data["_client_request_metadata"]["api_attempts"] == 2
+    assert data["_client_request_metadata"]["api_retry_errors"] == ["ConnectionResetError"]
+    assert data["_client_request_metadata"]["api_streaming"] is True
+
+
+def test_openai_compatible_stream_preserves_partial_output_for_recovery(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "max_retries": 2,
+            "retry_backoff_s": 0,
+            "capture_request_metrics": True,
+            "stream_recover_final": True,
+        }
+    )
+
+    def event(payload):
+        return f"data: {json.dumps(payload)}\n".encode()
+
+    calls = 0
+
+    def fake_urlopen(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeHTTPResponse(
+            lines=[
+                event({"model": "glm-5.2", "choices": [{"delta": {"reasoning_content": "kept"}}]})
+            ],
+            iter_error=ConnectionResetError("upstream reset"),
+        )
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", fake_urlopen)
+
+    data = client._post_sse("/chat/completions", {"model": "glm-5.2", "stream": True})
+
+    assert calls == 1
+    assert data["_client_partial_stream_reason"] == "ConnectionResetError"
+    assert data["choices"][0]["message"]["reasoning_content"] == "kept"
+    assert data["_client_request_metadata"]["api_attempts"] == 1
+    assert data["_client_request_metadata"]["api_stream_event_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_stream_recovers_final_from_preserved_reasoning(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "enable_thinking": True,
+            "stream": True,
+            "stream_recover_final": True,
+            "stream_recovery_max_tokens": 65536,
+            "stream_recovery_request_options": {"enable_thinking": False},
+            "capture_request_metrics": True,
+        }
+    )
+    calls = []
+
+    def fake_post_sse(path, payload):
+        calls.append((path, payload))
+        if len(calls) == 1:
+            return {
+                "model": "glm-5.2",
+                "choices": [
+                    {
+                        "message": {
+                            "reasoning_content": "A complete preserved analysis.",
+                            "content": "",
+                        },
+                        "finish_reason": "",
+                    }
+                ],
+                "usage": {},
+                "_stream_event_count": 100,
+                "_client_partial_stream_reason": "missing_finish_reason",
+                "_client_request_metadata": {
+                    "api_attempts": 1,
+                    "api_retry_count": 0,
+                    "api_retry_errors": [],
+                    "api_elapsed_s": 1200.0,
+                    "api_streaming": True,
+                    "api_stream_event_count": 100,
+                },
+            }
+        return {
+            "model": "glm-5.2",
+            "provider": "Evolvent",
+            "choices": [
+                {
+                    "message": {
+                        "reasoning_content": "",
+                        "content": "<solution>done</solution><summary>ok</summary>",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 512},
+            },
+            "_stream_event_count": 20,
+            "_client_request_metadata": {
+                "api_attempts": 1,
+                "api_retry_count": 0,
+                "api_retry_errors": [],
+                "api_elapsed_s": 2.0,
+                "api_streaming": True,
+                "api_stream_event_count": 20,
+            },
+        }
+
+    monkeypatch.setattr(client, "_post_sse", fake_post_sse)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="original user prompt",
+            model="glm-5.2",
+            temperature=1.0,
+            max_tokens=131072,
+        )
+    )
+
+    assert len(calls) == 2
+    recovery_payload = calls[1][1]
+    assert recovery_payload["messages"][2] == {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "A complete preserved analysis.",
+    }
+    assert "Do not restart or extend the analysis" in recovery_payload["messages"][3]["content"]
+    assert recovery_payload["enable_thinking"] is False
+    assert recovery_payload["max_tokens"] == 65536
+    assert response.text.startswith("<solution>")
+    assert response.reasoning == "A complete preserved analysis."
+    assert response.finish_reason == "stop"
+    assert response.usage["prompt_tokens_details"]["cached_tokens"] == 512
+    assert response.metadata["api_stream_recovered"] is True
+    assert response.metadata["api_stream_partial_reason"] == "missing_finish_reason"
+    assert response.metadata["api_stream_partial_reasoning_chars"] == 30
+    assert response.metadata["api_attempts"] == 2
+    assert response.metadata["api_initial_stream_event_count"] == 100
+    assert response.metadata["api_recovery_stream_event_count"] == 20
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_stream_accepts_expected_partial_for_cache_primer(monkeypatch):
+    client = OpenAICompatibleLLMClient(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "enable_thinking": True,
+            "stream": True,
+            "stream_recover_final": True,
+        }
+    )
+    calls = []
+
+    def fake_post_sse(path, payload):
+        calls.append((path, payload))
+        return {
+            "model": "glm-5.2",
+            "choices": [
+                {
+                    "message": {"reasoning_content": "p", "content": ""},
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 1},
+            "_client_partial_stream_reason": "finish_reason_length",
+            "_client_request_metadata": {
+                "api_attempts": 1,
+                "api_streaming": True,
+                "api_stream_event_count": 2,
+            },
+        }
+
+    monkeypatch.setattr(client, "_post_sse", fake_post_sse)
+    response = await client.complete(
+        LLMRequest(
+            system="system",
+            user="shared prompt",
+            model="glm-5.2",
+            temperature=1.0,
+            max_tokens=1,
+            metadata={"accept_partial_stream": True},
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["enable_thinking"] is True
+    assert calls[0][1]["max_tokens"] == 1
+    assert response.reasoning == "p"
+    assert response.finish_reason == "length"
+    assert response.metadata["api_stream_partial_accepted"] is True
+    assert response.metadata["api_stream_partial_reason"] == "finish_reason_length"
+    assert "api_stream_recovered" not in response.metadata
+
+
+def test_openai_compatible_stream_recovery_accepts_hydra_mapping():
+    config = OmegaConf.create(
+        {
+            "base_url": "https://llm.example/v1",
+            "api_key": "test-key",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "stream_recover_final": True,
+            "stream_recovery_request_options": {"enable_thinking": False},
+        }
+    )
+
+    client = OpenAICompatibleLLMClient(config)
+
+    assert client.stream_options == {"include_usage": True}
+    assert client.stream_recovery_request_options == {"enable_thinking": False}
 
 
 def test_openai_compatible_client_retries_truncated_json_and_error_finish(monkeypatch):
