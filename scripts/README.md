@@ -25,6 +25,7 @@ Two self-contained Modal launchers cover the new systems tasks:
 | --- | --- | --- | --- |
 | EdgeBench VLIW | `scripts/modal_vliw_kernel_h200_smoke.py` | 2xH200 | Up to 16 pinned CPU judge containers |
 | TriMul | `scripts/modal_trimul_h200_smoke.py` | 1xH200 | Configurable isolated H100 evaluator containers (default 4) |
+| TriMul local B200 | `scripts/modal_trimul_judge.py` | Slurm 1xB200 | Up to 16 isolated single-input H100 containers |
 
 Install the launcher dependencies once:
 
@@ -52,8 +53,8 @@ modal run scripts/modal_trimul_h200_smoke.py --action smoke --prompt-mode summar
 ```
 
 The local-B200 smoke keeps GLM-5.2 thinking enabled, streams long responses,
-and uses a one-output-token high-thinking primer before releasing all four
-full-budget execution requests:
+and uses a one-output-token primer before releasing all four full-budget
+execution requests:
 
 ```bash
 TRIMUL_JUDGE_MAX_CONTAINERS=4 modal deploy scripts/modal_trimul_h200_smoke.py
@@ -62,6 +63,22 @@ sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_group4_smoke
 
 Use `scripts/probe_trimul_judge_concurrency.py` to test a higher H100 evaluator
 cap against the fixed valid seed before increasing `task.verifier.concurrency`.
+The matched 8x16 one-step recipe uses the lightweight 16-container judge:
+
+```bash
+TRIMUL_JUDGE_MAX_CONTAINERS=16 modal deploy scripts/modal_trimul_judge.py
+python scripts/probe_trimul_judge_concurrency.py --concurrency 16 --requests 16
+sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_batch8_group16_smoke.sbatch
+```
+
+This is 16 independent H100s at peak, one evaluation per H100, plus one local
+B200 for Qwen rollout and the actor update. External GLM generation is capped
+separately at 32 requests. The 8x16 config passes DashScope's top-level
+`reasoning_effort=high` through Evolvent's LiteLLM allowlist instead of relying
+on the binary `enable_thinking` switch. The Slurm request is capped at two hours
+and writes no model checkpoint. The acceptance run (`SLURM_JOB_ID=331053`)
+completed 128/128 candidates plus one actor update in 47m35s; its best valid
+child ran in 3330.475 us versus the 10177.397 us frozen root.
 
 The split `bootstrap` and `train` actions are available for debugging. TriMul's
 separate `generate_scratch_seed` action reproduces seed provenance into the

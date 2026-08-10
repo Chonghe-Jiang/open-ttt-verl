@@ -90,7 +90,7 @@ async def test_openai_compatible_client_maps_chat_completion(monkeypatch):
 @pytest.mark.anyio
 async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monkeypatch):
     client = OpenAICompatibleLLMClient(
-        {
+        OmegaConf.create({
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "local-vllm",
             "top_p": 0.95,
@@ -99,8 +99,9 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
             "chat_template_kwargs": {"enable_thinking": True},
             "reasoning": {"effort": "high"},
             "reasoning_effort": "low",
+            "allowed_openai_params": ["reasoning_effort"],
             "verbosity": "low",
-        }
+        })
     )
     captured = {}
 
@@ -138,6 +139,9 @@ async def test_openai_compatible_client_forwards_qwen_options_and_reasoning(monk
     assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert captured["payload"]["reasoning_effort"] == "low"
+    assert captured["payload"]["allowed_openai_params"] == ["reasoning_effort"]
+    assert isinstance(captured["payload"]["allowed_openai_params"], list)
+    json.dumps(captured["payload"])
     assert captured["payload"]["verbosity"] == "low"
     assert response.reasoning == "Consider several skyline mutations."
     assert response.text.startswith("<solution>")

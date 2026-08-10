@@ -25,7 +25,17 @@ FROZEN_SCRATCH_SEED_PATH = Path(
 B200_CACHE_CONFIG_PATH = Path(
     "guidance_ttt/config/trimul_b200_1gpu_qwen3_8b_evolvent_glm52_thinking_cache_group4_1step.yaml"
 )
+B200_G8X16_CONFIG_PATH = Path(
+    "guidance_ttt/config/"
+    "trimul_b200_1gpu_qwen3_8b_evolvent_glm52_thinking_cache_batch8_group16_1step.yaml"
+)
+POLYOMINO_BEST_CONFIG_PATH = Path(
+    "guidance_ttt/config/"
+    "polyomino_b200_1gpu_qwen3_8b_openrouter_glm52_batch8_group16_"
+    "summary_only_discover_1day_latest_ckpt.yaml"
+)
 SCRIPT_PATH = Path("scripts/modal_trimul_h200_smoke.py")
+LIGHTWEIGHT_JUDGE_SCRIPT_PATH = Path("scripts/modal_trimul_judge.py")
 
 
 def test_trimul_modal_config_is_one_step_code_delta_smoke():
@@ -86,7 +96,7 @@ def test_trimul_scratch_seed_config_uses_no_prior_library_or_task_baseline():
     assert config["task"]["verifier"]["provider"] == "modal_http"
 
 
-def test_trimul_b200_cache_smoke_preserves_high_reasoning_sampling():
+def test_trimul_b200_cache_smoke_preserves_thinking_sampling():
     config = yaml.safe_load(B200_CACHE_CONFIG_PATH.read_text())
 
     assert config["run"]["model_path"] == "models/Qwen3-8B"
@@ -115,6 +125,67 @@ def test_trimul_b200_cache_smoke_preserves_high_reasoning_sampling():
     assert execution["cache_warm_first"] is False
     assert execution["cache_warm_delay_s"] == 4.0
     assert execution["cache_warm_ttl_s"] == 300
+
+
+def test_trimul_b200_g8x16_matches_the_91_point_polyomino_training_recipe():
+    config = yaml.safe_load(B200_G8X16_CONFIG_PATH.read_text())
+    polyomino_best = yaml.safe_load(POLYOMINO_BEST_CONFIG_PATH.read_text())
+
+    matched_run_keys = {
+        "model_path",
+        "seed",
+        "num_initial_states",
+        "adv_estimator",
+        "max_prompt_length",
+        "max_response_length",
+        "filter_overlong_prompts",
+        "truncation",
+        "learning_rate",
+        "ppo_mini_batch_size",
+        "ppo_micro_batch_size_per_gpu",
+        "use_kl_loss",
+        "kl_loss_coef",
+        "rollout_engine",
+        "temperature",
+        "tensor_model_parallel_size",
+        "gpu_memory_utilization",
+        "n_gpus_per_node",
+        "nnodes",
+    }
+    assert {key: config["run"][key] for key in matched_run_keys} == {
+        key: polyomino_best["run"][key] for key in matched_run_keys
+    }
+    assert config["run"]["num_steps"] == 1
+    assert config["run"]["total_epochs"] == 1
+    assert config["run"]["save_freq"] == -1
+
+    matched_ttt_keys = {
+        "discover_compat",
+        "prompt_mode",
+        "groups_per_batch",
+        "group_size",
+        "puct_c",
+        "puct_q_mode",
+        "max_buffer_size",
+        "topk_children",
+    }
+    assert {key: config["ttt"][key] for key in matched_ttt_keys} == {
+        key: polyomino_best["ttt"][key] for key in matched_ttt_keys
+    }
+    assert config["verl_overrides"] == polyomino_best["verl_overrides"]
+
+    assert config["task"]["id"] == "trimul"
+    assert config["task"]["verifier"]["concurrency"] == 16
+    execution = config["llm"]["execution"]
+    assert execution["model"] == "glm-5.2"
+    assert "enable_thinking" not in execution
+    assert execution["reasoning_effort"] == "high"
+    assert execution["allowed_openai_params"] == ["reasoning_effort"]
+    assert execution["temperature"] == 1.0
+    assert execution["max_tokens"] == 81920
+    assert execution["concurrency"] == 32
+    assert execution["cache_prime_first"] is True
+    assert execution["cache_prime_max_tokens"] == 1
 
 
 def test_trimul_smoke_prepare_copies_the_frozen_seed(tmp_path):
@@ -152,6 +223,19 @@ def test_trimul_modal_script_pins_h100_eval_and_contains_no_credentials():
     assert "run_official_trimul_evaluation" in source
     assert module.EVALUATION_MAX_CONTAINERS == 4
     assert "max_containers=EVALUATION_MAX_CONTAINERS" in source
+    assert re.search(r"\bsk-[A-Za-z0-9_-]{20,}\b", source) is None
+    assert re.search(r"\bak-[A-Za-z0-9_-]{20,}\b", source) is None
+    assert re.search(r"\bas-[A-Za-z0-9_-]{20,}\b", source) is None
+
+
+def test_lightweight_trimul_judge_defaults_to_sixteen_isolated_h100s():
+    source = LIGHTWEIGHT_JUDGE_SCRIPT_PATH.read_text()
+
+    assert 'EVALUATION_GPU_CONFIG = "H100!"' in source
+    assert 'os.environ.get("TRIMUL_JUDGE_MAX_CONTAINERS", "16")' in source
+    assert "max_containers=EVALUATION_MAX_CONTAINERS" in source
+    assert "@modal.concurrent(max_inputs=1)" in source
+    assert "block_network=True" in source
     assert re.search(r"\bsk-[A-Za-z0-9_-]{20,}\b", source) is None
     assert re.search(r"\bak-[A-Za-z0-9_-]{20,}\b", source) is None
     assert re.search(r"\bas-[A-Za-z0-9_-]{20,}\b", source) is None

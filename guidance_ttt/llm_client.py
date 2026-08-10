@@ -9,11 +9,19 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
 from guidance_ttt.state import LLMRequest, LLMResponse
+
+
+def _plain_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json_value(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_plain_json_value(item) for item in value]
+    return value
 
 
 class BaseLLMClient(Protocol):
@@ -118,7 +126,10 @@ class OpenAICompatibleLLMClient:
         configured_stream_options = config.get("stream_options") or {}
         if not isinstance(configured_stream_options, Mapping):
             raise ValueError("stream_options must be a mapping")
-        self.stream_options = {"include_usage": True, **configured_stream_options}
+        self.stream_options = {
+            "include_usage": True,
+            **_plain_json_value(configured_stream_options),
+        }
         self.stream_recover_final = bool(config.get("stream_recover_final", False))
         self.stream_recovery_max_tokens = max(
             1,
@@ -129,9 +140,9 @@ class OpenAICompatibleLLMClient:
         }
         if not isinstance(configured_recovery_options, Mapping):
             raise ValueError("stream_recovery_request_options must be a mapping")
-        self.stream_recovery_request_options = dict(configured_recovery_options)
+        self.stream_recovery_request_options = _plain_json_value(configured_recovery_options)
         self.request_options = {
-            key: dict(config[key]) if key in {"chat_template_kwargs", "reasoning"} else config[key]
+            key: _plain_json_value(config[key])
             for key in (
                 "top_p",
                 "top_k",
@@ -141,6 +152,7 @@ class OpenAICompatibleLLMClient:
                 "reasoning_effort",
                 "verbosity",
                 "enable_thinking",
+                "allowed_openai_params",
             )
             if key in config
         }

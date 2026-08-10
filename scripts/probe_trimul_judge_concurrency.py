@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
         "--seed-library",
         default="guidance_ttt/seeds/trimul/glm52_scratch_bootstrap_library.json",
     )
-    parser.add_argument("--concurrency", type=int, default=4)
-    parser.add_argument("--requests", type=int, default=4)
+    parser.add_argument("--concurrency", type=int, default=16)
+    parser.add_argument("--requests", type=int, default=16)
     parser.add_argument("--timeout-s", type=float, default=1160)
     return parser.parse_args()
 

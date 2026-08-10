@@ -71,14 +71,20 @@ def _repo_ignore(path: Path) -> bool:
     if not rel.parts:
         return False
     ignored_roots = {
+        ".apptainer_cache",
+        ".apptainer_home",
+        ".apptainer_tmp",
         ".git",
         ".hf_cache",
         ".pytest_cache",
         ".ray_tmp",
+        ".ruff_cache",
         ".runtime",
         ".secrets",
         ".tmp",
         ".triton_cache",
+        ".venv",
+        "models",
         "outputs",
         "reference",
         "results",

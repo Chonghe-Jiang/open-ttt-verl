@@ -117,9 +117,11 @@ the CUDA, compiler, Python, PyTorch, Triton, reference, tolerances, cases, and
 timing environment that can affect TriMul correctness or score.
 
 Each endpoint container accepts one request at a time so correctness and timing
-measurements never share a GPU. `TRIMUL_JUDGE_MAX_CONTAINERS` sets the Modal
-autoscaling cap at deployment time and defaults to four; individual recipes
-must keep `task.verifier.concurrency` at or below that cap.
+measurements never share a GPU. The combined H200 smoke launcher defaults to
+four evaluator containers. The task-specific `scripts/modal_trimul_judge.py`
+defaults to 16 for the 8x16 B200 recipe. `TRIMUL_JUDGE_MAX_CONTAINERS` can
+override either autoscaling cap at deployment time; individual recipes must
+keep `task.verifier.concurrency` at or below the deployed cap.
 Transient HTTP 408/429/5xx and network failures are retried at the transport
 layer; evaluator-produced correctness failures are never retried or converted
 into valid results.
@@ -140,8 +142,9 @@ Select it at launch:
 export GUIDANCE_TTT_TRIMUL_SECRET=guidance-ttt-trimul-secrets
 ```
 
-For compatibility with the existing workspace, the launcher defaults to
-`guidance-ttt-vliw-secrets` and accepts its legacy `VLIW_JUDGE_TOKEN` as the
+The task-specific judge defaults to `guidance-ttt-trimul-secrets`. For
+compatibility with the existing workspace, the combined H200 launcher defaults
+to `guidance-ttt-vliw-secrets` and accepts its legacy `VLIW_JUDGE_TOKEN` as the
 bearer value. Candidate subprocesses receive neither API key nor bearer token.
 
 ## One-step acceptance run
@@ -182,28 +185,53 @@ overwrite the other.
 
 ### Local B200 high-thinking cache smoke
 
-For the local-B200, high-thinking cache smoke, deploy the evaluator with four
-containers and submit the dedicated Slurm recipe:
+For the small local-B200 acceptance run, deploy the combined evaluator with
+four containers and submit the group-of-four recipe:
 
 ```bash
 TRIMUL_JUDGE_MAX_CONTAINERS=4 modal deploy scripts/modal_trimul_h200_smoke.py
 sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_group4_smoke.sbatch
 ```
 
-This path enables GLM-5.2 thinking without changing its prompt or temperature.
-It requests the model's maximum 131072-token output budget instead of the
-65536-token default, preventing the default limit from consuming the final
-answer after a long reasoning trace. Execution responses use SSE streaming so
-long reasoning runs do not leave an idle HTTP connection, while final
-reasoning, content, usage, and cached-token accounting are reconstructed
-exactly. If the upstream stream boundary arrives before a final answer, the
-client preserves the exact reasoning trace as assistant `reasoning_content`
-and makes a thinking-disabled final-only continuation instead of discarding
-the reasoning and resampling. Before the four requested samples, it sends one
-high-thinking request capped at one output token, waits four seconds for
-gateway cache propagation, and then releases all four full-budget requests.
+For the Polyomino-matched 8x16 run, deploy the task-specific evaluator and
+probe all 16 isolated H100 containers before requesting one two-hour B200 job:
+
+```bash
+TRIMUL_JUDGE_MAX_CONTAINERS=16 modal deploy scripts/modal_trimul_judge.py
+python scripts/probe_trimul_judge_concurrency.py --concurrency 16 --requests 16
+sbatch scripts/slurm_trimul_b200_1gpu_evolvent_glm52_thinking_cache_batch8_group16_smoke.sbatch
+```
+
+The 8x16 config uses one local B200 and matches the run, PPO, LoRA, vLLM, and
+Discover parameters of the 91.89074282 Polyomino run. Only task-specific
+execution, verifier, one-step duration, and no-checkpoint smoke controls differ.
+It permits 32 concurrent external GLM requests so 128 long high-thinking
+generations fit inside the two-hour allocation; H100 evaluator concurrency
+remains 16.
+
+This path requests GLM-5.2 `reasoning_effort: high` without changing its prompt
+or temperature. Evolvent currently runs an older LiteLLM DashScope capability
+table, so the request also sends
+`allowed_openai_params: [reasoning_effort]`; otherwise the proxy rejects the
+parameter before it reaches the provider. Do not combine this with
+`enable_thinking: true`, which is only a binary thinking switch and does not
+identify the high effort tier. It requests an explicit 81920-token output
+budget, matching the observed effective ceiling of the earlier OpenRouter
+GLM-5.2 run instead of relying on a provider-specific default. This differs
+from the old YAML's `null` only by making that effective ceiling explicit.
+Execution responses use SSE streaming so long reasoning runs do not leave an
+idle HTTP connection. Uninterrupted streams reconstruct final reasoning,
+content, usage, and cached-token accounting exactly. If the upstream stream
+boundary arrives before a final answer, the client preserves the reasoning
+trace as assistant `reasoning_content` and makes a thinking-disabled final-only
+continuation with a separate 65536-token budget instead of discarding the
+reasoning and resampling. Recovery metadata records both phases, but token
+usage remains conservative when the interrupted phase did not emit a final
+usage event. Before the candidate requests, the client sends one high-thinking
+request capped at one output token, waits four seconds for gateway cache
+propagation, and then releases the full-budget requests.
 The primer is not treated as a candidate; every candidate retains the same
-prompt, sampling settings, and 131072-token budget. This avoids waiting for a
+prompt, sampling settings, and 81920-token budget. This avoids waiting for a
 full high-thinking response long enough for the prefix cache to expire.
 
 The 2026-08-09 acceptance run (`SLURM_JOB_ID=330467`) completed in 19m23s.
@@ -217,11 +245,32 @@ the 10177.397 us frozen root. The one-step actor update completed without OOM
 or checkpoint output.
 
 The evaluator cap can be raised independently of the training recipe. On
-2026-08-09, the fixed valid seed passed concurrent probes at 1, 2, 4, and 8
-isolated H100 requests; wall times were 25.861 s, 17.631 s, 19.387 s, and
-25.977 s respectively. Eight is therefore a tested lower bound for this Modal
-workspace, not a claim about its maximum quota. The smoke keeps concurrency at
-four to limit cost.
+2026-08-09, the fixed valid seed passed a 16-request probe in 33.135 s: all 16
+requests used `NVIDIA H100 80GB HBM3`, passed correctness, and ran in distinct
+single-input containers. A separate 16-request Evolvent probe completed in
+2.542 s after a one-token primer; all responses contained reasoning and 15 of
+16 reported cached input tokens. A subsequent 32-request probe ran while 16
+full generations were active: all 32 retained thinking output, none returned a
+capacity error, 27 reported cached input, and wall time was 2.965 s.
+Cache reuse is therefore best-effort across gateway backend shards, while
+request quality settings remain unchanged.
+
+The matched 8x16 acceptance run (`SLURM_JOB_ID=331053`) completed on one B200
+in 47m35s with exit code 0. Its archive contains eight valid roots, eight
+finalized groups, 128 submitted children, and `puct_T=128`. All 128 children
+retained reasoning, parsed solution and summary fields, streamed successfully,
+and ended with `finish_reason=stop`; 85 were H100-valid, 40 were invalid, and
+three were model-level parse errors. Nine interrupted streams completed through
+final-only recovery. The gateway reported cache hits for 88 children and
+324992 cached prompt tokens out of 832617 reported prompt tokens (39.03%).
+
+The best child ran in 3330.475 us versus the 10177.397 us frozen root, a 67.27%
+runtime reduction. The actor update completed at `training/global_step=1` with
+`actor/pg_loss=0.0555206`, `actor/grad_norm=0.096341`, learning rate `4e-5`,
+651203 training tokens, a non-empty optimization mask, and zero aborted
+responses. No OOM or checkpoint output occurred. A DataLoader worker warning
+appeared only during temporary-directory cleanup after training reached 100%;
+both validators and Slurm still completed with exit code 0.
 
 TTT-Discover's default configuration creates eight groups of 64 rollouts (512
 solutions per step). It starts all groups concurrently in

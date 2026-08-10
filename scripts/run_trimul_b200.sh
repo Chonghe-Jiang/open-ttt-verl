@@ -8,6 +8,10 @@ CONFIG="${CONFIG:-guidance_ttt/config/trimul_b200_1gpu_qwen3_8b_evolvent_glm52_t
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/guidance_ttt/trimul_b200_glm52_thinking_cache_${SLURM_JOB_ID:-manual}}"
 EXPECTED_GPUS="${EXPECTED_GPUS:-1}"
 EXPECTED_CHILDREN="${EXPECTED_CHILDREN:-4}"
+EXPECTED_GROUPS="${EXPECTED_GROUPS:-1}"
+EXPECTED_GROUP_SIZE="${EXPECTED_GROUP_SIZE:-4}"
+MINIMUM_CACHE_HITS="${MINIMUM_CACHE_HITS:-1}"
+REQUIRE_TRAINING_UPDATE="${REQUIRE_TRAINING_UPDATE:-0}"
 MODE="${1:-run}"
 
 cd "${REPO_ROOT}"
@@ -98,12 +102,22 @@ if [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_GPUS_ON_NODE:-0}" != "${EXPECTED_GPUS}"
   exit 1
 fi
 
+mkdir -p "${OUTPUT_DIR}"
+TRAINER_LOG="${OUTPUT_DIR}/trainer.log"
 APPTAINERENV_CUDA_VISIBLE_DEVICES=0 CUDA_VISIBLE_DEVICES=0 \
   "${APPTAINER_BASE[@]}" python -m guidance_ttt.main_erdos \
-  --config "${CONFIG}" run.output_dir="${OUTPUT_DIR}"
+  --config "${CONFIG}" run.output_dir="${OUTPUT_DIR}" 2>&1 | tee "${TRAINER_LOG}"
 
 "${APPTAINER_BASE[@]}" python scripts/validate_trimul_evolvent_cache_smoke.py \
-  "${OUTPUT_DIR}" --expected-children "${EXPECTED_CHILDREN}" --minimum-cache-hits 1
+  "${OUTPUT_DIR}" \
+  --expected-children "${EXPECTED_CHILDREN}" \
+  --expected-groups "${EXPECTED_GROUPS}" \
+  --expected-group-size "${EXPECTED_GROUP_SIZE}" \
+  --minimum-cache-hits "${MINIMUM_CACHE_HITS}"
+
+if [[ "${REQUIRE_TRAINING_UPDATE}" == "1" ]]; then
+  "${APPTAINER_BASE[@]}" python scripts/validate_trimul_training_update.py "${TRAINER_LOG}"
+fi
 
 if find "${OUTPUT_DIR}" -type d \( -name 'global_step_*' -o -name 'checkpoint-*' \) -print -quit | grep -q .; then
   echo "Unexpected checkpoint directory found despite save_freq=-1" >&2
