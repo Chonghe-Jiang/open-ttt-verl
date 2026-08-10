@@ -1,0 +1,128 @@
+run:
+  output_dir: outputs/guidance_ttt/trimul_b200_1gpu_qwen3_8b_evolvent_glm52_thinking_cache_batch8_group32_1step
+  project_name: guidance_ttt
+  experiment_name: trimul_qwen3_8b_guidance_evolvent_glm52_thinking_cache_b200_1gpu_batch8_group32_1step
+  model_path: models/Qwen3-8B
+  seed: 0
+  num_initial_states: 1
+  num_steps: 1
+  total_epochs: 1
+  adv_estimator: entropic_adaptive_beta
+  max_prompt_length: 6144
+  max_response_length: 10240
+  filter_overlong_prompts: false
+  truncation: middle
+  learning_rate: 4.0e-5
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 2
+  use_kl_loss: false
+  kl_loss_coef: 0.0
+  rollout_engine: vllm
+  temperature: 1.0
+  tensor_model_parallel_size: 1
+  gpu_memory_utilization: 0.7
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  val_before_train: false
+  prepare_only: false
+  hf_cache_dir: .hf_cache
+  ray_temp_dir: .ray_tmp
+  tmp_dir: .tmp
+  triton_cache_dir: .triton_cache
+
+task:
+  id: trimul
+  verifier:
+    provider: modal_http
+    endpoint_env: TRIMUL_JUDGE_URL
+    api_key_env: TRIMUL_JUDGE_TOKEN
+    concurrency: 16
+    runner_timeout_s: 520
+    request_timeout_s: 1150
+    max_retries: 2
+    retry_backoff_s: 2
+    reward_scale: 1500.0
+
+ttt:
+  discover_compat: true
+  prompt_mode: summary_only
+  groups_per_batch: 8
+  group_size: 32
+  eval_timeout: 1160
+  puct_c: 1.0
+  puct_q_mode: best_child
+  max_buffer_size: 1000
+  topk_children: 2
+  bootstrap:
+    enabled: false
+    required: true
+    overwrite_existing: false
+    seed_library_path: guidance_ttt/seeds/trimul/glm52_scratch_bootstrap_library.json
+
+llm:
+  execution:
+    provider: openai_compatible
+    model: glm-5.2
+    base_url: http://llmapi.evolventapi.com/v1
+    api_key_file: .secrets/evolvent_api_key
+    prompt_style: gpt_api_brief_thinking
+    reasoning_effort: high
+    allowed_openai_params:
+      - reasoning_effort
+    temperature: 1.0
+    max_tokens: 81920
+    phase1_max_tokens: null
+    timeout_s: 1200
+    max_retries: 6
+    retry_backoff_s: 2
+    capture_request_metrics: true
+    stream: true
+    stream_recover_final: true
+    stream_recovery_max_tokens: 65536
+    stream_recovery_request_options:
+      enable_thinking: false
+    concurrency: 32
+    cache_prime_first: true
+    cache_prime_max_tokens: 1
+    cache_warm_first: false
+    cache_warm_delay_s: 4.0
+    cache_warm_ttl_s: 300
+
+verl_overrides:
+  - +actor_rollout_ref.model.override_config.attn_implementation=sdpa
+  - actor_rollout_ref.model.lora_rank=32
+  - actor_rollout_ref.model.lora_alpha=32
+  - actor_rollout_ref.rollout.tensor_model_parallel_size=1
+  - actor_rollout_ref.rollout.load_format=safetensors
+  - actor_rollout_ref.rollout.gpu_memory_utilization=0.7
+  - actor_rollout_ref.rollout.free_cache_engine=True
+  - actor_rollout_ref.rollout.layered_summon=False
+  - actor_rollout_ref.rollout.top_p=1.0
+  - actor_rollout_ref.rollout.val_kwargs.do_sample=False
+  - actor_rollout_ref.rollout.val_kwargs.temperature=0
+  - actor_rollout_ref.rollout.val_kwargs.top_p=1.0
+  - actor_rollout_ref.model.enable_gradient_checkpointing=True
+  - actor_rollout_ref.actor.use_remove_padding=True
+  - actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.actor.fsdp_config.param_offload=False
+  - actor_rollout_ref.actor.fsdp_config.optimizer_offload=False
+  - actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+  - actor_rollout_ref.rollout.agent.num_workers=1
+  - actor_rollout_ref.rollout.max_model_len=16384
+  - actor_rollout_ref.rollout.max_num_seqs=16
+  - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+  - actor_rollout_ref.rollout.enforce_eager=False
+  - actor_rollout_ref.actor.use_torch_compile=False
+  - actor_rollout_ref.actor.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.ref.use_torch_compile=False
+  - actor_rollout_ref.ref.fsdp_config.use_torch_compile=False
+  - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
+  - actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=2048
+  - trainer.resume_mode=auto
+  - trainer.max_actor_ckpt_to_keep=1
+  - trainer.max_critic_ckpt_to_keep=1
+  - +ray_kwargs.ray_init.runtime_env.env_vars.TORCHDYNAMO_DISABLE='1'
