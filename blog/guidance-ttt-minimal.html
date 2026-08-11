@@ -218,19 +218,6 @@
   table.matrix td:not(:first-child), table.matrix th.num { padding-left: 18px; }
 
   /* ---------- secondary case study ---------- */
-  .spec-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    margin: 34px 0 8px; border-bottom: 1px solid var(--hairline);
-  }
-  .spec-grid > div {
-    padding: 14px 18px 16px 0; border-top: 1px solid var(--hairline);
-  }
-  .spec-grid > div:not(:nth-child(3n + 1)) { padding-left: 18px; }
-  .spec-grid dt {
-    font-size: 11px; font-weight: 600; letter-spacing: 0;
-    text-transform: uppercase; color: var(--muted); margin-bottom: 4px;
-  }
-  .spec-grid dd { font-size: 14px; line-height: 1.45; color: var(--ink); }
   .trimul-results .ours-row td { background: var(--accent-soft); }
   .trimul-results .ours-row td:first-child { padding-left: 10px; }
   .trimul-results .ours-row td:last-child { padding-right: 10px; }
@@ -256,9 +243,6 @@
   .kernel-stage b { display: block; font-size: 14px; margin-bottom: 5px; }
   .kernel-stage p { font-size: 13px; line-height: 1.5; }
   @media (max-width: 640px) {
-    .spec-grid { grid-template-columns: 1fr 1fr; }
-    .spec-grid > div:not(:nth-child(3n + 1)) { padding-left: 0; }
-    .spec-grid > div:nth-child(even) { padding-left: 16px; }
     .kernel-stack { grid-template-columns: 1fr; }
     .kernel-stage { padding: 15px 0; }
     .kernel-stage + .kernel-stage { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; }
@@ -652,18 +636,21 @@
       an <strong>8.30×</strong> improvement over its 10177.40&nbsp;µs scratch
       seed. Lower is better throughout this section.
     </p>
-
-    <dl class="spec-grid" aria-label="TriMul experimental setting">
-      <div><dt>Guidance</dt><dd>Qwen3-8B, LoRA rank 32</dd></div>
-      <div><dt>Execution</dt><dd>GLM-5.2, high reasoning</dd></div>
-      <div><dt>Search budget</dt><dd>8 × 16 × 30 = 3,840 candidates</dd></div>
-      <div><dt>Training</dt><dd>One local B200 GPU</dd></div>
-      <div><dt>Verification</dt><dd>Isolated H100 80GB instances</dd></div>
-      <div><dt>Evaluator</dt><dd>18 correctness + 7 timing cases</dd></div>
-      <div><dt>Software</dt><dd>CUDA 12.8 · PyTorch 2.7.1</dd></div>
-      <div><dt>Compiler</dt><dd>Triton 3.3.1</dd></div>
-      <div><dt>Concurrency</dt><dd>32 executor · 16 verifier requests</dd></div>
-    </dl>
+    <p>
+      The training recipe is the same as in Polyomino: Qwen3-8B LoRA guidance,
+      a frozen GLM-5.2 executor, the same summary-to-guidance communication and
+      exact code for the executor, and the same adaptive entropic update over
+      eight parents with sixteen rollouts each. We run this configuration for
+      30 updates, evaluating 3,840 candidates in total.
+    </p>
+    <div class="note">
+      <b>Evaluator version.</b> TriMul uses the TTT-Discover evaluation contract
+      with 18 correctness cases and seven timed leaderboard shapes, pinned to
+      CUDA 12.8, PyTorch 2.7.1, and Triton 3.3.1. Triton version changes can
+      alter compilation, legal kernel configurations, and measured latency, so
+      results produced under other Triton releases are not directly comparable
+      to the numbers below.
+    </div>
   </div>
 
   <div class="col-wide">
@@ -701,15 +688,6 @@
       Geometric-mean latency across seven leaderboard shapes. All artifacts
       pass the same 18-case correctness suite under CUDA 12.8, PyTorch 2.7.1,
       and Triton 3.3.1.
-    </p>
-  </div>
-
-  <div class="col">
-    <p style="margin-top: 28px;">
-      The discovered kernel is faster than the released TTT-Discover and Zeyu
-      Shen kernels under this evaluator, while K-Search remains ahead. Its
-      1225.58&nbsp;µs result is the best latency observed during our 30-update
-      trajectory.
     </p>
   </div>
 
@@ -831,12 +809,6 @@
       explicit permutations; FP32 is retained for sensitive reductions and
       FP16 is used where Tensor Core throughput matters.
     </p>
-    <div class="note">
-      <b>Scope.</b> This is one 30-update Guidance-TTT trajectory. Unlike the
-      Polyomino study, TriMul does not yet include matched frozen-guidance or
-      direct-mutation controls, so it demonstrates successful kernel discovery
-      rather than isolating the causal contribution of guidance training.
-    </div>
   </div>
 </section>
 
