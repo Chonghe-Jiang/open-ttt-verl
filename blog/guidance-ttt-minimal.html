@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guidance-TTT: Learning to Evolve Algorithms in Thought Space</title>
-<meta name="description" content="A small guidance policy writes proposals, a large frozen executor implements them as complete programs, and every program receives an exact score. Test-time RL updates only the small policy. One run takes a Polyomino Packing solver from 27.81 to 91.89.">
+<meta name="description" content="A small guidance policy writes proposals, a large frozen executor implements them as complete programs, and every program receives an exact score. It improves both a Polyomino solver and an AlphaFold3 TriMul GPU kernel.">
 <style>
   :root {
     color-scheme: light;
@@ -216,6 +216,53 @@
   table.matrix td.accent { color: var(--accent); }
   table.matrix .ours-row td { border-bottom: 1px solid var(--baseline); }
   table.matrix td:not(:first-child), table.matrix th.num { padding-left: 18px; }
+
+  /* ---------- secondary case study ---------- */
+  .spec-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    margin: 34px 0 8px; border-bottom: 1px solid var(--hairline);
+  }
+  .spec-grid > div {
+    padding: 14px 18px 16px 0; border-top: 1px solid var(--hairline);
+  }
+  .spec-grid > div:not(:nth-child(3n + 1)) { padding-left: 18px; }
+  .spec-grid dt {
+    font-size: 11px; font-weight: 600; letter-spacing: 0;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 4px;
+  }
+  .spec-grid dd { font-size: 14px; line-height: 1.45; color: var(--ink); }
+  .trimul-results .ours-row td { background: var(--accent-soft); }
+  .trimul-results .ours-row td:first-child { padding-left: 10px; }
+  .trimul-results .ours-row td:last-child { padding-right: 10px; }
+  .trimul-results td.accent { color: var(--accent); }
+  .trimul-results .seed-row td { color: var(--muted); }
+  .evolution-scroll { overflow-x: auto; padding-bottom: 4px; }
+  .evolution {
+    display: block; width: 100%; min-width: 720px; height: auto;
+  }
+  .kernel-stack {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    margin: 30px 0 26px; border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .kernel-stage { padding: 18px 20px 20px 0; }
+  .kernel-stage + .kernel-stage {
+    border-left: 1px solid var(--hairline); padding-left: 20px;
+  }
+  .kernel-stage .stage-label {
+    display: block; color: var(--accent); font-size: 11px; font-weight: 650;
+    letter-spacing: 0; text-transform: uppercase; margin-bottom: 5px;
+  }
+  .kernel-stage b { display: block; font-size: 14px; margin-bottom: 5px; }
+  .kernel-stage p { font-size: 13px; line-height: 1.5; }
+  @media (max-width: 640px) {
+    .spec-grid { grid-template-columns: 1fr 1fr; }
+    .spec-grid > div:not(:nth-child(3n + 1)) { padding-left: 0; }
+    .spec-grid > div:nth-child(even) { padding-left: 16px; }
+    .kernel-stack { grid-template-columns: 1fr; }
+    .kernel-stage { padding: 15px 0; }
+    .kernel-stage + .kernel-stage { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; }
+  }
 
   /* ---------- findings ---------- */
   .findings { list-style: none; counter-reset: f; margin-top: 26px; }
@@ -588,6 +635,207 @@
       same sample count. It remains a single-run comparison: repeated seeds
       are needed to distinguish a stable learning effect from trajectory-level
       search variance, and the 500-iteration OpenEvolve run is not budget-matched.
+    </div>
+  </div>
+</section>
+
+<!-- ================= TriMul ================= -->
+<section id="trimul">
+  <div class="col">
+    <span class="eyebrow">Another result</span>
+    <h2>From a scratch kernel to a hybrid GPU pipeline</h2>
+    <p>
+      We also apply Guidance-TTT to TriMul, the outgoing AlphaFold3 Triangle
+      Multiplicative Update kernel from the TTT-Discover benchmark. Starting
+      from a correct but slow GLM-5.2 implementation, the search discovers a
+      kernel with a best observed latency of <strong>1225.58&nbsp;µs</strong>,
+      an <strong>8.30×</strong> improvement over its 10177.40&nbsp;µs scratch
+      seed. Lower is better throughout this section.
+    </p>
+
+    <dl class="spec-grid" aria-label="TriMul experimental setting">
+      <div><dt>Guidance</dt><dd>Qwen3-8B, LoRA rank 32</dd></div>
+      <div><dt>Execution</dt><dd>GLM-5.2, high reasoning</dd></div>
+      <div><dt>Search budget</dt><dd>8 × 16 × 30 = 3,840 candidates</dd></div>
+      <div><dt>Training</dt><dd>One local B200 GPU</dd></div>
+      <div><dt>Verification</dt><dd>Isolated H100 80GB instances</dd></div>
+      <div><dt>Evaluator</dt><dd>18 correctness + 7 timing cases</dd></div>
+      <div><dt>Software</dt><dd>CUDA 12.8 · PyTorch 2.7.1</dd></div>
+      <div><dt>Compiler</dt><dd>Triton 3.3.1</dd></div>
+      <div><dt>Concurrency</dt><dd>32 executor · 16 verifier requests</dd></div>
+    </dl>
+  </div>
+
+  <div class="col-wide">
+    <table class="simple trimul-results" aria-label="TriMul geometric mean latency comparison">
+      <thead>
+        <tr>
+          <th>Artifact</th>
+          <th class="num">Latency µs ↓</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>K-Search</b></td>
+          <td class="num">1212.97</td>
+        </tr>
+        <tr class="ours-row">
+          <td><b>Guidance-TTT</b> (ours, step 28)</td>
+          <td class="num accent">1225.58</td>
+        </tr>
+        <tr>
+          <td>TTT-Discover</td>
+          <td class="num">1264.34</td>
+        </tr>
+        <tr>
+          <td>Zeyu Shen</td>
+          <td class="num">1278.35</td>
+        </tr>
+        <tr class="seed-row">
+          <td>Scratch seed</td>
+          <td class="num">10177.40</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="axis-note">
+      Geometric-mean latency across seven leaderboard shapes. All artifacts
+      pass the same 18-case correctness suite under CUDA 12.8, PyTorch 2.7.1,
+      and Triton 3.3.1.
+    </p>
+  </div>
+
+  <div class="col">
+    <p style="margin-top: 28px;">
+      The discovered kernel is faster than the released TTT-Discover and Zeyu
+      Shen kernels under this evaluator, while K-Search remains ahead. Its
+      1225.58&nbsp;µs result is the best latency observed during our 30-update
+      trajectory.
+    </p>
+  </div>
+
+  <figure class="col-wide">
+    <div class="panel">
+      <div class="chart-head">
+        <strong>How the kernel evolved</strong>
+        <span class="axis-note">Cumulative-best latency · lower is better</span>
+      </div>
+      <div class="evolution-scroll">
+        <svg class="evolution" viewBox="0 0 900 224" role="img" aria-labelledby="tri-evo-t tri-evo-d">
+          <title id="tri-evo-t">TriMul kernel evolution over thirty updates</title>
+          <desc id="tri-evo-d">The scratch seed starts at 10177.40 microseconds. Fusion and mixed precision reach 2165.55 by step 3, specialization reaches 1307.52 by step 11, scheduling improvements reach 1261.27 by step 20, interface refinement reaches 1225.58 by step 28, and no new record appears in steps 29 and 30.</desc>
+          <defs>
+            <marker id="tri-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"></path>
+            </marker>
+          </defs>
+
+          <line x1="52" y1="128" x2="854" y2="128" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#tri-arrow)"></line>
+
+          <g>
+            <circle cx="52" cy="128" r="4" fill="var(--baseline)"></circle>
+            <text x="52" y="154" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--muted)">SCRATCH</text>
+            <text x="52" y="174" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">10177.40 µs</text>
+          </g>
+
+          <g transform="translate(104 16)">
+            <rect width="140" height="78" rx="7" fill="var(--accent-soft)" stroke="var(--accent)"></rect>
+            <text x="70" y="25" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">
+              <tspan x="70">Fused mixed-</tspan><tspan x="70" dy="17">precision pipeline</tspan>
+            </text>
+            <text x="70" y="65" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">largest structural gain</text>
+            <line x1="70" y1="78" x2="70" y2="112" stroke="var(--baseline)"></line>
+            <circle cx="70" cy="112" r="4" fill="var(--accent)"></circle>
+            <text x="70" y="141" text-anchor="middle" font-size="10.5" fill="var(--muted)">STEPS 1–3</text>
+            <text x="70" y="160" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">2165.55 µs</text>
+          </g>
+
+          <g transform="translate(260 16)">
+            <rect width="140" height="78" rx="7" fill="var(--surface)" stroke="var(--hairline)"></rect>
+            <text x="70" y="25" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">
+              <tspan x="70">Layout + shape</tspan><tspan x="70" dy="17">specialization</tspan>
+            </text>
+            <text x="70" y="65" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">remove permutations</text>
+            <line x1="70" y1="78" x2="70" y2="112" stroke="var(--baseline)"></line>
+            <circle cx="70" cy="112" r="4" fill="var(--accent)"></circle>
+            <text x="70" y="141" text-anchor="middle" font-size="10.5" fill="var(--muted)">STEPS 4–11</text>
+            <text x="70" y="160" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">1307.52 µs</text>
+          </g>
+
+          <g transform="translate(416 16)">
+            <rect width="140" height="78" rx="7" fill="var(--surface)" stroke="var(--hairline)"></rect>
+            <text x="70" y="25" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">
+              <tspan x="70">Scheduling, cache</tspan><tspan x="70" dy="17">+ mask tuning</tspan>
+            </text>
+            <text x="70" y="65" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">reduce overhead</text>
+            <line x1="70" y1="78" x2="70" y2="112" stroke="var(--baseline)"></line>
+            <circle cx="70" cy="112" r="4" fill="var(--accent)"></circle>
+            <text x="70" y="141" text-anchor="middle" font-size="10.5" fill="var(--muted)">STEPS 12–20</text>
+            <text x="70" y="160" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">1261.27 µs</text>
+          </g>
+
+          <g transform="translate(572 16)">
+            <rect width="140" height="78" rx="7" fill="var(--surface)" stroke="var(--hairline)"></rect>
+            <text x="70" y="25" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">
+              <tspan x="70">Hybrid interface</tspan><tspan x="70" dy="17">refinement</tspan>
+            </text>
+            <text x="70" y="65" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">Triton meets cuBLAS</text>
+            <line x1="70" y1="78" x2="70" y2="112" stroke="var(--baseline)"></line>
+            <circle cx="70" cy="112" r="4" fill="var(--accent)"></circle>
+            <text x="70" y="141" text-anchor="middle" font-size="10.5" fill="var(--muted)">STEPS 21–28</text>
+            <text x="70" y="160" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">1225.58 µs</text>
+          </g>
+
+          <g transform="translate(728 16)">
+            <rect width="140" height="78" rx="7" fill="var(--surface)" stroke="var(--hairline)" stroke-dasharray="4 4"></rect>
+            <text x="70" y="34" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--ink)">Plateau</text>
+            <text x="70" y="57" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">no new record</text>
+            <line x1="70" y1="78" x2="70" y2="112" stroke="var(--baseline)"></line>
+            <circle cx="70" cy="112" r="4" fill="var(--baseline)"></circle>
+            <text x="70" y="141" text-anchor="middle" font-size="10.5" fill="var(--muted)">STEPS 29–30</text>
+            <text x="70" y="160" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">1225.58 µs</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <figcaption>
+      Most of the speedup comes from an early architectural transition. Later
+      updates retain the same hybrid family and progressively improve layouts,
+      scheduling, and the interfaces around the matrix contraction.
+    </figcaption>
+  </figure>
+
+  <div class="col">
+    <h2>Where the efficiency comes from</h2>
+    <div class="kernel-stack" aria-label="Final TriMul execution pipeline">
+      <div class="kernel-stage">
+        <span class="stage-label">Front end</span>
+        <b>Fuse the bandwidth-bound work</b>
+        <p>One Triton kernel combines input normalization, five projections, sigmoid gates, masking, and the direct contraction layout.</p>
+      </div>
+      <div class="kernel-stage">
+        <span class="stage-label">Core</span>
+        <b>Keep the regular N³ operation dense</b>
+        <p><code>torch.matmul</code> delegates the batched contraction to cuBLAS and its mature Tensor Core path.</p>
+      </div>
+      <div class="kernel-stage">
+        <span class="stage-label">Back end</span>
+        <b>Fuse the output path</b>
+        <p>A second Triton kernel reads the contraction layout directly and combines normalization, gating, and final projection.</p>
+      </div>
+    </div>
+    <p>
+      The key result is not a single monolithic Triton kernel. It is a
+      <strong>division of labor</strong>: Triton removes memory traffic and
+      launch overhead around the contraction, while cuBLAS handles the regular
+      compute-bound core. Direct <code>[B,H,N,N]</code> intermediates avoid
+      explicit permutations; FP32 is retained for sensitive reductions and
+      FP16 is used where Tensor Core throughput matters.
+    </p>
+    <div class="note">
+      <b>Scope.</b> This is one 30-update Guidance-TTT trajectory. Unlike the
+      Polyomino study, TriMul does not yet include matched frozen-guidance or
+      direct-mutation controls, so it demonstrates successful kernel discovery
+      rather than isolating the causal contribution of guidance training.
     </div>
   </div>
 </section>
